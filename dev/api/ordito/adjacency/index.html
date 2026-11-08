@@ -7426,7 +7426,7 @@ the same on every run; otherwise the order within a row is arbitrary.</p>
         <span class="n">_fill_sorted_vertex_faces</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">row_count</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">scatter_vertex_faces_to_offsets</span><span class="p">,</span>
+            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">scatter_vertex_faces</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">],</span>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">buffer</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">],</span>
@@ -7457,9 +7457,8 @@ the same on every run; otherwise the order within a row is arbitrary.</p>
         <p><a class="autorefs autorefs-internal" title="vertex_face_adjacency" href="./#ordito.adjacency.vertex_face_adjacency"><code>vertex_face_adjacency</code></a> from counts already taken.</p>
 <p>The second half of that function, for a caller whose own kernel visits every corner in a pass
 it makes anyway and counts each vertex's corners there: the corner histogram is the one launch
-this skips. <code>counts</code> is trusted, not checked -- it must be exactly each vertex's number of
-corners in <code>faces</code> -- and it is <strong>consumed</strong>: its buffer becomes the scan's input and, when
-rows are filled by atomics, their per-row cursor, so its contents are unspecified afterwards.</p>
+this skips. <code>counts</code> is trusted, not checked: it must be exactly each vertex's number of
+corners in <code>faces</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7499,7 +7498,7 @@ rows are filled by atomics, their per-row cursor, so its contents are unspecifie
             <td>
               <div class="doc-md-description">
                 <p><code>(n_vertices,)</code> <code>int32</code> number of corners of <code>faces</code> naming each vertex, on
-<code>faces.device</code>. Overwritten.</p>
+<code>faces.device</code>. Not modified.</p>
               </div>
             </td>
             <td>
@@ -7682,7 +7681,11 @@ rows are filled by atomics, their per-row cursor, so its contents are unspecifie
 <span class="normal">484</span>
 <span class="normal">485</span>
 <span class="normal">486</span>
-<span class="normal">487</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_face_adjacency_from_counts</span><span class="p">(</span>
+<span class="normal">487</span>
+<span class="normal">488</span>
+<span class="normal">489</span>
+<span class="normal">490</span>
+<span class="normal">491</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_face_adjacency_from_counts</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7690,9 +7693,8 @@ rows are filled by atomics, their per-row cursor, so its contents are unspecifie
 
 <span class="sd">    The second half of that function, for a caller whose own kernel visits every corner in a pass</span>
 <span class="sd">    it makes anyway and counts each vertex's corners there: the corner histogram is the one launch</span>
-<span class="sd">    this skips. ``counts`` is trusted, not checked -- it must be exactly each vertex's number of</span>
-<span class="sd">    corners in ``faces`` -- and it is **consumed**: its buffer becomes the scan's input and, when</span>
-<span class="sd">    rows are filled by atomics, their per-row cursor, so its contents are unspecified afterwards.</span>
+<span class="sd">    this skips. ``counts`` is trusted, not checked: it must be exactly each vertex's number of</span>
+<span class="sd">    corners in ``faces``.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -7700,7 +7702,7 @@ rows are filled by atomics, their per-row cursor, so its contents are unspecifie
 <span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer, every index in ``[0, n_vertices)``.</span>
 <span class="sd">    counts</span>
 <span class="sd">        ``(n_vertices,)`` ``int32`` number of corners of ``faces`` naming each vertex, on</span>
-<span class="sd">        ``faces.device``. Overwritten.</span>
+<span class="sd">        ``faces.device``. Not modified.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -7744,28 +7746,33 @@ rows are filled by atomics, their per-row cursor, so its contents are unspecifie
             <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
             <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
-    <span class="n">vertex_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">deterministic</span> <span class="o">=</span> <span class="n">is_deterministic</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">deterministic</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span><span class="p">:</span>
         <span class="c1"># The sort gives the offsets as well, so the counts go unread.</span>
-        <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">offsets</span><span class="p">,</span> <span class="n">vertex_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
         <span class="n">_fill_sorted_vertex_faces</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">row_count</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">offsets</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">offsets</span>
-    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and</span>
     <span class="c1"># this function never needs it (it is 3 * n_faces, known on the host). Converting for</span>
-    <span class="c1"># symmetry would add a device synchronization where there is currently none.</span>
-    <span class="n">tail</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">tail</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="c1"># symmetry would add a device synchronization where there is currently none. The rows share</span>
+    <span class="c1"># the offsets' allocation (a CSR pair is held and dropped together).</span>
+    <span class="n">offsets</span><span class="p">,</span> <span class="n">vertex_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">deterministic</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">zero_</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span>
+            <span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span>
+        <span class="p">)</span>
         <span class="n">_fill_sorted_vertex_faces</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">row_count</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">offsets</span>
-    <span class="c1"># The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor,</span>
-    <span class="c1"># counting each row's free slots down to zero: no second buffer and no re-zeroing.</span>
+    <span class="c1"># Each row's start, scanned in behind entry 0, which the scatter writes: its claims advance the</span>
+    <span class="c1"># starts to the rows' ends (``kernels/scatter.claim_row_slot``), so nothing is zeroed and the</span>
+    <span class="c1"># counts are only read.</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">row_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">scatter_vertex_faces</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">offsets</span>
@@ -7997,11 +8004,7 @@ second:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">525</span>
 <span class="normal">526</span>
 <span class="normal">527</span>
 <span class="normal">528</span>
@@ -8109,7 +8112,11 @@ second:</p>
 <span class="normal">630</span>
 <span class="normal">631</span>
 <span class="normal">632</span>
-<span class="normal">633</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_unshared</span><span class="p">(</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_unshared</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">face_adjacency_edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8426,11 +8433,7 @@ a side meet at a right angle:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">636</span>
-<span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">640</span>
 <span class="normal">641</span>
 <span class="normal">642</span>
 <span class="normal">643</span>
@@ -8531,7 +8534,11 @@ a side meet at a right angle:</p>
 <span class="normal">738</span>
 <span class="normal">739</span>
 <span class="normal">740</span>
-<span class="normal">741</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_angles</span><span class="p">(</span>
+<span class="normal">741</span>
+<span class="normal">742</span>
+<span class="normal">743</span>
+<span class="normal">744</span>
+<span class="normal">745</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8897,11 +8904,7 @@ convex pair), folding it above a positive one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">748</span>
 <span class="normal">749</span>
 <span class="normal">750</span>
 <span class="normal">751</span>
@@ -9001,7 +9004,11 @@ convex pair), folding it above a positive one:</p>
 <span class="normal">845</span>
 <span class="normal">846</span>
 <span class="normal">847</span>
-<span class="normal">848</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_projections</span><span class="p">(</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_projections</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9366,11 +9373,7 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">855</span>
 <span class="normal">856</span>
 <span class="normal">857</span>
 <span class="normal">858</span>
@@ -9471,7 +9474,11 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
 <span class="normal">953</span>
 <span class="normal">954</span>
 <span class="normal">955</span>
-<span class="normal">956</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_convex</span><span class="p">(</span>
+<span class="normal">956</span>
+<span class="normal">957</span>
+<span class="normal">958</span>
+<span class="normal">959</span>
+<span class="normal">960</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_convex</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9767,11 +9774,7 @@ smallest face index:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1053</span>
 <span class="normal">1054</span>
 <span class="normal">1055</span>
 <span class="normal">1056</span>
@@ -9849,7 +9852,11 @@ smallest face index:</p>
 <span class="normal">1128</span>
 <span class="normal">1129</span>
 <span class="normal">1130</span>
-<span class="normal">1131</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_connected_component_labels</span><span class="p">(</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_connected_component_labels</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10097,11 +10104,7 @@ shared edge <code>(1, 2)</code> (halfedges 1 and 3) sort next to each other:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1196</span>
-<span class="normal">1197</span>
-<span class="normal">1198</span>
-<span class="normal">1199</span>
-<span class="normal">1200</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1200</span>
 <span class="normal">1201</span>
 <span class="normal">1202</span>
 <span class="normal">1203</span>
@@ -10150,7 +10153,11 @@ shared edge <code>(1, 2)</code> (halfedges 1 and 3) sort next to each other:</p>
 <span class="normal">1246</span>
 <span class="normal">1247</span>
 <span class="normal">1248</span>
-<span class="normal">1249</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sorted_face_edge_keys</span><span class="p">(</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span>
+<span class="normal">1253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sorted_face_edge_keys</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
