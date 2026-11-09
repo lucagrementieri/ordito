@@ -749,12 +749,18 @@ def chamfer_points_to_mesh_loss(
 
     # Non-differentiable closest-face and nearest-neighbor assignment (outside the tape). The
     # backward search is chosen from the forward one's own distances -- see `_backward_nearest`.
-    distance_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
+    nearest_vp = None
+    if single_directional or _backward_may_take_grid(points):
+        distance_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
+        if not single_directional:
+            nearest_vp = _backward_nearest(points, vertices, distance_forward, face_id, faces)[0][0]
+    else:
+        _, found = _closest_and_nearest(points, vertices, faces, mesh)
+        face_id, nearest_vp = _launch.view(found, 0, n), _launch.view(found, n, n + v)
     terms: list[_ChamferTerm] = [
         _SurfaceTerm(points, vertices, faces, face_id, _reduction_scale(point_reduction, n))
     ]
-    if not single_directional:
-        nearest_vp = _backward_nearest(points, vertices, distance_forward, face_id, faces)[0][0]
+    if nearest_vp is not None:
         terms.append(_NnTerm(vertices, points, nearest_vp, _reduction_scale(point_reduction, v)))
 
     _accumulate_chamfer_terms(tape, terms, loss, squared=squared)
@@ -1302,6 +1308,12 @@ def _distances_points_to_mesh(
     """Point-to-surface distances forward, cloud nearest-neighbour distances back."""
     if points.size == 0 or vertices.size == 0 or faces.size == 0:
         return None
+    if not single_directional and not _backward_may_take_grid(points):
+        distances, _ = _closest_and_nearest(points, vertices, faces, mesh)
+        n = points.size
+        return _Distances(
+            _launch.view(distances, 0, n), _launch.view(distances, n, n + vertices.size), None
+        )
     d_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
     if single_directional:
         return _Distances(d_forward, None, None)
@@ -1515,6 +1527,38 @@ def _closest_on_mesh(
     # The directed form of the pair: ``points`` stand in for mesh A's vertices, whose faces it
     # never reads.
     return _closest_both_ways(points, faces, vertices, faces, True, None, mesh)
+
+
+def _closest_and_nearest(
+    points: wp.array[wp.vec3],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mesh: wp.Mesh | None,
+) -> tuple[odt.Array1dFloat32, odt.Array1dInt32]:
+    """
+    Both directions of a cloud-to-mesh pair's search in one launch: closest faces, nearest points.
+
+    ``(n_points + n_vertices,)`` distances and indices: each point's distance to the surface and
+    closest face first (what [`_closest_on_mesh`][ordito.metrics._closest_on_mesh] returns), then
+    each vertex's nearest point and its index (what [`_nearest`][ordito.metrics._nearest] returns),
+    for a pair below the size where [`_backward_nearest`][ordito.metrics._backward_nearest] may
+    take the grid. ``mesh`` is built over ``vertices`` and ``faces`` when not supplied.
+    """
+    device = points.device
+    if mesh is None:
+        mesh = wp.Mesh(points=vertices, indices=faces)
+    tree = od.neighbors.bvh_from_points(points, leaf_size=1)
+    n_rows = points.size + vertices.size
+    distances = odt.empty_1d(n_rows, wp.float32, device=device)
+    indices = odt.empty_1d(n_rows, wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.closest_faces_and_nearest_points,
+        dim=n_rows,
+        inputs=[mesh.id, points, tree.id, vertices],
+        outputs=[distances, indices],
+        device=device,
+    )
+    return distances, indices
 
 
 def _validate_diff_reduction(point_reduction: _DiffReduction) -> None:

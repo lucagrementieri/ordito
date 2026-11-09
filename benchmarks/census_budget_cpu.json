@@ -4189,8 +4189,8 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 3,
    "readback": 1
   }
  },
@@ -4202,8 +4202,8 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh_loss[sphere_small-ordito-cpu-symmetric]": {
   "counts": {
-   "launch": 6,
-   "alloc": 5
+   "launch": 5,
+   "alloc": 3
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cpu-oneway]": {
@@ -4248,8 +4248,8 @@
  },
  "benchmarks/test_metrics.py::test_hausdorff_points_to_mesh[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 3,
-   "alloc": 5,
+   "launch": 2,
+   "alloc": 3,
    "readback": 1
   }
  },

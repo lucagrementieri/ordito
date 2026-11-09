@@ -17,6 +17,7 @@ from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
     attempt_radius,
+    bvh_nearest_point,
     next_search_radius,
     search_radius_bounds,
 )
@@ -173,6 +174,13 @@ def closest_faces_both_ways(
     # ``first_points``' length queries ``first_mesh`` and the rest query ``second_mesh``, writing
     # one concatenated row of distances and closest faces. The closest point itself is not stored;
     # the query is ``closest_point_query``'s, so the values are ``closest_point_on_mesh``'s.
+    #
+    # Declined (2026-11-09, CUDA, the benchmark pair of a mesh and its copy 5 % of the diagonal
+    # off, build plus query against the default LBVH at its default leaf): leaf size 1, 0.90-0.93x
+    # to bunny but 1.17x on dragon (leaf 2 1.04x, leaf 8 1.06x there); the ``sah`` and ``median``
+    # builders query 0.84-0.87x on dragon but build 400x slower, cuBQL 0.79-0.93x for a build
+    # 23-115x; queries in Hilbert order 1.06-1.31x on bunny and dragon (0.74x on lucy only, before
+    # paying for the order).
     tid = wp.int32(wp.tid())
     n_first = first_points.shape[0]
     mesh_id = first_mesh
@@ -185,6 +193,35 @@ def closest_faces_both_ways(
     _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
     out_distance[tid] = distance
     out_face[tid] = face
+
+
+@wp.kernel
+def closest_faces_and_nearest_points(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    points_tree: wp.uint64,
+    vertices: wp.array[wp.vec3],
+    out_distance: wp.array[wp.float32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # A cloud and a mesh measured against each other in one launch (``metrics``' symmetric
+    # point-to-mesh distances): thread ``t`` below ``points``' length runs
+    # ``closest_faces_both_ways``' query of ``mesh_id`` (built over ``vertices``) and writes the
+    # closest face, the rest run ``neighbors.nearest_points_both_ways``' descent of
+    # ``points_tree`` (built over ``points``) for a vertex and write the nearest point. The two
+    # searches are those kernels' own; this one differs only in pairing one of each.
+    tid = wp.int32(wp.tid())
+    n_points = points.shape[0]
+    index = wp.int32(-1)
+    distance = wp.float32(0.0)
+    if tid < n_points:
+        _closest, distance, index = closest_point_query(mesh_id, points[tid], wp.float32(wp.inf))
+    else:
+        index, distance = bvh_nearest_point(
+            points_tree, points, vertices[tid - n_points], wp.float32(wp.inf)
+        )
+    out_distance[tid] = distance
+    out_index[tid] = index
 
 
 @wp.kernel
