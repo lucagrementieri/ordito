@@ -5666,12 +5666,24 @@ def _vertex_scale_attribute(
     sums = _launch.zeros(2 * n_vertices, dtype=wp.float32, device=device)
     total = odt.as_dense(sums[:n_vertices])
     valence = odt.as_dense(sums[n_vertices:])
+    if not is_deterministic():
+        _launch.launch(
+            kernel_remesh.SCATTER_SCALE_ATTRIBUTE[wp.float32],
+            dim=n,
+            inputs=[vertices, keys, base, total, valence],
+            device=device,
+        )
+        return total, valence
+    # The ``float32`` lengths sum exactly in ``float64``, the same bits in any commit order, and
+    # are rounded once into the table the readers take.
+    exact_total = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_remesh.scatter_scale_attribute,
+        kernel_remesh.SCATTER_SCALE_ATTRIBUTE[wp.float64],
         dim=n,
-        inputs=[vertices, keys, base, total, valence],
+        inputs=[vertices, keys, base, exact_total, valence],
         device=device,
     )
+    od.array.copyto(total, exact_total)
     return total, valence
 
 

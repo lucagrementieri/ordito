@@ -13,6 +13,7 @@ from ordito.kernels.adjacency import (
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
+    OverloadTable,
     append_slot,
     binary_search_sorted_contains,
     bit_rank,
@@ -1001,13 +1002,14 @@ def scatter_scale_attribute(
     vertices: wp.array[wp.vec3],
     sorted_keys: wp.array[wp.uint64],
     base: wp.uint64,
-    out_sum: wp.array[wp.float32],
+    out_sum: wp.array[Any],
     out_valence: wp.array[wp.float32],
 ) -> None:
     # One unique edge per run of ``scale_attribute_edge_keys``' sorted keys: its length added to
     # both endpoints and counted at each, in ``edges_unique``'s orientation and order. Only the
     # outside class is counted, unless it is empty (the smallest key is already lifted), when the
-    # whole mesh is.
+    # whole mesh is. ``out_sum`` is ``float32`` in arrival order, or ``float64`` under the
+    # deterministic setting, where a sum of ``float32`` lengths is exact and order-free.
     i = wp.int32(wp.tid())
     lift = base * base
     key = sorted_keys[i]
@@ -6591,3 +6593,29 @@ def quadric_pass_tail(
             out_face_source,
             state,
         )
+
+
+# The scale attribute's sum: ``float32`` in arrival order, ``float64`` exact under the
+# deterministic setting -- see [`OverloadTable`][ordito.kernels.array.OverloadTable].
+SCATTER_SCALE_ATTRIBUTE: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global SCATTER_SCALE_ATTRIBUTE
+    SCATTER_SCALE_ATTRIBUTE = OverloadTable(
+        scatter_scale_attribute,
+        {
+            d: [
+                wp.array[wp.vec3],
+                wp.array[wp.uint64],
+                wp.uint64,
+                wp.array[d],
+                wp.array[wp.float32],
+            ]
+            for d in (wp.float32, wp.float64)
+        },
+    )
+
+
+_register_overloads()

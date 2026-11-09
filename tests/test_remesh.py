@@ -4373,6 +4373,33 @@ def test_refine_region_to_density_whole_mesh_region_terminates(
     assert whole_f.size >= faces_wp.size
 
 
+def test_refine_region_to_density_scale_attribute_is_reproducible(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: under the deterministic setting the scale attribute repeats bit for bit.
+
+    The attribute is the per-vertex sum of surrounding edge lengths that the density criterion
+    thresholds, so a sum in arrival order could move a split decision between runs; the exact
+    ``float64`` sum takes the same bits in any commit order. The setting's two forms agree at the
+    module tolerance, so the on branch is not a different attribute.
+    """
+    vertices_wp, faces_wp, region_wp = _filled_rim(saddle_graded)
+
+    def attribute() -> list[np.ndarray]:
+        total, valence = od.remesh._vertex_scale_attribute(vertices_wp, faces_wp, region_wp)
+        return [total.numpy(), valence.numpy()]
+
+    with od.config.deterministic(True):
+        first = attribute()
+        for again in (attribute(), attribute()):
+            assert all(np.array_equal(a, b) for a, b in zip(first, again, strict=True))
+    with od.config.deterministic(False):
+        arrival = attribute()
+    assert np.ptp(first[0]) > 1e-3
+    assert all(np.allclose(a, b, rtol=1e-5, atol=1e-5) for a, b in zip(first, arrival, strict=True))
+
+
 def _no_region(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
     return wp.zeros(0, dtype=wp.bool, device=faces.device)
 
