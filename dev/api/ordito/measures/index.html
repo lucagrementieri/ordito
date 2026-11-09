@@ -6291,8 +6291,7 @@ below:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/measures.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 40</span>
-<span class="normal"> 41</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 41</span>
 <span class="normal"> 42</span>
 <span class="normal"> 43</span>
 <span class="normal"> 44</span>
@@ -6367,7 +6366,8 @@ below:</p>
 <span class="normal">113</span>
 <span class="normal">114</span>
 <span class="normal">115</span>
-<span class="normal">116</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">volume</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">116</span>
+<span class="normal">117</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">volume</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Signed volume enclosed by the mesh.</span>
 
@@ -6595,8 +6595,7 @@ the face centroids exists in either case.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/measures.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
-<span class="normal">120</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
 <span class="normal">123</span>
@@ -6671,11 +6670,7 @@ the face centroids exists in either case.</p>
 <span class="normal">192</span>
 <span class="normal">193</span>
 <span class="normal">194</span>
-<span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_centroid</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+<span class="normal">195</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_centroid</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Area-weighted centroid of the mesh surface: the mean of the per-face centroids by area.</span>
 
@@ -6723,28 +6718,23 @@ the face centroids exists in either case.</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
-    <span class="n">f</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
-    <span class="k">if</span> <span class="n">f</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"nan"</span><span class="p">))</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
-    <span class="c1"># Per-block sums (slots 0-2 the area-weighted centroid sum, 3 the area), folded by</span>
-    <span class="c1"># ``reduce.sum`` in a fixed order so the centroid is the same bits on every run. One readback:</span>
-    <span class="c1"># the return type is a host-side wp.vec3, so the sums cross to the host to be divided.</span>
-    <span class="n">blocks</span> <span class="o">=</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
-    <span class="n">partials</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Slot 0 ends holding the area-weighted barycentre sum (components 0-2) and the area (3),</span>
+    <span class="c1"># added in ``float64``. One readback: the return type is a host-side wp.vec3, so the sums cross</span>
+    <span class="c1"># to the host to be divided.</span>
+    <span class="n">blocks</span> <span class="o">=</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n_faces</span><span class="p">)</span>
+    <span class="n">totals</span><span class="p">,</span> <span class="n">stride</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">block_partials</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec4d</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-        <span class="n">kernel_measures</span><span class="o">.</span><span class="n">centroid_partials</span><span class="p">,</span>
+        <span class="n">kernel_measures</span><span class="o">.</span><span class="n">surface_centroid_totals</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">blocks</span><span class="p">],</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">f</span><span class="p">),</span> <span class="n">partials</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">totals</span><span class="p">],</span>
         <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">if</span> <span class="n">blocks</span> <span class="o">&lt;=</span> <span class="n">kernel_measures</span><span class="o">.</span><span class="n">CENTROID_HOST_FOLD_BLOCKS</span><span class="p">:</span>
-        <span class="c1"># Read back: the few block partials themselves, folded on the host in ``float64`` -- a</span>
-        <span class="c1"># fixed order still, without the device reduction's launches.</span>
-        <span class="n">weighted</span> <span class="o">=</span> <span class="n">read_array</span><span class="p">(</span><span class="n">partials</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">weighted</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">partials</span><span class="p">)</span>
+    <span class="n">weighted</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">totals</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
     <span class="n">total_area</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">weighted</span><span class="p">[</span><span class="mi">3</span><span class="p">])</span>
     <span class="k">if</span> <span class="n">total_area</span> <span class="o">==</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="c1"># Every face degenerate: the weights are all zero, so there is no weighted mean. Same</span>
@@ -6946,7 +6936,11 @@ accumulated sums have to cross the device boundary to be combined. They cross to
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/measures.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">202</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
 <span class="normal">203</span>
 <span class="normal">204</span>
 <span class="normal">205</span>
@@ -7058,11 +7052,7 @@ accumulated sums have to cross the device boundary to be combined. They cross to
 <span class="normal">311</span>
 <span class="normal">312</span>
 <span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
-<span class="normal">316</span>
-<span class="normal">317</span>
-<span class="normal">318</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moments</span><span class="p">(</span>
+<span class="normal">314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moments</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat33d</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7331,7 +7321,11 @@ negative index.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/measures.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">321</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
 <span class="normal">322</span>
 <span class="normal">323</span>
 <span class="normal">324</span>
@@ -7406,21 +7400,7 @@ negative index.</p>
 <span class="normal">393</span>
 <span class="normal">394</span>
 <span class="normal">395</span>
-<span class="normal">396</span>
-<span class="normal">397</span>
-<span class="normal">398</span>
-<span class="normal">399</span>
-<span class="normal">400</span>
-<span class="normal">401</span>
-<span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">euler_characteristic</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="normal">396</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">euler_characteristic</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Euler characteristic ``V - E + F`` of the mesh (topological invariant).</span>
 
@@ -7471,39 +7451,29 @@ negative index.</p>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="mi">0</span>
 
-    <span class="c1"># The bound is taken once, here, so ``edges_unique`` re-checking it would reduce the same</span>
-    <span class="c1"># indices twice; ``require_non_negative`` keeps the half of that check a derived bound cannot</span>
-    <span class="c1"># give, and costs nothing -- both ends come out of the one reduction.</span>
+    <span class="c1"># The bound sizes the marks and the edge set; ``require_non_negative`` keeps the half of an</span>
+    <span class="c1"># index check a derived bound cannot give, and costs nothing -- both ends come out of the one</span>
+    <span class="c1"># reduction.</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">index_bound</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="k">elif</span> <span class="n">n_vertices</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"n_vertices must be positive, got </span><span class="si">{</span><span class="n">n_vertices</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">n</span> <span class="o">=</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span>
-    <span class="c1"># The referenced-vertex count is a membership mask's popcount rather than the length of</span>
-    <span class="c1"># ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set</span>
-    <span class="c1"># without the hash table, compaction and sort, and the count is one read instead of two. The</span>
-    <span class="c1"># mask is marked in the pass that packs the halfedge keys into the sort's buffer, over the</span>
-    <span class="c1"># bits a key below ``n_vertices ** 2`` can set; the sort's payload is never read.</span>
-    <span class="n">referenced</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">keys</span><span class="p">,</span> <span class="n">payload</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">sort_buffers</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_measures</span><span class="o">.</span><span class="n">face_edge_keys_and_referenced</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">referenced</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
-        <span class="n">keys</span><span class="p">,</span> <span class="n">payload</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="n">n_vertices</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">)</span>
-    <span class="p">)</span>
-    <span class="n">sorted_keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
-    <span class="c1"># The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run</span>
-    <span class="c1"># scan and no emitted edge table. Both counts fold in one launch and come back in one read.</span>
-    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Both counts come out of one pass that sets each vertex's mark and inserts each edge into an</span>
+    <span class="c1"># open-addressing set, counting first arrivals: no sort, no run scan and no edge table. The</span>
+    <span class="c1"># set, the marks and the two counts share one zeroed allocation (the table's ``int64`` slots,</span>
+    <span class="c1"># the marks and counts its ``int32`` tail).</span>
+    <span class="n">per</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">global_mask</span> <span class="o">=</span> <span class="n">kernel_grouping</span><span class="o">.</span><span class="n">edge_key_table_shape</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="n">buffer</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">capacity</span> <span class="o">+</span> <span class="p">(</span><span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">3</span><span class="p">)</span> <span class="o">//</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">table</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">capacity</span><span class="p">)</span>
+    <span class="n">tail</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">buffer</span><span class="o">.</span><span class="n">size</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+    <span class="n">marks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">tail</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">tail</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)</span>
+    <span class="n">width</span><span class="p">,</span> <span class="n">blocks</span> <span class="o">=</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">spanned_blocks_1d</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernel_measures</span><span class="o">.</span><span class="n">referenced_vertex_and_unique_edge_counts</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n</span><span class="p">))],</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">referenced</span><span class="p">,</span> <span class="n">sorted_keys</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span> <span class="n">counts</span><span class="p">],</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">blocks</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">per</span><span class="p">,</span> <span class="n">global_mask</span><span class="p">,</span> <span class="n">width</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">marks</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
         <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
