@@ -865,6 +865,12 @@ def mesh_place_columns(
     # contributors. As a position of the first sort: its upper-half entry (``mesh_place_upper``).
     # As a sorted position of the second sort: edge ``(lo, hi)`` in row ``hi``, at its rank among
     # the edges whose larger endpoint is ``hi`` -- stable, so in ascending ``lo``.
+    #
+    # Past L2 this is ~3.5x a streaming pass over the same bytes (``lucy``: 5.1 against 1.5 ms;
+    # ``dragon`` 0.036 ms, in L2), and not for the lower half's ``keys[i]`` gather (0.3 ms of it).
+    # Declined (2026-11-09): the lower half as a launch of its own, 2.0 + 1.9 ms of device time
+    # against 5.1, byte-identical, but calls 1.02-1.04x from ``dragon`` to a 1.3 M-face icosphere
+    # (the launch) and at par on ``lucy``, whose wall the mempool's trim after the call hides.
     t = wp.int32(wp.tid())
     if t < n_vertices:
         start = mesh_row_start(before, t)
