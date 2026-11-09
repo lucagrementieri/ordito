@@ -27,7 +27,7 @@ from scipy.spatial import Delaunay
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _launch
+from ordito import _common, _launch
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import proximity as kernel_proximity
 from tests.conversions import (
@@ -171,9 +171,10 @@ def test_query_mesh_aabb_with_offsets_guards_empty_and_miss(device: str) -> None
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("ordered", [False, True])
 @pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
 def test_closest_point_on_mesh_matches_references(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, ordered: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     200 random queries against trimesh, MeshLib and pyvista: distance, point and face index.
@@ -203,7 +204,13 @@ def test_closest_point_on_mesh_matches_references(
     vertex normal fans exhaust the sphere of directions, so the tie fraction grows with the query
     radius. The index is therefore left to the MeshLib pair, whose ``findProjection`` reports the
     face on ordito's own soup numbering.
+
+    ``ordered`` drops the gates of ``_common.search_order``, so the queries (scattered by
+    construction) are answered in Hilbert order and written back by index.
     """
+    if ordered:
+        monkeypatch.setattr(_common, "SEARCH_ORDER_MIN_QUERIES", 0)
+        monkeypatch.setattr(_common, "SEARCH_ORDER_LONG_FRACTION", 0.0)
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _random_queries_np()
     points_wp = points_to_warp(points_np, mesh_wp.device)

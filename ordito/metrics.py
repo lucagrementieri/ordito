@@ -46,6 +46,7 @@ from ordito._common import (
     read_array,
     read_values,
     require_same_device,
+    search_order,
     slice_count,
 )
 from ordito.config import is_deterministic
@@ -1354,6 +1355,8 @@ def _nearest_both_ways(
     [`_backward_nearest`][ordito.metrics._backward_nearest] may take the grid.
     """
     device = x.device
+    # The orders are chosen before the trees are built, so the reads they may take wait on no build.
+    order_x, order_y = search_order(x), search_order(y)
     tree_x = od.neighbors.bvh_from_points(x, leaf_size=1)
     tree_y = od.neighbors.bvh_from_points(y, leaf_size=1)
     n_rows = x.size + y.size
@@ -1362,7 +1365,7 @@ def _nearest_both_ways(
     _launch.launch(
         kernel_neighbors.nearest_points_both_ways,
         dim=n_rows,
-        inputs=[tree_x.id, x, tree_y.id, y],
+        inputs=[tree_x.id, x, tree_y.id, y, order_x, order_y],
         outputs=[indices, distances],
         device=device,
         block_dim=kernel_neighbors.descent_block_dim(n_rows, wp.get_device(device)),
@@ -1495,6 +1498,10 @@ def _closest_both_ways(
     copy.
     """
     device = vertices_a.device
+    # The orders are chosen before the meshes are built, so the reads they may take wait on no
+    # build.
+    order_a = search_order(vertices_a)
+    order_b = None if single_directional else search_order(vertices_b)
     if mesh_b is None:
         mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
     n_rows = vertices_a.size
@@ -1510,7 +1517,7 @@ def _closest_both_ways(
     _launch.launch(
         kernel_proximity.closest_faces_both_ways,
         dim=n_rows,
-        inputs=[mesh_b.id, vertices_a, second_mesh.id, second_points],
+        inputs=[mesh_b.id, vertices_a, second_mesh.id, second_points, order_a, order_b],
         outputs=[distances, faces],
         device=device,
     )
@@ -1545,6 +1552,9 @@ def _closest_and_nearest(
     take the grid. ``mesh`` is built over ``vertices`` and ``faces`` when not supplied.
     """
     device = points.device
+    # The orders are chosen before the mesh and tree are built, so the reads they may take wait on
+    # no build.
+    order_points, order_vertices = search_order(points), search_order(vertices)
     if mesh is None:
         mesh = wp.Mesh(points=vertices, indices=faces)
     tree = od.neighbors.bvh_from_points(points, leaf_size=1)
@@ -1554,7 +1564,7 @@ def _closest_and_nearest(
     _launch.launch(
         kernel_proximity.closest_faces_and_nearest_points,
         dim=n_rows,
-        inputs=[mesh.id, points, tree.id, vertices],
+        inputs=[mesh.id, points, tree.id, vertices, order_points, order_vertices],
         outputs=[distances, indices],
         device=device,
     )

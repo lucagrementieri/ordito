@@ -45,6 +45,7 @@ from ordito._common import (
     require_nonempty_mesh,
     require_same_device,
     scan_count,
+    search_order,
 )
 from ordito.constants import INT32_MAX, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
@@ -231,6 +232,8 @@ def closest_point_on_mesh(
         out_face = _launch.full(m, -1, dtype=wp.int32, device=device)
         return out_closest, out_distance, out_face
 
+    # The order is chosen before the mesh is built, so the read it may take waits on no build.
+    order = search_order(points)
     if mesh is None:
         require_nonempty_mesh(faces, "closest_point_on_mesh")
         # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
@@ -244,7 +247,7 @@ def closest_point_on_mesh(
     _launch.launch(
         kernel_proximity.closest_point_on_mesh,
         dim=m,
-        inputs=[mesh.id, points, wp.float32(max_dist), out_closest, out_distance, out_face],
+        inputs=[mesh.id, points, wp.float32(max_dist), order, out_closest, out_distance, out_face],
         device=device,
     )
     return out_closest, out_distance, out_face

@@ -28,6 +28,7 @@ from scipy.spatial import KDTree
 from scipy.spatial.distance import directed_hausdorff
 
 import ordito as od
+from ordito import _common
 from ordito.kernels import metrics as kernel_metrics
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
@@ -166,6 +167,69 @@ def test_chamfer_mesh_default_is_root_of_squared(device: str, geometry: str) -> 
     for plain_wp, squared_wp in zip(plain, squared, strict=True):
         assert np.ptp(plain_wp.numpy()) > 1e-3
         assert np.allclose(plain_wp.numpy() ** 2, squared_wp.numpy(), rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("geometry", ["points_to_points", "points_to_mesh", "mesh_to_mesh"])
+@pytest.mark.parametrize("single_directional", [False, True], ids=["symmetric", "oneway"])
+def test_chamfer_distances_do_not_depend_on_the_search_order(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    geometry: str,
+    single_directional: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Ordito against ordito: every per-point distance is the same in Hilbert order as in index order.
+
+    The searches answer each query on its own, so the order ``_common.search_order`` hands them
+    (here forced by dropping its gates, on queries scattered by construction: a sampled cloud and
+    a scrambled mesh) must change no bit, in either direction or in the one-launch pair forms. The
+    index-order results carry the library comparisons above; the spy asserts the ordered arm ran.
+    """
+    sphere_tm, sphere_wp = sphere_irregular
+    vertices_wp, faces_wp = sphere_wp.points, sphere_wp.indices
+    shifted_wp, shifted_faces_wp = numpy_to_warp(
+        sphere_tm.vertices + 0.05 * sphere_tm.scale, sphere_tm.faces, vertices_wp.device
+    )
+    points_wp, _ = od.sample.sample_surface(shifted_wp, shifted_faces_wp, 3000, seed=0)
+
+    def distances() -> list[np.ndarray]:
+        directed = single_directional
+        if geometry == "points_to_points":
+            result = od.metrics.chamfer_points_to_points(
+                points_wp, vertices_wp, point_reduction=None, single_directional=directed
+            )
+        elif geometry == "points_to_mesh":
+            result = od.metrics.chamfer_points_to_mesh(
+                points_wp, vertices_wp, faces_wp, point_reduction=None, single_directional=directed
+            )
+        else:
+            result = od.metrics.chamfer_mesh_to_mesh(
+                shifted_wp,
+                shifted_faces_wp,
+                vertices_wp,
+                faces_wp,
+                point_reduction=None,
+                single_directional=directed,
+            )
+        arrays = (result,) if isinstance(result, wp.array) else result
+        return [array.numpy() for array in cast("tuple[wp.array[wp.float32], ...]", arrays)]
+
+    index_order = distances()
+    orders: list[int] = []
+    space_filling_order = _common.space_filling_order
+
+    def spy(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+        orders.append(points.size)
+        return space_filling_order(points)
+
+    monkeypatch.setattr(_common, "space_filling_order", spy)
+    monkeypatch.setattr(_common, "SEARCH_ORDER_MIN_QUERIES", 0)
+    monkeypatch.setattr(_common, "SEARCH_ORDER_LONG_FRACTION", 0.0)
+    hilbert = distances()
+    assert len(orders) == (1 if single_directional else 2)
+    for index_np, hilbert_np in zip(index_order, hilbert, strict=True):
+        assert np.ptp(index_np) > 1e-3
+        assert np.array_equal(index_np, hilbert_np)
 
 
 @pytest.mark.parametrize("reduction", ["mean", "sum"])

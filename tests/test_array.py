@@ -1785,6 +1785,43 @@ def test_read_scalar_returns_a_detached_row_for_a_vector_dtype(device: str) -> N
     assert int(_common.read_scalar(counts_wp)) == 6
 
 
+def test_search_order_orders_only_scrambled_queries(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: ``_common.search_order`` orders scrambled queries and leaves a walk be.
+
+    Not a library comparison: the order is a private launch schedule with no counterpart in any
+    reference (the searches taking it are compared with their references in both orders, in
+    ``test_neighbors`` and ``test_proximity``). A helix sampled along its length is the coherent
+    input, a permutation of it the scrambled one; the gates are lowered to reach them at this
+    size. The scrambled order must come back as a permutation whose consecutive points are near
+    neighbours again, the coherent one as ``None``; past the CUDA gate every order is taken, and on
+    the CPU none is, whatever the size.
+    """
+    t_np = np.linspace(0.0, 40.0 * np.pi, 4096)
+    helix_np = np.stack([np.cos(t_np), np.sin(t_np), 0.05 * t_np], axis=1).astype(np.float32)
+    scrambled_np = helix_np[np.random.default_rng(5).permutation(len(helix_np))]
+
+    def mean_step(points_np: np.ndarray) -> float:
+        return float(np.linalg.norm(np.diff(points_np, axis=0), axis=1).mean())
+
+    helix_wp = wp.array(helix_np, dtype=wp.vec3, device=device)
+    scrambled_wp = wp.array(scrambled_np, dtype=wp.vec3, device=device)
+    assert _common.search_order(scrambled_wp) is None  # below the size gate
+
+    monkeypatch.setattr(_common, "SEARCH_ORDER_MIN_QUERIES", 0)
+    assert _common.search_order(helix_wp) is None
+    order_wp = _common.search_order(scrambled_wp)
+    assert order_wp is not None
+    order_np = order_wp.numpy()
+    assert np.array_equal(np.sort(order_np), np.arange(len(helix_np)))
+    assert mean_step(scrambled_np[order_np]) < 0.1 * mean_step(scrambled_np)
+
+    monkeypatch.setattr(_common, "SEARCH_ORDER_ALWAYS_QUERIES_CUDA", 0)
+    assert (_common.search_order(helix_wp) is not None) == wp.get_device(device).is_cuda
+
+
 def test_cross_device_inputs_are_rejected() -> None:
     """
     Ordito against ordito: a mixed-device sequence or pair must be rejected, not silently migrated.

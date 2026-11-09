@@ -28,7 +28,7 @@ from scipy.spatial import KDTree
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _launch
+from ordito import _common, _launch
 from ordito.kernels import neighbors as kernel_neighbors
 from tests.conversions import (
     meshlib_indices_to_numpy,
@@ -591,10 +591,11 @@ def test_query_nearest_single(
 
 @pytest.mark.parametrize("tree", ["built", "leaf_4", "padded"])
 @pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("ordered", [False, True])
 @pytest.mark.parity("query_nearest_bvh_k1", "scipy")
 @pytest.mark.parity("bvh_from_points", "scipy")
 def test_query_nearest_k1_descends_any_point_tree(
-    device: str, tree: str, wide: bool, monkeypatch: pytest.MonkeyPatch
+    device: str, tree: str, wide: bool, ordered: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Class A against ``KDTree``: the ``k = 1`` BVH search is a nearest-point descent of any tree.
@@ -606,8 +607,12 @@ def test_query_nearest_k1_descends_any_point_tree(
     cloud diameter off the cloud, the regime the descent exists for; indices and distances are
     both compared, and a ``max_radius`` row with nothing in range is left unfilled. ``wide``
     drops the query count that switches the launch to its wide block (a separate build of the
-    kernel) to zero, so the small input here takes it on CUDA too.
+    kernel) to zero, so the small input here takes it on CUDA too. ``ordered`` drops the gates of
+    ``_common.search_order`` so the rows are answered in Hilbert order, written back by row.
     """
+    if ordered:
+        monkeypatch.setattr(_common, "SEARCH_ORDER_MIN_QUERIES", 0)
+        monkeypatch.setattr(_common, "SEARCH_ORDER_LONG_FRACTION", 0.0)
     if wide:
         monkeypatch.setattr(kernel_neighbors, "DESCENT_WIDE_BLOCKS_PER_SM", 0)
     block_dim = kernel_neighbors.descent_block_dim(80, wp.get_device(device))

@@ -11,6 +11,7 @@ from ordito.kernels.array import (
     declare_map_signatures,
     map_probe,
     map_probe_single,
+    ordered_item,
     walk_item,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
@@ -1462,17 +1463,19 @@ def query_nearest_via_bvh(
     queries: wp.array[wp.vec3],
     query_max_radius: wp.float32,
     row_radii: wp.array[wp.float32],
+    order: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
-    # ``query_nearest``'s ``k = 1`` BVH-backend search, every row by the point tree's descent.
+    # ``query_nearest``'s ``k = 1`` BVH-backend search, every row by the point tree's descent,
+    # thread ``t`` answering row ``order[t]`` (``_common.search_order``; row ``t`` without one).
     # Differs from ``nearest_point_via_bvh`` only in answering every row rather than the grid's
     # deferred ones, which saves a ``DEFERRED_FAR_ROW`` pre-fill of the output.
-    tid = wp.int32(wp.tid())
-    max_radius = row_max_radius(query_max_radius, row_radii, tid)
-    index, distance = bvh_nearest_point(bvh_id, points, queries[tid], max_radius)
-    out_indices[tid, 0] = index
-    out_distances[tid, 0] = distance
+    row = ordered_item(order, wp.int32(wp.tid()))
+    max_radius = row_max_radius(query_max_radius, row_radii, row)
+    index, distance = bvh_nearest_point(bvh_id, points, queries[row], max_radius)
+    out_indices[row, 0] = index
+    out_distances[row, 0] = distance
 
 
 # Its own module for the same reason as ``query_nearest_via_bvh``.
@@ -1482,6 +1485,8 @@ def nearest_points_both_ways(
     first_points: wp.array[wp.vec3],
     second_tree: wp.uint64,
     second_points: wp.array[wp.vec3],
+    first_order: wp.array[wp.int32],
+    second_order: wp.array[wp.int32],
     out_indices: wp.array[wp.int32],
     out_distances: wp.array[wp.float32],
 ) -> None:
@@ -1489,22 +1494,27 @@ def nearest_points_both_ways(
     # against each other (``metrics``' symmetric cloud distances): thread ``t`` below
     # ``first_points``' length finds its point's nearest in ``second_points`` (``second_tree``
     # built over them), the rest find ``second_points``' nearest in ``first_points``, writing one
-    # concatenated row. Differs from ``query_nearest_via_bvh`` only in that choice of side and in
-    # having no radius; ``proximity.closest_faces_both_ways`` is the mesh pair's counterpart.
+    # concatenated row; each side's rows are taken in its ``_common.search_order``. Differs from
+    # ``query_nearest_via_bvh`` only in that choice of side and in having no radius;
+    # ``proximity.closest_faces_both_ways`` is the mesh pair's counterpart.
     tid = wp.int32(wp.tid())
     n_first = first_points.shape[0]
     index = wp.int32(-1)
     distance = wp.float32(0.0)
+    row = wp.int32(0)
     if tid < n_first:
+        row = ordered_item(first_order, tid)
         index, distance = bvh_nearest_point(
-            second_tree, second_points, first_points[tid], wp.float32(wp.inf)
+            second_tree, second_points, first_points[row], wp.float32(wp.inf)
         )
     else:
+        i = ordered_item(second_order, tid - n_first)
         index, distance = bvh_nearest_point(
-            first_tree, first_points, second_points[tid - n_first], wp.float32(wp.inf)
+            first_tree, first_points, second_points[i], wp.float32(wp.inf)
         )
-    out_indices[tid] = index
-    out_distances[tid] = distance
+        row = n_first + i
+    out_indices[row] = index
+    out_distances[row] = distance
 
 
 @wp.kernel

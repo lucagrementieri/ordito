@@ -52,6 +52,7 @@ from ordito._common import (
     read_values,
     require_same_device,
     scan_count,
+    search_order,
     tiled_ball_walk,
 )
 from ordito.constants import INT64_MAX, TILE_1D
@@ -1363,11 +1364,13 @@ def query_nearest(
         # readbacks) is computed, and a query far off the cloud costs what an on-surface one does.
         # The distances are the radius search's to the bit. One point a leaf when the call builds
         # the tree; a caller's tree is searched with whatever leaves it has.
+        # The order is chosen before the tree is built, so the read it may take waits on no build.
+        order = search_order(queries)
         tree = resolved if resolved is not None else bvh_from_points(points, leaf_size=1)
         _launch.launch(
             kernel_neighbors.query_nearest_via_bvh,
             dim=m,
-            inputs=[tree.id, points, queries, wp.float32(bound), row_radii],
+            inputs=[tree.id, points, queries, wp.float32(bound), row_radii, order],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
             block_dim=kernel_neighbors.descent_block_dim(m, device),

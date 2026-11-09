@@ -1086,6 +1086,16 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   with a skip before a scatter found no other such site: the rest skip rarely (guards), in a
   pattern (`scatter_scale_attribute`'s alternating run starts) or before work far dearer than a
   mispredict (`octree_density_splat`'s 27-term splat), where a zero commit adds the work back.
+- **Tree searches take scattered queries in Hilbert order** (2026-11-09, `_common.search_order`,
+  read through `kernels/array.ordered_item`: thread `t` answers query `order[t]` and writes its
+  row, so answers are unchanged): the `k = 1` point descent, `closest_point_on_mesh` and
+  `metrics`' pair forms. A warp of scattered queries walks a different subtree in every lane.
+  CUDA calls new/old: scrambled clouds of 437 k-4 M points 0.34-0.86x, and from 1 M points a
+  scan's own order too (0.63-0.88x: the tree outgrows L2); a coherent order between 262 k and 1 M
+  pays only the sampled test (one block, 2 048 samples, a readback: 1.03-1.05x). Nothing pays
+  below 2^18 (a scrambled 164 k cloud 1.00x, coherent 1.08-1.19x). CPU scrambled 0.48-0.78x,
+  coherent at par. Far-off coherent queries would also gain (lucy prefix 0.49x on the kernel) but
+  the test cannot see query depth.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
@@ -1218,13 +1228,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **Hilbert-ordered queries for an incoherent cloud** (2026-11-09 `metrics` sweep, out of its
-  scope): lucy's vertices queried in Hilbert order took the `k = 1` point descent 201 -> 98 ms and
-  `mesh_query_point_no_sign` 926 -> 682 ms (random order 1 697 / 2 699 ms), where bunny and dragon
-  (scan order already coherent) gain little or lose (mesh query 1.06-1.31x). Price a gated
-  reorder in `neighbors.query_nearest` / `proximity.closest_point_on_mesh` on lucy and a
-  scrambled mesh, the order's sort and the scatter back included; decide the gate on coherence,
-  not size.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

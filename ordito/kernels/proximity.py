@@ -10,6 +10,7 @@ from ordito.kernels.array import (
     lattice_position,
     lift_vec2,
     morton_frame,
+    ordered_item,
     to_vec3,
     to_vec3d,
 )
@@ -149,15 +150,17 @@ def closest_point_on_mesh(
     mesh_id: wp.uint64,
     points: wp.array[wp.vec3],
     max_dist: wp.float32,
+    order: wp.array[wp.int32],
     out_closest: wp.array[wp.vec3],
     out_distance: wp.array[wp.float32],
     out_face: wp.array[wp.int32],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    closest, distance, face = closest_point_query(mesh_id, points[tid], max_dist)
-    out_closest[tid] = closest
-    out_distance[tid] = distance
-    out_face[tid] = face
+    # Thread ``t`` answers point ``order[t]`` (``_common.search_order``; point ``t`` without one).
+    i = ordered_item(order, wp.int32(wp.tid()))
+    closest, distance, face = closest_point_query(mesh_id, points[i], max_dist)
+    out_closest[i] = closest
+    out_distance[i] = distance
+    out_face[i] = face
 
 
 @wp.kernel
@@ -166,13 +169,16 @@ def closest_faces_both_ways(
     first_points: wp.array[wp.vec3],
     second_mesh: wp.uint64,
     second_points: wp.array[wp.vec3],
+    first_order: wp.array[wp.int32],
+    second_order: wp.array[wp.int32],
     out_distance: wp.array[wp.float32],
     out_face: wp.array[wp.int32],
 ) -> None:
     # Two unbounded ``closest_point_on_mesh`` queries in one launch, for a pair of meshes measured
     # against each other (``metrics``' mesh-to-mesh distances): thread ``t`` below
     # ``first_points``' length queries ``first_mesh`` and the rest query ``second_mesh``, writing
-    # one concatenated row of distances and closest faces. The closest point itself is not stored;
+    # one concatenated row of distances and closest faces, each side's queries taken in its
+    # ``_common.search_order`` (index order for ``None``). The closest point itself is not stored;
     # the query is ``closest_point_query``'s, so the values are ``closest_point_on_mesh``'s.
     #
     # Declined (2026-11-09, CUDA, the benchmark pair of a mesh and its copy 5 % of the diagonal
@@ -187,14 +193,18 @@ def closest_faces_both_ways(
     n_first = first_points.shape[0]
     mesh_id = first_mesh
     p = wp.vec3()
+    row = wp.int32(0)
     if tid < n_first:
-        p = first_points[tid]
+        row = ordered_item(first_order, tid)
+        p = first_points[row]
     else:
         mesh_id = second_mesh
-        p = second_points[tid - n_first]
+        i = ordered_item(second_order, tid - n_first)
+        p = second_points[i]
+        row = n_first + i
     _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
-    out_distance[tid] = distance
-    out_face[tid] = face
+    out_distance[row] = distance
+    out_face[row] = face
 
 
 @wp.kernel
@@ -203,6 +213,8 @@ def closest_faces_and_nearest_points(
     points: wp.array[wp.vec3],
     points_tree: wp.uint64,
     vertices: wp.array[wp.vec3],
+    points_order: wp.array[wp.int32],
+    vertices_order: wp.array[wp.int32],
     out_distance: wp.array[wp.float32],
     out_index: wp.array[wp.int32],
 ) -> None:
@@ -211,19 +223,22 @@ def closest_faces_and_nearest_points(
     # ``closest_faces_both_ways``' query of ``mesh_id`` (built over ``vertices``) and writes the
     # closest face, the rest run ``neighbors.nearest_points_both_ways``' descent of
     # ``points_tree`` (built over ``points``) for a vertex and write the nearest point. The two
-    # searches are those kernels' own; this one differs only in pairing one of each.
+    # searches are those kernels' own; this one differs only in pairing one of each. Each side's
+    # rows are taken in its ``_common.search_order`` (index order for ``None``).
     tid = wp.int32(wp.tid())
     n_points = points.shape[0]
     index = wp.int32(-1)
     distance = wp.float32(0.0)
+    row = wp.int32(0)
     if tid < n_points:
-        _closest, distance, index = closest_point_query(mesh_id, points[tid], wp.float32(wp.inf))
+        row = ordered_item(points_order, tid)
+        _closest, distance, index = closest_point_query(mesh_id, points[row], wp.float32(wp.inf))
     else:
-        index, distance = bvh_nearest_point(
-            points_tree, points, vertices[tid - n_points], wp.float32(wp.inf)
-        )
-    out_distance[tid] = distance
-    out_index[tid] = index
+        i = ordered_item(vertices_order, tid - n_points)
+        index, distance = bvh_nearest_point(points_tree, points, vertices[i], wp.float32(wp.inf))
+        row = n_points + i
+    out_distance[row] = distance
+    out_index[row] = index
 
 
 @wp.kernel

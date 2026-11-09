@@ -833,3 +833,50 @@ def space_filling_order(
     )
     _launch.radix_sort_pairs(keys, order, count=n, end_bit=30)
     return _launch.view(order, 0, n)
+
+
+# ``search_order``'s gates (CUDA calls of ``query_nearest(k=1)`` and ``closest_point_on_mesh``,
+# build included, new/old). Below ``SEARCH_ORDER_MIN_QUERIES`` a search launch is too short for an
+# order to repay its test and sort (a scrambled 164 k-point cloud 1.00x, a coherent one 1.08-1.19x).
+# From ``SEARCH_ORDER_ALWAYS_QUERIES_CUDA`` on CUDA the trees outgrow L2 and the order pays on a
+# scan's own order too (lucy prefixes of 1 M and 4 M points: 0.63-0.88x; scrambled 0.34-0.67x).
+# Between them it pays only on a scrambled order (dragon, happy_buddha: 0.63-0.86x), which
+# ``count_long_steps`` detects from ``SEARCH_ORDER_SAMPLES`` samples (a scan or a mesh's vertices
+# count 0.03-0.41 of them long, a scrambled order 0.82-0.99); a coherent order there pays the test
+# alone, 1.03-1.05x. The CPU takes the test at every size from the floor (scrambled 0.48-0.78x,
+# coherent at par up to the 1 M points measured), and never orders a coherent one unasked.
+SEARCH_ORDER_MIN_QUERIES = 1 << 18
+SEARCH_ORDER_ALWAYS_QUERIES_CUDA = 1 << 20
+SEARCH_ORDER_SAMPLES = 2048
+SEARCH_ORDER_LONG_FRACTION = 0.6
+
+
+def search_order(queries: wp.array[wp.vec3]) -> wp.array[wp.int32] | None:
+    """
+    Return the order a tree search should take ``queries`` in, or ``None`` for index order.
+
+    A search launch over queries whose consecutive threads lie far apart walks a different part of
+    the tree in every lane of a warp. [`space_filling_order`][ordito._common.space_filling_order]
+    makes each warp a compact patch; the kernels taking the result read it through
+    ``kernels/array.ordered_item``, so their answers do not depend on it. See
+    ``SEARCH_ORDER_MIN_QUERIES`` for when it is chosen; between the two gates the choice costs one
+    small launch and a readback.
+    """
+    m = queries.size
+    if m < SEARCH_ORDER_MIN_QUERIES:
+        return None
+    device = queries.device
+    if not (wp.get_device(device).is_cuda and m >= SEARCH_ORDER_ALWAYS_QUERIES_CUDA):
+        count = _launch.empty(1, dtype=wp.int32, device=device)
+        _launch.launch_tiled(
+            kernel_array.count_long_steps,
+            dim=[1],
+            inputs=[queries, SEARCH_ORDER_SAMPLES],
+            outputs=[count],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        # The order's choice: a sort of every query is the cost the read decides against.
+        if read_scalar(count, index=0) < SEARCH_ORDER_LONG_FRACTION * SEARCH_ORDER_SAMPLES:
+            return None
+    return space_filling_order(queries)

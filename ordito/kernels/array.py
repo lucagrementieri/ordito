@@ -1859,6 +1859,39 @@ def point_curve_keys(
     out_order[i] = i
 
 
+@wp.kernel(enable_backward=False)
+def count_long_steps(
+    points: wp.array[wp.vec3], samples: wp.int32, out_count: wp.array[wp.int32]
+) -> None:
+    # How scattered the order of ``points`` is, for ``_common.search_order``: one block takes
+    # ``samples`` points spread over the array and counts those whose step to the next point is
+    # longer than an eighth of the way to the point half the array away (a stand-in for a random
+    # partner). A scan or a mesh's vertices step to a neighbour and count a few in ten (the jumps
+    # between scan lines); a scrambled order counts nearly all. Lanes stride the samples by
+    # ``wp.block_dim()`` (the CPU's one lane takes them all); ``points`` has at least two entries.
+    _block, lane = wp.tid()
+    n = points.shape[0]
+    count = wp.int32(0)
+    for s in range(lane, samples, wp.block_dim()):
+        i = wp.int32((wp.int64(s) * wp.int64(n - 1)) // wp.int64(samples))
+        here = points[i]
+        step = wp.length_sq(points[i + 1] - here)
+        reach = wp.length_sq(points[(i + n // 2) % n] - here)
+        count += wp.where(step * wp.float32(64.0) > reach, 1, 0)
+    total = wp.tile_sum(wp.tile(count))[0]
+    if lane == 0:
+        out_count[0] = total
+
+
+@wp.func
+def ordered_item(order: wp.array[wp.int32], tid: wp.int32) -> wp.int32:
+    # The item thread ``tid`` takes: ``order[tid]``, or ``tid`` itself when ``order`` is empty
+    # (``None`` at the launch), so one kernel serves an ordered and an index-order launch.
+    if order.shape[0] == 0:
+        return tid
+    return order[tid]
+
+
 # Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
 # items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
 # grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer
