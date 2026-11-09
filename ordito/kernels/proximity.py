@@ -180,7 +180,9 @@ def closest_faces_both_ways(
     # to bunny but 1.17x on dragon (leaf 2 1.04x, leaf 8 1.06x there); the ``sah`` and ``median``
     # builders query 0.84-0.87x on dragon but build 400x slower, cuBQL 0.79-0.93x for a build
     # 23-115x; queries in Hilbert order 1.06-1.31x on bunny and dragon (0.74x on lucy only, before
-    # paying for the order).
+    # paying for the order); 32- or 64-lane blocks for the few thousand queries of a small pair,
+    # 0.85-0.88x on sphere_small but 0.99-1.18x from bunny_decimated up, a size gate and a second
+    # module build for the smallest meshes alone.
     tid = wp.int32(wp.tid())
     n_first = first_points.shape[0]
     mesh_id = first_mesh

@@ -1218,6 +1218,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   occurrences in `grouping.hashed_occurrence_counts`' Fibonacci-homed table (lucy `2**28` slots,
   the shape that tied the sort). Both could take `insert_edge_key`'s homing (the second needs a
   count beside each key); price each on lucy and a scrambled mesh.
+- **Hilbert-ordered queries for an incoherent cloud** (2026-11-09 `metrics` sweep, out of its
+  scope): lucy's vertices queried in Hilbert order took the `k = 1` point descent 201 -> 98 ms and
+  `mesh_query_point_no_sign` 926 -> 682 ms (random order 1 697 / 2 699 ms), where bunny and dragon
+  (scan order already coherent) gain little or lose (mesh query 1.06-1.31x). Price a gated
+  reorder in `neighbors.query_nearest` / `proximity.closest_point_on_mesh` on lucy and a
+  scrambled mesh, the order's sort and the scatter back included; decide the gate on coherence,
+  not size.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
