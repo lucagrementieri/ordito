@@ -1137,6 +1137,15 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
+- **The stitch DP's tile-diagonal schedule doubles its critical path (2026-11-09 holes sweep):**
+  `stitch_dp_tile` runs `2 T - 1` steps a tile and a launch a tile-diagonal, about `4 n` cell
+  steps for a grid whose dependency depth is `2 n`; at most ~17 one-warp blocks are resident, so a
+  step is the complex metric's arithmetic latency (~2.2 us). A warp a 32-row stripe sweeping its
+  columns in one launch, lane 0 waiting on the stripe above's published progress, would run
+  `n_a + n_b + 31` steps (~0.5x the kernel). It needs a cross-block spin-wait on blocks scheduled
+  in index order, which nothing in ordito does yet.
+- **The fill DP's `min_area` retry sweep costs 1.1-1.6x its primary sweep** (lucy 91 vs 58 ms,
+  dragon 10.3 vs 8.3, every loop retried): its branch and bound prunes less. Unexamined.
 - **`halfedge_mates`' bucket pipeline under `face_connected_component_labels`:** degree count,
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took

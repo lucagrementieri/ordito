@@ -1027,10 +1027,14 @@ def _fill_packed_loops(
         )
         # ...but *whether* any loop failed is worth one host read, because a pass with an all-zero
         # mask is still a full ``max(B) - 1`` launch sweep in which every thread returns
-        # immediately -- that is pure marshalling and buys nothing on its own. ``prev`` is read
-        # back a few lines below regardless, so this adds no synchronisation point that was not
-        # there. The flag kernel raises the test itself as it writes the mask, so it is one
-        # 4-byte read rather than a readback of the ``n_loops`` buffer or a reduction over it.
+        # immediately -- that is pure marshalling and buys nothing on its own. The flag kernel
+        # raises the test itself as it writes the mask, so it is one 4-byte read rather than a
+        # readback of the ``n_loops`` buffer or a reduction over it.
+        #
+        # Declined (2026-11-09): issuing a short retry sweep (up to 8 spans) unread, its inactive
+        # loops' blocks returning at once, on CUDA. The read is short by then and the launch is
+        # not: ``holes_many`` / ``holes_dense`` fill_min_weight and fill_small 1.03-1.05x, the
+        # refill rows flat.
         if read_scalar(state, kernel_holes.FILL_STATE_RETRY) > 0:
             _run_hole_dp(
                 loops,
