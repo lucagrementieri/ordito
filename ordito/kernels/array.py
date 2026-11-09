@@ -768,6 +768,19 @@ def mark_at(out_mask: wp.array[wp.bool], index: wp.int32) -> None:
 
 
 @wp.func
+def mark_first(marks: wp.array[wp.int32], index: wp.int32) -> wp.int32:
+    # 1 for the one call that sets ``marks[index]`` from 0, else 0: a set's first arrival, which
+    # counts distinct indices in the pass that marks them. The plain read first skips the atomic
+    # for an index already marked, the usual case for a vertex shared by several faces. An index
+    # outside ``marks`` counts nothing and writes nothing (``mark_at``'s guard).
+    if index < 0 or index >= marks.shape[0]:
+        return 0
+    if marks[index] != 0:
+        return 0
+    return wp.where(wp.atomic_max(marks, index, 1) == 0, 1, 0)
+
+
+@wp.func
 def shifted_index(value: wp.Scalar, offset: wp.Scalar, last: wp.Scalar) -> wp.int32:
     # Position of ``value`` in a table anchored at ``offset`` and holding values up to ``last``
     # inclusive, or ``-1`` for a value outside ``[offset, last]``.

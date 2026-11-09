@@ -5,6 +5,7 @@ import warp as wp
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     OverloadTable,
+    pack_edge_key,
     pack_triangle_key,
     sorted_run_end_galloping,
     sorted_run_start,
@@ -164,6 +165,72 @@ def encode_key(key: wp.Int) -> wp.Int:
 def decode_key(stored: wp.Int) -> wp.Int:
     zero = stored - stored
     return stored + (~zero)
+
+
+# Probes an edge key takes among its lower vertex's slots before ``insert_edge_key`` sends it to
+# a hashed home: enough for a vertex's edges on a manifold (about three an end), and a hub's
+# other edges leave its neighbourhood rather than queue behind one another.
+EDGE_KEY_LOCAL_PROBES = 8
+# Slots a vertex owns at most in ``insert_edge_key``'s table.
+EDGE_KEY_SLOTS_PER_VERTEX = 8
+
+
+def edge_key_table_shape(n_faces: int, n_vertices: int) -> tuple[int, int, int]:
+    """
+    ``(slots a vertex, capacity, global mask)`` of ``insert_edge_key``'s table.
+
+    The fewest powers of two of slots a vertex, up to ``EDGE_KEY_SLOTS_PER_VERTEX``, that cover
+    ``4 * n_faces``, and at least that many slots in all, so the ``3 * n_faces`` keys a face buffer
+    can hold fill at most three quarters of the table and every probe ends. The global mask is the
+    largest power of two less one below the capacity, for the hashed homes. A host helper beside
+    its kernel helpers because every table this way is sized by it.
+    """
+    per = 1
+    while per < EDGE_KEY_SLOTS_PER_VERTEX and per * n_vertices < 4 * n_faces:
+        per *= 2
+    capacity = max(per * n_vertices, 4 * n_faces)
+    return per, capacity, (1 << (capacity.bit_length() - 1)) - 1
+
+
+@wp.func
+def insert_edge_key(
+    table: wp.array[wp.int64],
+    i: wp.int32,
+    j: wp.int32,
+    base: wp.uint64,
+    per: wp.int32,
+    global_mask: wp.int32,
+) -> wp.int32:
+    # 1 when this call inserts the undirected edge ``(i, j)`` (``pack_edge_key``, stored plus one
+    # so 0 is the empty slot) into a zeroed open-addressing set, 0 when the edge was there: one
+    # count a unique edge, with no table to compact. Homed among the ``per`` slots of its lower
+    # vertex (``edge_key_table_shape``), so faces in index order touch neighbouring slots and the
+    # table stays in cache where a hashed home made every insert a random DRAM atomic (lucy:
+    # 5.5 ms against 12.1, the radix sort's time); after ``EDGE_KEY_LOCAL_PROBES`` taken slots
+    # the probe moves to a Fibonacci home (``hash_slot``), so a hub's edges spread. Linear probes,
+    # wrapping at the end of the table; a duplicate always walks the same sequence, so it finds
+    # the stored key before any empty slot. An index the table was not sized for (below zero or
+    # past the vertex count) takes the hashed home at once, so no probe leaves the table.
+    stored = wp.int64(pack_edge_key(i, j, base)) + wp.int64(1)
+    capacity = table.shape[0]
+    h = wp.min(i, j) * per + hash_slot(wp.int64(wp.max(i, j)), per - 1)
+    if h < 0 or h >= capacity:
+        h = hash_slot(stored, global_mask)
+    for probe in range(capacity):
+        current = table[h]
+        if current == stored:
+            return 0
+        if current == wp.int64(0):
+            previous = wp.atomic_cas(table, h, wp.int64(0), stored)
+            if previous == wp.int64(0):
+                return 1
+            if previous == stored:
+                return 0
+        if probe + 1 == EDGE_KEY_LOCAL_PROBES:
+            h = hash_slot(stored, global_mask)
+        else:
+            h = wp.where(h + 1 == capacity, 0, h + 1)
+    return 0
 
 
 # ---------------------------------------------------------------------------

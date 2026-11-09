@@ -156,12 +156,13 @@ def test_volume(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_euler_characteristic(bench_case: BenchCase) -> None:
     """
-    ``V - E + F`` over the referenced vertices and the unique edges: two host readbacks.
+    ``V - E + F`` over the referenced vertices and the unique edges: one launch, one readback.
 
-    One for the index bound (the mask and the key radix need it on the host), one for both counts,
-    which fold in a single launch over the referenced-vertex mask and the sorted edge keys' run
-    starts. The trimesh row is the uncached ``euler_number`` on a fresh ``Trimesh`` (its own
-    ``edges_unique`` grouping and referenced-vertex count).
+    The vertex marks and an open-addressing edge set homed at each edge's lower vertex count
+    their first arrivals in one pass (no sort), and both counts come back in one read; the row
+    passes the vertex count, so the index-bound read of the inferred path is not timed. The
+    trimesh row is the uncached ``euler_number`` on a fresh ``Trimesh`` (its own ``edges_unique``
+    grouping and referenced-vertex count).
     """
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp

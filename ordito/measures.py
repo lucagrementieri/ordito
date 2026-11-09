@@ -33,6 +33,7 @@ import ordito as od
 from ordito import _launch
 from ordito._common import read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 
@@ -364,39 +365,29 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
     if n_faces == 0:
         return 0
 
-    # The bound is taken once, here, so ``edges_unique`` re-checking it would reduce the same
-    # indices twice; ``require_non_negative`` keeps the half of that check a derived bound cannot
-    # give, and costs nothing -- both ends come out of the one reduction.
+    # The bound sizes the marks and the edge set; ``require_non_negative`` keeps the half of an
+    # index check a derived bound cannot give, and costs nothing -- both ends come out of the one
+    # reduction.
     if n_vertices is None:
         n_vertices = od.array.index_bound(faces, require_non_negative=True)
     elif n_vertices <= 0:
         raise ValueError(f"n_vertices must be positive, got {n_vertices}")
     device = faces.device
-    n = 3 * n_faces
-    # The referenced-vertex count is a membership mask's popcount rather than the length of
-    # ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set
-    # without the hash table, compaction and sort, and the count is one read instead of two. The
-    # mask is marked in the pass that packs the halfedge keys into the sort's buffer, over the
-    # bits a key below ``n_vertices ** 2`` can set; the sort's payload is never read.
-    referenced = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
-    keys, payload = _launch.sort_buffers(n, wp.uint64, device)
-    _launch.launch(
-        kernel_measures.face_edge_keys_and_referenced,
-        dim=n_faces,
-        inputs=[faces, wp.uint64(n_vertices), keys, referenced],
-        device=device,
-    )
-    _launch.radix_sort_pairs(
-        keys, payload, count=n, end_bit=_launch.key_bits(n_vertices * n_vertices)
-    )
-    sorted_keys = _launch.view(keys, 0, n)
-    # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run
-    # scan and no emitted edge table. Both counts fold in one launch and come back in one read.
-    counts = _launch.zeros(2, dtype=wp.int32, device=device)
+    # Both counts come out of one pass that sets each vertex's mark and inserts each edge into an
+    # open-addressing set, counting first arrivals: no sort, no run scan and no edge table. The
+    # set, the marks and the two counts share one zeroed allocation (the table's ``int64`` slots,
+    # the marks and counts its ``int32`` tail).
+    per, capacity, global_mask = kernel_grouping.edge_key_table_shape(n_faces, n_vertices)
+    buffer = _launch.zeros(capacity + (n_vertices + 3) // 2, dtype=wp.int64, device=device)
+    table = _launch.view(buffer, 0, capacity)
+    tail = _launch.view_as(_launch.view(buffer, capacity, buffer.size), wp.int32)
+    marks = _launch.view(tail, 0, n_vertices)
+    counts = _launch.view(tail, n_vertices, n_vertices + 2)
+    width, blocks = kernel_reduce.spanned_blocks_1d(n_faces, device)
     _launch.launch_tiled(
         kernel_measures.referenced_vertex_and_unique_edge_counts,
-        dim=[kernel_reduce.blocks_1d(max(n_vertices, n))],
-        inputs=[referenced, sorted_keys, max(n_vertices, n), counts],
+        dim=[blocks],
+        inputs=[faces, wp.uint64(n_vertices), per, global_mask, width, table, marks, counts],
         block_dim=TILE_1D,
         device=device,
     )

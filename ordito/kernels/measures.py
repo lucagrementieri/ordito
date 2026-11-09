@@ -3,8 +3,8 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.adjacency import write_face_edge_keys
-from ordito.kernels.array import OverloadTable, mark_at, sorted_run_start
+from ordito.kernels.array import OverloadTable, mark_first
+from ordito.kernels.grouping import insert_edge_key
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -18,6 +18,7 @@ from ordito.kernels.reduce import (
 )
 from ordito.kernels.triangles import (
     block_area_weighted_centroid_sum,
+    corner_triple,
     face_signed_volume,
     face_vertices_vec3d,
 )
@@ -228,47 +229,33 @@ MESH_SIGNED_VOLUME: OverloadTable
 
 
 @wp.kernel
-def face_edge_keys_and_referenced(
+def referenced_vertex_and_unique_edge_counts(
     faces: wp.array[wp.int32],
     base: wp.uint64,
-    out_keys: wp.array[wp.uint64],
-    out_referenced: wp.array[wp.bool],
-) -> None:
-    # ``measures.euler_characteristic``'s one pass over the faces: the three undirected edge keys
-    # of face ``f`` (``adjacency.write_face_edge_keys``, into the leading half of the radix sort's
-    # buffer) and the referenced-vertex mask its corners mark (``array.indices_to_mask``'s
-    # scatter). No identity payload: the count reads only the sorted keys.
-    f = wp.int32(wp.tid())
-    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
-    for k in range(3):
-        mark_at(out_referenced, faces[3 * f + k])
-
-
-@wp.kernel
-def referenced_vertex_and_unique_edge_counts(
-    referenced: wp.array[wp.bool],
-    sorted_keys: wp.array[wp.uint64],
-    n_items: wp.int32,
+    per: wp.int32,
+    global_mask: wp.int32,
+    width: wp.int32,
+    table: wp.array[wp.int64],
+    marks: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``measures.euler_characteristic``'s two counts in one fold, committed into a zeroed two-slot
-    # buffer the wrapper reads once: slot 0 the ``True`` entries of the referenced-vertex mask,
-    # slot 1 the run starts of the sorted edge keys (one per unique edge, which is what
-    # ``edges.edges_unique``'s scan tail counts). ``n_items`` is the longer of the two arrays;
-    # each test is bounded by its own array's length. Lane-strided by ``wp.block_dim()``.
+    # ``measures.euler_characteristic``'s one pass over the faces: slot 0 of ``out_counts`` the
+    # distinct referenced vertices (``array.mark_first`` on ``marks``), slot 1 the unique edges
+    # (``grouping.insert_edge_key`` into the zeroed ``table``), each counted by the face that
+    # first meets it. A block owns ``width`` faces (``reduce.spanned_blocks_1d``: a face is three
+    # dependent probe chains, so a lane takes few) and commits its two counts once.
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(n_items, block)
-    n_vertices = referenced.shape[0]
-    n_keys = sorted_keys.shape[0]
+    offset, count = block_chunk(faces.shape[0] // 3, block, width)
     local = wp.vec2i(0, 0)
     for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        if i < n_vertices:
-            if referenced[i]:
-                local += wp.vec2i(1, 0)
-        if i < n_keys:
-            if sorted_run_start(sorted_keys, i):
-                local += wp.vec2i(0, 1)
+        i0, i1, i2 = corner_triple(faces, offset + k)
+        vertices = mark_first(marks, i0) + mark_first(marks, i1) + mark_first(marks, i2)
+        edges = (
+            insert_edge_key(table, i0, i1, base, per, global_mask)
+            + insert_edge_key(table, i1, i2, base, per, global_mask)
+            + insert_edge_key(table, i2, i0, base, per, global_mask)
+        )
+        local += wp.vec2i(vertices, edges)
     commit_block_sum(lane, local, out_counts, 0)
 
 
