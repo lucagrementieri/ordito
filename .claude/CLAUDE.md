@@ -1076,7 +1076,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   pattern (`scatter_scale_attribute`'s alternating run starts) or before work far dearer than a
   mispredict (`octree_density_splat`'s 27-term splat), where a zero commit adds the work back.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
-- **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read.
+- **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
 - **Readback cadence in idempotent loops:** rounds past a fixpoint are no-ops (but not free on the device: see CUDA graph capture), so read the stop count every few rounds: the MIS undecided count after round 7 and then every 2 (multigrid setup readbacks halved), flip rounds `min(4, (budget - flips_since_build) // (n_faces / 2) + 1)` per read behind the idle gate (`delaunay_triangulation` 39 to 21). A deterministic composite skips a stage while the mesh is still that idempotent stage's own last output (`make_solid`).
 - **Bellman-Ford over a CSR with duplicate entries** gives the same distances but pays per stored entry: 0.5x at 328 k faces (`geodesic_path` completion graph from vertex-face rows).
@@ -1195,6 +1195,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
+- **The capped clip's section is ear-clipping time** (2026-11-09 intersection sweep):
+  `clip_mesh_with_field(cap=True)` spends 2.4 of 4.3 ms on dragon and 8.4 of 23 ms on lucy in
+  `polyline`'s packed-ring ear loop (graph replays and `triangulate_rings`), against ~0.1 ms for
+  the clip. Not yet diagnosed whether the scan sections hit the thin-ring zipper above or the
+  unpriced packed-ring capture. Also open there: the cut faces' bitset
+  (`kernels/intersection.mesh_with_plane_flags`) wins only on device-bound meshes (lucy 0.60x)
+  and would need a size gate keeping both forms.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

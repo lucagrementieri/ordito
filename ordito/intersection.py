@@ -1386,6 +1386,12 @@ def _candidate_face_pairs(
 
     if target_mesh is None:
         require_nonempty_mesh(target_faces, caller)
+        # DECLINED (2026-11-09): ``bvh_leaf_size=1`` for this tree. The build costs the same and
+        # the box walk 0.74-0.82x (bunny, dragon), the deep-overlap calls 0.95-0.97x and grazing
+        # at par; but the walk order, and with it the pairs' order, then differs from a caller's
+        # ``Trimesh.warp_mesh`` (Warp's default leaf), which must give the identical array
+        # (``test_mesh_collision_pairs_prebuilt_mesh_matches``). A bare ``wp.Bvh`` over the face
+        # boxes saves 15-20 us of the ~200 us build and would need a second walk form.
         target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
     targets, counts, stride, tail = _face_box_candidates(
@@ -1858,6 +1864,11 @@ def split_mesh_with_plane(
             inputs=[keys, key_base, rank],
             device=device,
         )
+        # DECLINED (2026-11-09): sizing ``new_vertices`` for every crossed halfedge and reading
+        # the crossed edges' count after the emit (a prefix view returned), so no launch waits on
+        # the read. Byte-identical, but 1.01-1.07x from ``bunny_decimated`` to ``happy_buddha``
+        # (``split_faces_along_field`` the same, 1.00-1.05x), at par on ``lucy``; the cause was
+        # not isolated.
         n_new = _scan_cut_flags(rank)
         new_vertices = _launch.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
         # The same launch copies the input positions to the front of ``new_vertices``.
@@ -2450,7 +2461,6 @@ def _split_with_vertex_field(
         ],
         device=device,
     )
-
     return all_vertices, all_faces, positive
 
 

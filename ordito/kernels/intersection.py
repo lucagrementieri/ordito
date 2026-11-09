@@ -208,6 +208,15 @@ def mesh_with_plane_flags(
     out_cut: wp.array[wp.int32],
 ) -> None:
     # A ``0`` / ``1`` flag a face, whether the plane cuts it, which the caller scans in place.
+    #
+    # DECLINED (2026-11-09): a counted ballot bit a face (``store_counted_ballot_bit``) and the
+    # compaction launched over the set bits (``_launch.set_bit_launch``), here and in
+    # ``marching_triangles_flags``. Byte-identical on both devices, and 0.60x on ``lucy`` (28 M
+    # faces, device-bound), but 1.26-1.38x from ``bunny_decimated`` to ``happy_buddha`` (+11-17
+    # us): the zeroed words-and-counts buffer and its views cost 11 us of host against 3.5 us for
+    # the flags' ``empty``, and its memset sits ahead of the readback; marching triangles
+    # 1.02-1.10x on ``sphere_small`` to ``sphere_large``. Only a size gate keeping both forms
+    # would take lucy's win.
     f = wp.int32(wp.tid())
     valid, _p0, _p1 = plane_face_segment(vertices, faces, plane_normal, plane_origin, f)
     out_cut[f] = wp.where(valid, 1, 0)
