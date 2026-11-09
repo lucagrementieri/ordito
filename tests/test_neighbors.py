@@ -610,7 +610,7 @@ def test_query_nearest_k1_descends_any_point_tree(
     """
     if wide:
         monkeypatch.setattr(kernel_neighbors, "DESCENT_WIDE_BLOCKS_PER_SM", 0)
-    block_dim = od.neighbors._descent_block_dim(80, wp.get_device(device))  # pyright: ignore[reportPrivateUsage]
+    block_dim = kernel_neighbors.descent_block_dim(80, wp.get_device(device))
     assert block_dim == (
         kernel_neighbors.DESCENT_WIDE_BLOCK_DIM if wide and "cuda" in device else 256
     )

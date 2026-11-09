@@ -1370,7 +1370,7 @@ def query_nearest(
             inputs=[tree.id, points, queries, wp.float32(bound), row_radii],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
-            block_dim=_descent_block_dim(m, device),
+            block_dim=kernel_neighbors.descent_block_dim(m, device),
         )
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
@@ -1504,22 +1504,6 @@ def query_nearest(
             neighbor_distances,
         )
     return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
-
-
-def _descent_block_dim(m: int, device: wp.Device | None) -> int:
-    """
-    Block width of the ``k = 1`` descent over ``m`` queries: wide once the launch fills the device.
-
-    See ``kernel_neighbors.DESCENT_WIDE_BLOCK_DIM``; the CPU device takes the default.
-    """
-    wide = int(kernel_neighbors.DESCENT_WIDE_BLOCK_DIM)
-    if (
-        device is not None
-        and device.is_cuda
-        and m >= int(kernel_neighbors.DESCENT_WIDE_BLOCKS_PER_SM) * device.sm_count * wide
-    ):
-        return wide
-    return 256
 
 
 def _finish_deferred_nearest(

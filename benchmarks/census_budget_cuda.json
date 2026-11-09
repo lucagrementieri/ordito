@@ -4629,15 +4629,15 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 3,
    "d2h": 1
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_coincident[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 3,
    "d2h": 1
   }
  },
@@ -4650,8 +4650,8 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_loss[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
-   "launch": 6,
-   "alloc": 6,
+   "launch": 5,
+   "alloc": 4,
    "memset": 6
   }
  },
@@ -4673,8 +4673,8 @@
  },
  "benchmarks/test_metrics.py::test_hausdorff_points_to_points[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
+   "launch": 2,
+   "alloc": 4,
    "memset": 1,
    "d2h": 1
   }

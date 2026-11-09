@@ -1436,6 +1436,23 @@ DESCENT_WIDE_BLOCK_DIM = 1024
 DESCENT_WIDE_BLOCKS_PER_SM = 2
 
 
+def descent_block_dim(m: int, device: wp.Device | None) -> int:
+    """
+    Block width of a ``k = 1`` descent launch over ``m`` queries: wide once it fills the device.
+
+    The CPU device takes the default. Read by every launch of ``query_nearest_via_bvh`` and
+    ``nearest_points_both_ways``.
+    """
+    wide = int(DESCENT_WIDE_BLOCK_DIM)
+    if (
+        device is not None
+        and device.is_cuda
+        and m >= int(DESCENT_WIDE_BLOCKS_PER_SM) * device.sm_count * wide
+    ):
+        return wide
+    return 256
+
+
 # Its own module (``module="unique"``): a launch's block width is a compile-time parameter of the
 # module launched, so the wide launch builds this kernel alone at 1024 rather than all of this one.
 @wp.kernel(module="unique")
@@ -1456,6 +1473,38 @@ def query_nearest_via_bvh(
     index, distance = bvh_nearest_point(bvh_id, points, queries[tid], max_radius)
     out_indices[tid, 0] = index
     out_distances[tid, 0] = distance
+
+
+# Its own module for the same reason as ``query_nearest_via_bvh``.
+@wp.kernel(module="unique")
+def nearest_points_both_ways(
+    first_tree: wp.uint64,
+    first_points: wp.array[wp.vec3],
+    second_tree: wp.uint64,
+    second_points: wp.array[wp.vec3],
+    out_indices: wp.array[wp.int32],
+    out_distances: wp.array[wp.float32],
+) -> None:
+    # Two unbounded ``query_nearest_via_bvh`` searches in one launch, for a pair of clouds measured
+    # against each other (``metrics``' symmetric cloud distances): thread ``t`` below
+    # ``first_points``' length finds its point's nearest in ``second_points`` (``second_tree``
+    # built over them), the rest find ``second_points``' nearest in ``first_points``, writing one
+    # concatenated row. Differs from ``query_nearest_via_bvh`` only in that choice of side and in
+    # having no radius; ``proximity.closest_faces_both_ways`` is the mesh pair's counterpart.
+    tid = wp.int32(wp.tid())
+    n_first = first_points.shape[0]
+    index = wp.int32(-1)
+    distance = wp.float32(0.0)
+    if tid < n_first:
+        index, distance = bvh_nearest_point(
+            second_tree, second_points, first_points[tid], wp.float32(wp.inf)
+        )
+    else:
+        index, distance = bvh_nearest_point(
+            first_tree, first_points, second_points[tid - n_first], wp.float32(wp.inf)
+        )
+    out_indices[tid] = index
+    out_distances[tid] = distance
 
 
 @wp.kernel

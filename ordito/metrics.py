@@ -52,6 +52,7 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import metrics as kernel_metrics
+from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import reduce as kernel_reduce
 
@@ -637,10 +638,16 @@ def chamfer_points_to_points_loss(
 
     # Non-differentiable nearest-neighbor indices (computed outside the tape). The backward search
     # is chosen from the forward one's own distances -- see `_backward_nearest`.
-    nearest_xy, distance_xy = _nearest(y, x)
+    if single_directional or _backward_may_take_grid(x):
+        nearest_xy, distance_xy = _nearest(y, x)
+        nearest_yx = None
+        if not single_directional:
+            nearest_yx = _backward_nearest(x, y, distance_xy, nearest_xy)[0][0]
+    else:
+        nearest, _ = _nearest_both_ways(x, y)
+        nearest_xy, nearest_yx = _launch.view(nearest, 0, n), _launch.view(nearest, n, n + m)
     terms: list[_ChamferTerm] = [_NnTerm(x, y, nearest_xy, _reduction_scale(point_reduction, n))]
-    if not single_directional:
-        nearest_yx = _backward_nearest(x, y, distance_xy, nearest_xy)[0][0]
+    if nearest_yx is not None:
         terms.append(_NnTerm(y, x, nearest_yx, _reduction_scale(point_reduction, m)))
 
     _accumulate_chamfer_terms(tape, terms, loss, squared=squared)
@@ -1271,6 +1278,12 @@ def _distances_points_to_points(
     """Nearest-neighbour distances between two clouds, both directions unless directed."""
     if x.size == 0 or y.size == 0:
         return None
+    if not single_directional and not _backward_may_take_grid(x):
+        _, distances = _nearest_both_ways(x, y)
+        n = x.size
+        return _Distances(
+            _launch.view(distances, 0, n), _launch.view(distances, n, n + y.size), None
+        )
     nearest_forward, distance_forward = _nearest(y, x)
     d_forward = distance_forward
     if single_directional:
@@ -1316,6 +1329,40 @@ def _nearest(
     return od.neighbors.query_nearest(points, queries, k=1, backend="bvh")
 
 
+def _nearest_both_ways(
+    x: wp.array[wp.vec3], y: wp.array[wp.vec3]
+) -> tuple[odt.Array1dInt32, odt.Array1dFloat32]:
+    """
+    Both directions of a cloud pair's ``k = 1`` search in one launch, over two point trees.
+
+    ``(n_x + n_y,)`` indices and distances: each ``x`` point's nearest in ``y`` first, then each
+    ``y`` point's nearest in ``x``, each exactly what [`_nearest`][ordito.metrics._nearest]
+    returns for it. Two small descents launched apart are each too few threads to fill the device;
+    one launch over both rows is the symmetric pair's cost below the size where
+    [`_backward_nearest`][ordito.metrics._backward_nearest] may take the grid.
+    """
+    device = x.device
+    tree_x = od.neighbors.bvh_from_points(x, leaf_size=1)
+    tree_y = od.neighbors.bvh_from_points(y, leaf_size=1)
+    n_rows = x.size + y.size
+    indices = odt.empty_1d(n_rows, wp.int32, device=device)
+    distances = odt.empty_1d(n_rows, wp.float32, device=device)
+    _launch.launch(
+        kernel_neighbors.nearest_points_both_ways,
+        dim=n_rows,
+        inputs=[tree_x.id, x, tree_y.id, y],
+        outputs=[indices, distances],
+        device=device,
+        block_dim=kernel_neighbors.descent_block_dim(n_rows, wp.get_device(device)),
+    )
+    return indices, distances
+
+
+def _backward_may_take_grid(points: wp.array[wp.vec3]) -> bool:
+    """Whether [`_backward_nearest`][ordito.metrics._backward_nearest] reads the forward answer."""
+    return wp.get_device(points.device).is_cuda and points.size >= _GRID_BACKWARD_MIN_POINTS
+
+
 def _backward_nearest(
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
@@ -1358,7 +1405,7 @@ def _backward_nearest(
     """
     n = points.size
     device = points.device
-    if not wp.get_device(device).is_cuda or n < _GRID_BACKWARD_MIN_POINTS:
+    if not _backward_may_take_grid(points):
         return _nearest(points, queries), None
     m = queries.size
     scale = _launch.array(_SCALE_SEED, dtype=wp.float32, device=device)

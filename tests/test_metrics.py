@@ -328,8 +328,8 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     choice and the spy asserts the arm was taken -- a pairing that silently took the other search
     would leave one of the two unexercised. The fixture is far below the cloud size the choice is
     considered at, so ``size_gate=False`` lowers that threshold to reach it; with the threshold in
-    place every pairing takes the descent, and so does every pairing on the CPU, where the choice
-    is never made.
+    place every pairing takes both directions' descents in one launch, with no
+    ``query_nearest`` call, and so does every pairing on the CPU, where the choice is never made.
     """
     if not size_gate:
         monkeypatch.setattr(od.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
@@ -353,7 +353,7 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
         squared=True,
     )
     chooses = not size_gate and wp.get_device(device).is_cuda
-    assert backends == ["bvh", _BACKWARD_BACKEND[pairing] if chooses else "bvh"]
+    assert backends == (["bvh", _BACKWARD_BACKEND[pairing]] if chooses else [])
     assert np.allclose(np.sqrt(forward_wp.numpy()), distance_xy_np, rtol=1e-5, atol=1e-6)
     assert np.allclose(np.sqrt(backward_wp.numpy()), distance_yx_np, rtol=1e-5, atol=1e-6)
 
