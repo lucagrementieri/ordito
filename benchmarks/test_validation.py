@@ -144,7 +144,7 @@ def test_vertex_manifold_mask(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "igl", "open3d", "pyvista")
 def test_is_edge_manifold(bench_case: BenchCase) -> None:
     """
-    The cheaper manifoldness predicate: an edge sort and a per-edge count, no one-ring components.
+    The cheaper manifoldness predicate: one pass counting edge shares, no one-ring components.
 
     It sits next to ``is_vertex_manifold`` on the same axis deliberately -- edge-manifoldness is
     ``O(3F)`` counting where vertex-manifoldness needs a connected-components pass *per vertex*, so

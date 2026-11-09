@@ -7,10 +7,16 @@ from ordito.kernels.adjacency import (
     write_face_edge_keys_and_order,
 )
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
-from ordito.kernels.grouping import store_sorted_run_length
+from ordito.kernels.grouping import insert_face_edge_keys, store_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb
-from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_total, term_sum_1d
+from ordito.kernels.reduce import (
+    block_chunk,
+    block_chunk_1d,
+    block_sum,
+    commit_block_total,
+    term_sum_1d,
+)
 from ordito.kernels.triangles import corner_triple, store_face_edge_lengths
 
 wp.set_module_options({"enable_backward": False})
@@ -277,24 +283,35 @@ HALFEDGE_LENGTH_SUM = term_sum_1d(halfedge_length_term, HalfedgeLengthTerms, "ha
 
 
 @wp.kernel
-def sorted_key_run_count(
-    sorted_keys: wp.array[wp.uint64],
-    n_keys: wp.int32,
-    slot: wp.int32,
+def unique_edge_count(
+    faces: wp.array[wp.int32],
+    base: wp.uint64,
+    per: wp.int32,
+    global_mask: wp.int32,
+    width: wp.int32,
+    bound: wp.int32,
+    table: wp.array[wp.uint64],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``edges.unique_edge_count``: the run starts of the first ``n_keys`` sorted corner keys, one
-    # per unique edge, added into the zeroed ``out_counts[slot]`` a block at a time. The count the
-    # ``mark_sorted_run_starts`` scan's tail would give, with no marks, no scan and no tail read of
-    # its own (``kernels/measures.referenced_vertex_and_unique_edge_counts`` folds the same test
-    # beside its vertex count). Lane-strided by ``wp.block_dim()``; integer, so exact in any order.
+    # ``edges.unique_edge_count``: ``out_counts[1]`` the unique edges, each counted by the face
+    # that first puts it into the zeroed set (``grouping.insert_face_edge_keys``), and with a
+    # ``bound`` above zero ``out_counts[0]`` raised to the worst ``face_index_range_code`` (0 no
+    # check). A block owns ``width`` faces (``reduce.spanned_blocks_1d``: a face is three dependent
+    # probe chains, so a lane takes few) and commits its count once; integer, so exact in any
+    # order. ``measures.euler_characteristic``'s pass counts the same set beside its vertex marks.
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(n_keys, block)
+    offset, count = block_chunk(faces.shape[0] // 3, block, width)
     local = wp.int32(0)
+    code = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
-        if sorted_run_start(sorted_keys, offset + k):
-            local += 1
-    commit_block_total(lane, local, out_counts, slot)
+        f = offset + k
+        i0, i1, i2 = corner_triple(faces, f)
+        local += insert_face_edge_keys(table, i0, i1, i2, base, per, global_mask)
+        if bound > 0:
+            code = wp.max(code, face_index_range_code(faces, f, bound))
+    if code > 0:
+        wp.atomic_max(out_counts, 0, code)
+    commit_block_total(lane, local, out_counts, 1)
 
 
 @wp.kernel

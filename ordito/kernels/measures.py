@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import OverloadTable, mark_first
-from ordito.kernels.grouping import insert_edge_key
+from ordito.kernels.grouping import insert_face_edge_keys
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -235,26 +235,22 @@ def referenced_vertex_and_unique_edge_counts(
     per: wp.int32,
     global_mask: wp.int32,
     width: wp.int32,
-    table: wp.array[wp.int64],
+    table: wp.array[wp.uint64],
     marks: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # ``measures.euler_characteristic``'s one pass over the faces: slot 0 of ``out_counts`` the
     # distinct referenced vertices (``array.mark_first`` on ``marks``), slot 1 the unique edges
-    # (``grouping.insert_edge_key`` into the zeroed ``table``), each counted by the face that
-    # first meets it. A block owns ``width`` faces (``reduce.spanned_blocks_1d``: a face is three
-    # dependent probe chains, so a lane takes few) and commits its two counts once.
+    # (``grouping.insert_face_edge_keys`` into the zeroed ``table``), each counted by the face
+    # that first meets it. A block owns ``width`` faces (``reduce.spanned_blocks_1d``: a face is
+    # three dependent probe chains, so a lane takes few) and commits its two counts once.
     block, lane = wp.tid()
     offset, count = block_chunk(faces.shape[0] // 3, block, width)
     local = wp.vec2i(0, 0)
     for k in range(lane, count, wp.block_dim()):
         i0, i1, i2 = corner_triple(faces, offset + k)
         vertices = mark_first(marks, i0) + mark_first(marks, i1) + mark_first(marks, i2)
-        edges = (
-            insert_edge_key(table, i0, i1, base, per, global_mask)
-            + insert_edge_key(table, i1, i2, base, per, global_mask)
-            + insert_edge_key(table, i2, i0, base, per, global_mask)
-        )
+        edges = insert_face_edge_keys(table, i0, i1, i2, base, per, global_mask)
         local += wp.vec2i(vertices, edges)
     commit_block_sum(lane, local, out_counts, 0)
 

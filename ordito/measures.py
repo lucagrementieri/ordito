@@ -375,10 +375,10 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
     device = faces.device
     # Both counts come out of one pass that sets each vertex's mark and inserts each edge into an
     # open-addressing set, counting first arrivals: no sort, no run scan and no edge table. The
-    # set, the marks and the two counts share one zeroed allocation (the table's ``int64`` slots,
+    # set, the marks and the two counts share one zeroed allocation (the table's ``uint64`` slots,
     # the marks and counts its ``int32`` tail).
     per, capacity, global_mask = kernel_grouping.edge_key_table_shape(n_faces, n_vertices)
-    buffer = _launch.zeros(capacity + (n_vertices + 3) // 2, dtype=wp.int64, device=device)
+    buffer = _launch.zeros(capacity + (n_vertices + 3) // 2, dtype=wp.uint64, device=device)
     table = _launch.view(buffer, 0, capacity)
     tail = _launch.view_as(_launch.view(buffer, capacity, buffer.size), wp.int32)
     marks = _launch.view(tail, 0, n_vertices)

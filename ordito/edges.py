@@ -24,13 +24,14 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     checked_index_bound,
+    edge_key_vertex_bound,
     index_extrema,
     read_scalar,
     read_values,
     require_same_device,
 )
 from ordito.array import arange_repeat
-from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
+from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import edges as kernel_edges
 from ordito.kernels import grouping as kernel_grouping
@@ -293,8 +294,8 @@ def unique_edge_count(
     """
     Count the unique undirected edges, without building the edge table.
 
-    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``: the same sort, its runs
-    counted rather than ranked, and neither the rows nor the inverse map written.
+    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``, counted in one pass over
+    the faces with neither the rows nor the inverse map written.
 
     Parameters
     ----------
@@ -304,9 +305,8 @@ def unique_edge_count(
         Vertex count bounding the indices, as in [`edges_unique`][ordito.edges.edges_unique];
         inferred from ``faces`` when ``None``.
     validate
-        As in [`edges_unique`][ordito.edges.edges_unique]: check the index range. With
-        ``n_vertices`` given the check rides in the count's own readback; inferring the bound
-        costs one more.
+        Check the index range, in the count's own readback: against ``n_vertices`` when given,
+        else for a negative index only.
 
     Returns
     -------
@@ -336,23 +336,40 @@ def unique_edge_count(
     n_faces = faces.size // 3
     if n_faces == 0:
         return 0
-    radix, check = _face_edge_radix(n_vertices, validate)
-    n = 3 * n_faces
-    # Two zeroed slots after the payload: the key pass's range flag, then the run count.
-    keys, order = _sorted_face_edge_keys(faces, n_faces, radix, radix if check else None, tail=2)
+    if n_vertices is not None and n_vertices <= 0:
+        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+    device = faces.device
+    # One pass putting every corner's edge into an open-addressing set, each counted by the face
+    # that puts it there first: no sort and no run scan. A vertex count homes each edge among its
+    # lower vertex's slots (a given one is also the range checked; with none, a large mesh reads
+    # one back, ``_common.edge_key_vertex_bound``); else the keys start at hashed homes. With no
+    # bound given only a negative index is a range error. The two counts sit after the table in
+    # its zeroed allocation: the range code, then the edge count.
+    table_vertices = edge_key_vertex_bound(faces, n_faces, n_vertices)
+    per, capacity, global_mask = kernel_grouping.edge_key_table_shape(n_faces, table_vertices)
+    base = kernel_grouping.EDGE_KEY_RADIX_UNBOUNDED if table_vertices is None else table_vertices
+    if n_vertices is not None:
+        bound = n_vertices if validate else 0
+    else:
+        bound = INT32_MAX if validate else 0
+    buffer = _launch.zeros(capacity + 1, dtype=wp.uint64, device=device)
+    table = _launch.view(buffer, 0, capacity)
+    counts = _launch.view_as(_launch.view(buffer, capacity, capacity + 1), wp.int32)
+    width, blocks = kernel_reduce.spanned_blocks_1d(n_faces, device)
     _launch.launch_tiled(
-        kernel_edges.sorted_key_run_count,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[keys, n, 2 * n + 1, order],
+        kernel_edges.unique_edge_count,
+        dim=[blocks],
+        inputs=[faces, wp.uint64(base), per, global_mask, width, bound, table, counts],
         block_dim=TILE_1D,
-        device=faces.device,
+        device=device,
     )
-    # The count is the answer; the range flag rides in the same copy.
-    code, n_edges = read_values(order, 2 * n, 2)
-    if check:
-        # Only a supplied bound is checked in the key pass, and it is the radix.
-        assert radix is not None
-        _raise_on_range_code(int(code), radix)
+    # The count is the answer; the range code rides in the same copy.
+    code, n_edges = read_values(counts, 0, 2)
+    if n_vertices is not None:
+        _raise_on_range_code(int(code), n_vertices)
+    elif int(code) == int(kernel_edges.INDEX_NEGATIVE):
+        # With no bound only the negative half is a range error (``INT32_MAX`` itself is no index).
+        _raise_on_range_code(int(code), INT32_MAX)
     return int(n_edges)
 
 

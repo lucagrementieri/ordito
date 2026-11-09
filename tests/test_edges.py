@@ -214,6 +214,26 @@ def test_unique_edge_count(request: pytest.FixtureRequest, mesh_name: str, bound
     assert count_wp == od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0]
 
 
+@pytest.mark.parametrize("bounded", [False, True], ids=["inferred", "n_vertices"])
+def test_unique_edge_count_on_tiny_random_face_sets(device: str, bounded: bool) -> None:
+    """
+    Class A on an integer: the count of tiny random face sets equals trimesh's unique edge rows.
+
+    Faces over six vertices, repeated and degenerate edges included, keep the count's
+    open-addressing set nearly as full as its sizing allows, where every probe sequence must still
+    reach an empty slot: a probe budget of one table length, spent partly in the local runs, once
+    dropped an edge here (12 of 13).
+    """
+    rng = np.random.default_rng(7)
+    for n_faces in range(1, 13):
+        for _ in range(20):
+            faces_np = rng.integers(0, 6, size=(n_faces, 3))
+            edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+            count_tm = len(tm_grouping.unique_rows(edges_np)[0])
+            faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+            assert od.edges.unique_edge_count(faces_wp, 6 if bounded else None) == count_tm
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("edges_unique_inverse", "trimesh")
 def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) -> None:

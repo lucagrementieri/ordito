@@ -249,6 +249,35 @@ def test_is_edge_manifold_matches_igl_open3d_and_pyvista(
     assert manifold_wp == (mesh_name in CLOSED_MESHES)
 
 
+@pytest.mark.parametrize("bounded", [False, True], ids=["inferred", "n_vertices"])
+def test_is_edge_manifold_on_tiny_random_face_sets(device: str, bounded: bool) -> None:
+    """
+    Class A on a boolean, against trimesh's unique edge rows and their occurrence counts.
+
+    Faces over six vertices keep the share count's open-addressing set nearly as full as its
+    sizing allows, and every edge sharing count from one to past four appears, so the two-bit
+    arrival count's wrap and both switch positions are reached. The reference counts each
+    undirected edge's rows (``trimesh.grouping.unique_rows``' inverse) and applies the definition.
+    """
+    rng = np.random.default_rng(5)
+    answers: set[tuple[bool, bool]] = set()
+    for n_faces in range(1, 13):
+        for _ in range(20):
+            faces_np = rng.integers(0, 6, size=(n_faces, 3))
+            edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+            _, inverse_tm = tm.grouping.unique_rows(edges_np)
+            shares_tm = np.bincount(inverse_tm)
+            faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+            for allow in (True, False):
+                manifold_tm = bool(shares_tm.max() <= 2) if allow else bool(np.all(shares_tm == 2))
+                manifold_wp = od.validation.is_edge_manifold(
+                    faces_wp, allow, n_vertices=6 if bounded else None
+                )
+                assert manifold_wp == manifold_tm
+                answers.add((allow, manifold_wp))
+    assert answers == {(True, True), (True, False), (False, True), (False, False)}
+
+
 def test_is_edge_manifold_nonmanifold_fan_matches_pyvista_and_open3d(device: str) -> None:
     """
     Three faces on one edge: non-manifold in VTK and Open3D, and where pyvista's count differs.

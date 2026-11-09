@@ -1547,10 +1547,9 @@
  },
  "benchmarks/test_edges.py::test_unique_edge_count[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
-   "readback": 1,
-   "sort": 1
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
   }
  },
  "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_small-ordito-cpu]": {
@@ -6396,16 +6395,16 @@
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cpu-n100k]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
+   "launch": 4,
+   "alloc": 4,
    "readback": 2,
    "scan": 1
   }
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cpu-n10k]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
+   "launch": 4,
+   "alloc": 4,
    "readback": 2,
    "scan": 1
   }
@@ -7301,15 +7300,15 @@
  },
  "benchmarks/test_validation.py::test_is_edge_manifold[fan_hub-ordito-cpu]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },
  "benchmarks/test_validation.py::test_is_edge_manifold[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },

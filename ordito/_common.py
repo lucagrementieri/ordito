@@ -606,6 +606,35 @@ def index_extrema(indices: odt.ArrayNdInt) -> tuple[int, int]:
     return int(low), int(high)
 
 
+# Faces from which an edge-key set given no vertex count reads one back to home its keys by vertex
+# (``edge_key_vertex_bound``), per device. Below it the hashed homes' table stays in cache and the
+# read is the larger cost; above it the read pays. CUDA, ``unique_edge_count``: 39 against 59 us on
+# 5 k faces, 64 against 76 on 328 k; 92 against 115 us on 871 k, 4.1 against 10.3 ms on lucy's
+# 28 M. The CPU's cache is outgrown sooner: 176 against 182 us on 5 k faces, 3.16 against 2.90 ms
+# on 70 k.
+EDGE_KEY_BOUND_READ_FACES_CUDA = 1 << 19
+EDGE_KEY_BOUND_READ_FACES_CPU = 1 << 14
+
+
+def edge_key_vertex_bound(
+    faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None
+) -> int | None:
+    """
+    Vertex count an edge-key set (``kernels/grouping.edge_key_slot``) homes its keys by.
+
+    ``n_vertices`` when the caller gave one; else, from ``EDGE_KEY_BOUND_READ_FACES_CUDA`` /
+    ``_CPU`` faces, one past the largest index, read back; else ``None``, every key starting at a
+    hashed home. Only a bound for homing: a negative index still reaches the set's own range check.
+    """
+    cuda = wp.get_device(faces.device).is_cuda
+    gate = EDGE_KEY_BOUND_READ_FACES_CUDA if cuda else EDGE_KEY_BOUND_READ_FACES_CPU
+    if n_vertices is not None or n_faces < gate:
+        return n_vertices
+    # Read back: past the cache a key homed by its hash is a random DRAM atomic, and the bound
+    # that homes it by vertex sizes the table on the host.
+    return index_extrema(faces)[1] + 1
+
+
 def checked_index_bound(
     low: int, high: int, name: str, bound: int | None = None, bound_name: str = ""
 ) -> int:
@@ -775,13 +804,16 @@ def staging_pool(
 STAGED_POINTS = 1 << 20
 
 
-def hilbert_point_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+def space_filling_order(
+    points: wp.array[wp.vec3], curve: int = int(kernel_array.CURVE_HILBERT)
+) -> wp.array[wp.int32]:
     """
-    Return ``(n,)`` the points' indices in Hilbert order over their bounding box.
+    Return ``(n,)`` the points' indices in order along ``curve`` over their bounding box.
 
-    A launch over the points in this order puts a compact patch in each block: a block-local
-    iteration then carries a value across the patch (``geodesic_walk``'s shortest-edge tree). One
-    box reduction, one key pass and a 30-bit radix sort, with no readback.
+    ``curve`` is ``kernels/array.CURVE_HILBERT`` or ``CURVE_MORTON``. A launch over the points in
+    Hilbert order puts a compact patch in each block: a block-local iteration then carries a value
+    across the patch (``geodesic_walk``'s shortest-edge tree). One box reduction, one key pass and
+    a 30-bit radix sort, with no readback.
     """
     device = points.device
     n = points.size
@@ -794,7 +826,10 @@ def hilbert_point_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
     )
     keys, order = _launch.carve(wp.int32, (2 * n, 2 * n), device)
     _launch.launch(
-        kernel_array.point_hilbert_keys, dim=n, inputs=[points, corners, keys, order], device=device
+        kernel_array.point_curve_keys,
+        dim=n,
+        inputs=[points, corners, curve, keys, order],
+        device=device,
     )
     _launch.radix_sort_pairs(keys, order, count=n, end_bit=30)
     return _launch.view(order, 0, n)

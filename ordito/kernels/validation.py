@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
-from ordito.kernels.adjacency import edge_endpoints, write_face_edge_keys
+from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair,
     ecl_hook_pair_parity,
@@ -10,6 +10,7 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
+from ordito.kernels.grouping import count_edge_key
 from ordito.kernels.halfedge import (
     halfedge_destination,
     halfedge_endpoints,
@@ -17,8 +18,15 @@ from ordito.kernels.halfedge import (
     mate_twin_defect,
 )
 from ordito.kernels.predicates import vector_angle
-from ordito.kernels.reduce import block_chunk_1d, last_ticket_vector, store_block_total
+from ordito.kernels.reduce import (
+    block_chunk,
+    block_chunk_1d,
+    commit_block_sum,
+    last_ticket_vector,
+    store_block_total,
+)
 from ordito.kernels.triangles import (
+    corner_triple,
     face_normals_and_area,
     face_signed_volume,
     face_vertices,
@@ -162,47 +170,47 @@ def edge_manifold(count: wp.int32, allow_boundary: wp.bool) -> wp.bool:
 
 
 @wp.kernel
-def face_edge_keys_checked(
+def edge_share_violations(
     faces: wp.array[wp.int32],
     base: wp.uint64,
+    per: wp.int32,
+    global_mask: wp.int32,
+    width: wp.int32,
     bound: wp.int32,
-    out_keys: wp.array[wp.uint64],
+    table: wp.array[wp.uint64],
     out_flags: wp.array[wp.int32],
 ) -> None:
     """
-    ``adjacency.face_edge_keys`` plus the range check of the indices it packs.
+    ``is_edge_manifold``'s one pass: every corner's edge counted into a zeroed edge-key set.
 
-    Raises ``out_flags[1]`` when a corner index is negative or reaches ``bound``, so the check
-    rides on the pass that reads the faces anyway and shares the verdict's readback, where a
-    separate ``reduce.minmax`` would add a launch and a readback of its own. ``out_flags[0]`` is
-    left to ``edge_share_count_violation``.
+    ``out_flags[0]`` counts the third arrivals on an edge (``grouping.count_edge_key`` reads 2:
+    some edge has three faces or more), ``out_flags[1]`` the faces with a corner outside
+    ``[0, bound)``, and ``out_flags[2]`` the first arrivals, the unique edges, so with boundary
+    edges disallowed the wrapper tests ``2 * unique == 3 * n_faces`` (no edge above two faces and
+    the shares summing to the corner count leave every edge at exactly two). No key table, no
+    count table beside the set and no pass over its slots. A block owns ``width`` faces
+    (``reduce.spanned_blocks_1d``) and commits the three counts once.
     """
-    f = wp.int32(wp.tid())
-    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
-    for k in range(3):
-        v = faces[3 * f + k]
-        if v < 0 or v >= bound:
-            out_flags[1] = 1
-
-
-@wp.kernel
-def edge_share_count_violation(
-    slot_counts: wp.array[wp.int32], allow_boundary: wp.bool, out_violation: wp.array[wp.int32]
-) -> None:
-    """
-    Raise ``out_violation[0]`` when an occupied hash-table slot holds a non-manifold share count.
-
-    ``slot_counts`` is a ``hash_insert`` occurrence table over the packed edge keys, so an empty
-    slot reads ``0`` and every occupied one is exactly one undirected edge's face-share count. The
-    predicate needs only whether *some* edge fails, so the table is read in place: no compaction,
-    no sort and no count of the unique edges. The store is unsynchronized because every writer
-    stores the same ``1``, and it fires only on a violating slot, so it contends with nothing on a
-    manifold mesh.
-    """
-    s = wp.int32(wp.tid())
-    count = slot_counts[s]
-    if count > 0 and not edge_manifold(count, allow_boundary):
-        out_violation[0] = 1
+    block, lane = wp.tid()
+    offset, count = block_chunk(faces.shape[0] // 3, block, width)
+    local = wp.vec3i(0, 0, 0)
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        i0, i1, i2 = corner_triple(faces, f)
+        before0 = count_edge_key(table, i0, i1, base, per, global_mask)
+        before1 = count_edge_key(table, i1, i2, base, per, global_mask)
+        before2 = count_edge_key(table, i2, i0, base, per, global_mask)
+        third = wp.where(before0 == 2, 1, 0) + wp.where(before1 == 2, 1, 0)
+        third += wp.where(before2 == 2, 1, 0)
+        first = wp.where(before0 == 0, 1, 0) + wp.where(before1 == 0, 1, 0)
+        first += wp.where(before2 == 0, 1, 0)
+        out_of_range = wp.int32(0)
+        for c in range(3):
+            v = faces[3 * f + c]
+            if v < 0 or v >= bound:
+                out_of_range = 1
+        local += wp.vec3i(third, out_of_range, first)
+    commit_block_sum(lane, local, out_flags, 0)
 
 
 @wp.func

@@ -167,24 +167,35 @@ def decode_key(stored: wp.Int) -> wp.Int:
     return stored + (~zero)
 
 
-# Probes an edge key takes among its lower vertex's slots before ``insert_edge_key`` sends it to
-# a hashed home: enough for a vertex's edges on a manifold (about three an end), and a hub's
-# other edges leave its neighbourhood rather than queue behind one another.
+# Probes an edge key takes among its lower vertex's slots before ``edge_key_slot`` sends it to its
+# higher vertex's, and then to a hashed home: enough for a vertex's edges on a manifold (about
+# three an end), and a hub's other edges leave its neighbourhood rather than queue behind one
+# another.
 EDGE_KEY_LOCAL_PROBES = 8
-# Slots a vertex owns at most in ``insert_edge_key``'s table.
+# Slots a vertex owns at most in an edge-key table.
 EDGE_KEY_SLOTS_PER_VERTEX = 8
+# Radix an edge-key table packs against when the caller knows no vertex count: every ``int32``
+# index fits, and the stored key stays below ``2**62``, leaving ``EDGE_KEY_ARRIVAL``'s two bits.
+EDGE_KEY_RADIX_UNBOUNDED = 1 << 31
+# One arrival in the two top bits of a stored edge key (``count_edge_key``).
+EDGE_KEY_ARRIVAL = wp.uint64(1 << 62)
+EDGE_KEY_BITS = wp.uint64((1 << 62) - 1)
 
 
-def edge_key_table_shape(n_faces: int, n_vertices: int) -> tuple[int, int, int]:
+def edge_key_table_shape(n_faces: int, n_vertices: int | None) -> tuple[int, int, int]:
     """
-    ``(slots a vertex, capacity, global mask)`` of ``insert_edge_key``'s table.
+    ``(slots a vertex, capacity, global mask)`` of an ``edge_key_slot`` table.
 
     The fewest powers of two of slots a vertex, up to ``EDGE_KEY_SLOTS_PER_VERTEX``, that cover
     ``4 * n_faces``, and at least that many slots in all, so the ``3 * n_faces`` keys a face buffer
-    can hold fill at most three quarters of the table and every probe ends. The global mask is the
+    can hold fill at most three quarters of the table and every probe ends. With no vertex count
+    no vertex owns slots (``0``) and every key starts at its hashed home. The global mask is the
     largest power of two less one below the capacity, for the hashed homes. A host helper beside
     its kernel helpers because every table this way is sized by it.
     """
+    if n_vertices is None:
+        capacity = 4 * n_faces
+        return 0, capacity, (1 << (capacity.bit_length() - 1)) - 1
     per = 1
     while per < EDGE_KEY_SLOTS_PER_VERTEX and per * n_vertices < 4 * n_faces:
         per *= 2
@@ -193,44 +204,106 @@ def edge_key_table_shape(n_faces: int, n_vertices: int) -> tuple[int, int, int]:
 
 
 @wp.func
-def insert_edge_key(
-    table: wp.array[wp.int64],
+def edge_key_home(
+    owner: wp.int32,
+    other: wp.int32,
+    per: wp.int32,
+    capacity: wp.int32,
+    stored: wp.uint64,
+    global_mask: wp.int32,
+) -> wp.int32:
+    # An edge key's home among ``owner``'s ``per`` slots, offset by a hash of the ``other`` end;
+    # the hashed home when the table has no slots a vertex or ``owner`` lies outside them.
+    h = owner * per + hash_slot(wp.int64(other), wp.max(per - 1, 0))
+    if per == 0 or h < 0 or h >= capacity:
+        h = hash_slot(wp.int64(stored), global_mask)
+    return h
+
+
+@wp.func
+def edge_key_slot(
+    table: wp.array[wp.uint64],
+    i: wp.int32,
+    j: wp.int32,
+    base: wp.uint64,
+    per: wp.int32,
+    global_mask: wp.int32,
+    claim: wp.uint64,
+) -> tuple[wp.int32, wp.int32]:
+    # ``(slot, claimed)`` of the undirected edge ``(i, j)`` in a zeroed open-addressing set: its
+    # key (``pack_edge_key``, stored plus one so 0 is the empty slot, ``claim`` or'ed into the top
+    # bits by the call that claims the slot) and 1 for that call, else 0. Homed among the ``per``
+    # slots of its lower vertex (``edge_key_table_shape``), so faces in index order touch
+    # neighbouring slots and the table stays in cache where a hashed home made every insert a
+    # random DRAM atomic (lucy: 5.5 ms against the radix sort's 12.1, where a Fibonacci home tied
+    # it); after ``EDGE_KEY_LOCAL_PROBES`` taken slots the probe moves to the higher vertex's
+    # slots, so a hub's spokes sit beside their rim vertices, and after as many again to a
+    # Fibonacci home (``hash_slot``). Linear probes, wrapping at the end of the table; a
+    # duplicate always walks the same sequence, so it finds the stored key before any empty slot,
+    # and the last run, from the hashed home, may take ``capacity`` probes: it visits every slot.
+    # An index the table was not sized for (below zero or past the vertex count), or a table with
+    # no slots a vertex, takes the hashed home at once, so no probe leaves the table.
+    stored = pack_edge_key(i, j, base) + wp.uint64(1)
+    capacity = table.shape[0]
+    lo = wp.min(i, j)
+    hi = wp.max(i, j)
+    h = edge_key_home(lo, hi, per, capacity, stored, global_mask)
+    for probe in range(capacity + 2 * EDGE_KEY_LOCAL_PROBES):
+        current = table[h]
+        if current & EDGE_KEY_BITS == stored:
+            return h, 0
+        if current == wp.uint64(0):
+            previous = wp.atomic_cas(table, h, wp.uint64(0), stored | claim)
+            if previous == wp.uint64(0):
+                return h, 1
+            if previous & EDGE_KEY_BITS == stored:
+                return h, 0
+        if probe + 1 == EDGE_KEY_LOCAL_PROBES:
+            h = edge_key_home(hi, lo, per, capacity, stored, global_mask)
+        elif probe + 1 == 2 * EDGE_KEY_LOCAL_PROBES:
+            h = hash_slot(wp.int64(stored), global_mask)
+        else:
+            h = wp.where(h + 1 == capacity, 0, h + 1)
+    return h, 0
+
+
+@wp.func
+def insert_face_edge_keys(
+    table: wp.array[wp.uint64],
+    i0: wp.int32,
+    i1: wp.int32,
+    i2: wp.int32,
+    base: wp.uint64,
+    per: wp.int32,
+    global_mask: wp.int32,
+) -> wp.int32:
+    # How many of a face's three edges this call put into the set first: summed over every face,
+    # the unique edge count, with no table to compact (``measures.euler_characteristic``,
+    # ``edges.unique_edge_count``).
+    _s0, new0 = edge_key_slot(table, i0, i1, base, per, global_mask, wp.uint64(0))
+    _s1, new1 = edge_key_slot(table, i1, i2, base, per, global_mask, wp.uint64(0))
+    _s2, new2 = edge_key_slot(table, i2, i0, base, per, global_mask, wp.uint64(0))
+    return new0 + new1 + new2
+
+
+@wp.func
+def count_edge_key(
+    table: wp.array[wp.uint64],
     i: wp.int32,
     j: wp.int32,
     base: wp.uint64,
     per: wp.int32,
     global_mask: wp.int32,
 ) -> wp.int32:
-    # 1 when this call inserts the undirected edge ``(i, j)`` (``pack_edge_key``, stored plus one
-    # so 0 is the empty slot) into a zeroed open-addressing set, 0 when the edge was there: one
-    # count a unique edge, with no table to compact. Homed among the ``per`` slots of its lower
-    # vertex (``edge_key_table_shape``), so faces in index order touch neighbouring slots and the
-    # table stays in cache where a hashed home made every insert a random DRAM atomic (lucy:
-    # 5.5 ms against 12.1, the radix sort's time); after ``EDGE_KEY_LOCAL_PROBES`` taken slots
-    # the probe moves to a Fibonacci home (``hash_slot``), so a hub's edges spread. Linear probes,
-    # wrapping at the end of the table; a duplicate always walks the same sequence, so it finds
-    # the stored key before any empty slot. An index the table was not sized for (below zero or
-    # past the vertex count) takes the hashed home at once, so no probe leaves the table.
-    stored = wp.int64(pack_edge_key(i, j, base)) + wp.int64(1)
-    capacity = table.shape[0]
-    h = wp.min(i, j) * per + hash_slot(wp.int64(wp.max(i, j)), per - 1)
-    if h < 0 or h >= capacity:
-        h = hash_slot(stored, global_mask)
-    for probe in range(capacity):
-        current = table[h]
-        if current == stored:
-            return 0
-        if current == wp.int64(0):
-            previous = wp.atomic_cas(table, h, wp.int64(0), stored)
-            if previous == wp.int64(0):
-                return 1
-            if previous == stored:
-                return 0
-        if probe + 1 == EDGE_KEY_LOCAL_PROBES:
-            h = hash_slot(stored, global_mask)
-        else:
-            h = wp.where(h + 1 == capacity, 0, h + 1)
-    return 0
+    # The edge's arrivals before this one, counted in the stored key's two top bits
+    # (``EDGE_KEY_ARRIVAL``): 0 for the claiming call, then 1, 2 and 3 (and 0 again past four,
+    # the bits wrapping): so a third arrival -- a third face on the edge -- reads 2 whatever
+    # follows it. No count table beside the keys and no pass over the slots.
+    slot, claimed = edge_key_slot(table, i, j, base, per, global_mask, EDGE_KEY_ARRIVAL)
+    if claimed != 0:
+        return 0
+    previous = wp.atomic_add(table, slot, EDGE_KEY_ARRIVAL)
+    return wp.int32(previous >> wp.uint64(62))
 
 
 # ---------------------------------------------------------------------------

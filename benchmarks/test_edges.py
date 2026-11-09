@@ -215,9 +215,10 @@ def test_unique_edge_count(bench_case: BenchCase) -> None:
     The number of unique undirected edges, without building the edge table.
 
     At ``edges_unique``' operating point with the same ``n_vertices=`` hint, so the pair prices the
-    table the count skips. trimesh has no count of its own; its row is the unique-edge grouping of
-    the ``edges_unique`` group with ``len`` taken, which is what ``tests/test_edges.py`` compares
-    against (``len(Trimesh.edges_unique)``).
+    table the count skips (and the sort: the count is one pass over an edge-key hash set). trimesh
+    has no count of its own; its row is the unique-edge grouping of the ``edges_unique`` group with
+    ``len`` taken, which is what ``tests/test_edges.py`` compares against
+    (``len(Trimesh.edges_unique)``).
     """
     if bench_case.kind == "trimesh":
         faces_np = bench_case.faces_np

@@ -290,3 +290,25 @@ def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) ->
         mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
     assert euler_bound_wp == int(mesh_tm.euler_number)
+
+
+def test_euler_characteristic_on_tiny_random_face_sets(device: str) -> None:
+    """
+    Class A on an integer, against ``Trimesh.euler_number`` on tiny random face sets.
+
+    Faces over eight vertices, repeated and degenerate edges and unreferenced vertices included,
+    keep the edge count's open-addressing set nearly as full as its sizing allows, where every
+    probe sequence must still reach an empty slot (``tests/test_edges.py`` has the same guard for
+    ``unique_edge_count``). The answers spread over several values, so a constant cannot pass.
+    """
+    rng = np.random.default_rng(11)
+    answers: set[int] = set()
+    for n_faces in range(1, 13):
+        for _ in range(20):
+            faces_np = rng.integers(0, 8, size=(n_faces, 3))
+            mesh_tm = tm.Trimesh(np.zeros((8, 3)), faces_np, process=False)
+            faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+            euler_wp = od.measures.euler_characteristic(faces_wp, n_vertices=8)
+            assert euler_wp == int(mesh_tm.euler_number)
+            answers.add(euler_wp)
+    assert len(answers) > 3

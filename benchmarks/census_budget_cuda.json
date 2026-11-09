@@ -1622,11 +1622,10 @@
  },
  "benchmarks/test_edges.py::test_unique_edge_count[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
    "memset": 1,
-   "d2h": 1,
-   "sort": 1
+   "d2h": 1
   }
  },
  "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_small-ordito-cuda]": {
@@ -4340,7 +4339,8 @@
  "benchmarks/test_mesh.py::test_centroid[sphere_small-ordito-cuda-cold]": {
   "counts": {
    "launch": 1,
-   "alloc": 2,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },
@@ -7036,18 +7036,18 @@
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cuda-n100k]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
-   "memset": 4,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cuda-n10k]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
-   "memset": 4,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
@@ -8023,17 +8023,17 @@
  },
  "benchmarks/test_validation.py::test_is_edge_manifold[fan_hub-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
-   "memset": 3,
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },
  "benchmarks/test_validation.py::test_is_edge_manifold[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
-   "memset": 3,
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },

@@ -12,6 +12,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    edge_key_vertex_bound,
     read_scalar,
     read_values,
     require_nonempty_mesh,
@@ -21,6 +22,7 @@ from ordito._common import (
 from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import validation as kernel_validation
@@ -50,8 +52,8 @@ def is_edge_manifold(
         When ``True`` (default) boundary edges (used by a single face) are allowed. When ``False``
         every edge must be shared by exactly two faces.
     n_vertices
-        Optional vertex count (the edge-hash base and the upper bound checked). When ``None``, the
-        keys pack against a bound on every ``int32`` and only the negative half is checked.
+        Optional vertex count (the upper bound checked). When ``None``, only the negative half is
+        checked.
     validate
         Whether to range-check the face indices. The check rides on the pass that packs the keys
         and shares the verdict's readback. Pass ``False`` only where both bounds are structurally
@@ -89,9 +91,9 @@ def is_edge_manifold(
     corresponds to the ``allow_boundary_edges=True`` case.
 
     Deliberately **not** ``all(edge_manifold_mask(faces))``, unlike the other ``is_*`` / ``*_mask``
-    pairs here: this counts the edges in a hash table and reads it in place, where the mask needs
-    each halfedge's own count and so pairs every halfedge. Delegating would add the pairing to the
-    cheap path.
+    pairs here: this counts each edge's faces in one pass over a hash set and needs no per-edge
+    answer, where the mask needs each halfedge's own count and so pairs every halfedge.
+    Delegating would add the pairing to the cheap path.
 
     Examples
     --------
@@ -126,40 +128,36 @@ def is_edge_manifold(
             device=device,
         )
         return int(read_scalar(violation)) == 0
-    # ``flags[0]`` is the verdict and ``flags[1]`` the range check, read back together.
-    flags = _launch.zeros(2, dtype=wp.int32, device=device)
-    # The keys come straight off ``faces``: packing them there costs no more than hashing the
-    # sorted edge rows, and the range check rides on the same pass, so validating costs no
-    # reduction and no readback of its own; unvalidated, its flag is simply not read.
-    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=device)
-    _launch.launch(
-        kernel_validation.face_edge_keys_checked,
-        dim=n_faces,
-        inputs=[
-            faces,
-            wp.uint64(INDEX_RADIX_PAIR if n_vertices is None else n_vertices),
-            odt.dtype_max(wp.int32) if n_vertices is None else n_vertices,
-        ],
-        outputs=[keys, flags],
+    # One pass counting every corner's edge into an open-addressing edge-key set
+    # (``kernels/validation.edge_share_violations``): a vertex count homes each edge among its lower
+    # vertex's slots (a given one is also the range checked; with none, a large mesh reads one
+    # back, ``_common.edge_key_vertex_bound``), else the keys start at hashed homes and only a
+    # negative index is checked. The three flags sit after the table in its zeroed allocation and
+    # come back in one read: third arrivals, faces out of range, unique edges.
+    table_vertices = edge_key_vertex_bound(faces, n_faces, n_vertices)
+    per, capacity, global_mask = kernel_grouping.edge_key_table_shape(n_faces, table_vertices)
+    base = kernel_grouping.EDGE_KEY_RADIX_UNBOUNDED if table_vertices is None else table_vertices
+    bound = odt.dtype_max(wp.int32) if n_vertices is None else n_vertices
+    buffer = _launch.zeros(capacity + 2, dtype=wp.uint64, device=device)
+    table = _launch.view(buffer, 0, capacity)
+    flags = _launch.view_as(_launch.view(buffer, capacity, capacity + 2), wp.int32)
+    width, blocks = kernel_reduce.spanned_blocks_1d(n_faces, device)
+    _launch.launch_tiled(
+        kernel_validation.edge_share_violations,
+        dim=[blocks],
+        inputs=[faces, wp.uint64(base), per, global_mask, width, bound, table, flags],
+        block_dim=TILE_1D,
         device=device,
     )
-    # Counted with ``grouping.hashed_occurrence_counts``, the table ``grouping.unique_1d`` builds,
-    # and tested in place: the answer is
-    # order-free and needs no per-edge output, so the compaction, the sort and the host read of
-    # the unique count that sizes them are skipped.
-    slot_counts = od.grouping.hashed_occurrence_counts(keys)
-    _launch.launch(
-        kernel_validation.edge_share_count_violation,
-        dim=slot_counts.size,
-        inputs=[slot_counts, allow_boundary_edges, flags],
-        device=device,
-    )
-    # One readback for both flags.
-    violated, out_of_range = read_values(flags, 0, 2)
+    # One readback for the three counts.
+    third_arrivals, out_of_range, n_edges = read_values(flags, 0, 3)
     if validate and out_of_range:
-        bound = "" if n_vertices is None else f" below {n_vertices}"
-        raise ValueError(f"is_edge_manifold: faces must be non-negative indices{bound}")
-    return violated == 0
+        bound_text = "" if n_vertices is None else f" below {n_vertices}"
+        raise ValueError(f"is_edge_manifold: faces must be non-negative indices{bound_text}")
+    if third_arrivals:
+        return False
+    # Every edge on at most two faces: all on exactly two when the shares fill the corners.
+    return allow_boundary_edges or 2 * n_edges == 3 * n_faces
 
 
 def edge_manifold_mask(
