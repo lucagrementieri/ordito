@@ -847,7 +847,16 @@ def strided_centroid(points: wp.array[wp.vec3], lane: wp.int32) -> wp.vec3d:
     return block_sum(total) / wp.float64(points.shape[0])
 
 
-@wp.kernel
+# Lanes of the one ``landmark_icp`` block: a lane a landmark for up to 128 of VTK's 100-199
+# landmarks, each lane's match being a chain of dependent BVH loads. Against 64 lanes (two matches a
+# lane), whole ``icp(method="pyvista")`` calls 0.72x on ``sphere_small`` (500 iterations), 0.67x
+# on ``sphere_med`` and 0.62x on ``sphere_large``; 256 lanes 0.87x on ``sphere_small``
+# (2026-11-09). The block sums change their order with the width. The kernel has a module of its
+# own because a launch width builds the whole module it is launched from.
+LANDMARK_ICP_BLOCK_DIM = 128
+
+
+@wp.kernel(enable_backward=False, module="unique")
 def landmark_icp(
     index_id: wp.uint64,
     target_points: wp.array[wp.vec3],

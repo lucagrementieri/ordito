@@ -659,7 +659,7 @@ def _landmark_icp(
             total,
             cost,
         ],
-        block_dim=TILE_1D,
+        block_dim=kernel_registration.LANDMARK_ICP_BLOCK_DIM,
         device=device,
     )
     _apply_transform(a, total, transformed)
