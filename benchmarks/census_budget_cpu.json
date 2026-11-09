@@ -2935,7 +2935,7 @@
    "launch": 11,
    "alloc": 9,
    "h2h": 1,
-   "readback": 4,
+   "readback": 3,
    "scan": 3,
    "sort": 1
   }
@@ -2945,7 +2945,7 @@
    "launch": 11,
    "alloc": 9,
    "h2h": 1,
-   "readback": 4,
+   "readback": 3,
    "scan": 3,
    "sort": 1
   }
@@ -2955,7 +2955,7 @@
    "launch": 10,
    "alloc": 9,
    "h2h": 1,
-   "readback": 3,
+   "readback": 2,
    "scan": 3,
    "sort": 1
   }
@@ -2965,7 +2965,7 @@
    "launch": 11,
    "alloc": 9,
    "h2h": 1,
-   "readback": 3,
+   "readback": 2,
    "scan": 3,
    "sort": 1
   }
@@ -2975,7 +2975,7 @@
    "launch": 11,
    "alloc": 9,
    "h2h": 1,
-   "readback": 3,
+   "readback": 2,
    "scan": 3,
    "sort": 1
   }
@@ -2985,7 +2985,7 @@
    "launch": 10,
    "alloc": 9,
    "h2h": 1,
-   "readback": 3,
+   "readback": 2,
    "scan": 3,
    "sort": 1
   }
@@ -6171,7 +6171,7 @@
    "launch": 39,
    "alloc": 41,
    "h2h": 8,
-   "readback": 15,
+   "readback": 14,
    "scan": 6,
    "sort": 5
   }
@@ -6181,7 +6181,7 @@
    "launch": 39,
    "alloc": 41,
    "h2h": 8,
-   "readback": 15,
+   "readback": 14,
    "scan": 6,
    "sort": 5
   }
@@ -6191,7 +6191,7 @@
    "launch": 18,
    "alloc": 30,
    "h2h": 5,
-   "readback": 9,
+   "readback": 8,
    "scan": 4,
    "sort": 2
   }
@@ -6201,7 +6201,7 @@
    "launch": 18,
    "alloc": 30,
    "h2h": 5,
-   "readback": 9,
+   "readback": 8,
    "scan": 4,
    "sort": 2
   }

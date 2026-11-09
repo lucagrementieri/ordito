@@ -51,13 +51,14 @@ mutating would let one component accept two edges in a round and could close a c
 
 **Both loops carry their own condition so the wrapper can capture them**, and both do it through
 the package's shared round-loop slot table rather than one of their own -- ``array.LOOP_ROUND`` /
-``LOOP_CONDITION`` / ``LOOP_PROGRESS``, closed by ``array.loop_advance`` and driven by
-``_common.run_device_loop``. A per-round host readback drains the pipeline the round's launches
-just filled, and there were about thirty of them across the two loops; the wrapper now synchronizes
-three times in the whole call. Each loop passes its own round cap: the merge count and the claim
-flag are each a sound termination argument on their own, but a captured loop that fails one hangs
-the device rather than returning a wrong answer, so the cap is cheap insurance rather than a
-schedule.
+``LOOP_CONDITION`` / ``LOOP_PROGRESS``, closed by ``array.loop_advance`` (``loop_advance_by`` for
+the level loop) and driven by ``_common.run_device_loop``. A per-round host readback drains the
+pipeline the round's launches just filled, and there were about thirty of them across the two
+loops; the wrapper now synchronizes twice in the whole call (the edge numbering's count, and the
+guards with the generators' total, read after the forest). Each loop passes its own round cap: the
+merge count and the claim flag are each a sound termination argument on their own, but a captured
+loop that fails one hangs the device rather than returning a wrong answer, so the cap is cheap
+insurance rather than a schedule.
 
 **The tracing is two kernels and a scan rather than a Python loop per generator.** Each
 generator edge ``(a, b)`` closes into a loop through the tree as ``a -> lca(a, b) -> b``, and its
@@ -271,6 +272,7 @@ def dual_candidate_mask(
     unique_edges: wp.array2d[wp.int32],
     edge_face_count: wp.array[wp.int32],
     parents: wp.array[wp.int32],
+    distances: wp.array[wp.int32],
     chunk: wp.int32,
     lane: wp.int32,
     out_candidate: wp.array[wp.bool],
@@ -312,7 +314,12 @@ def dual_candidate_mask(
         b = unique_edges[e, 1]
         is_interior = edge_face_count[e] == 2
         in_primal_tree = parents[b] == a or parents[a] == b
-        out_candidate[e] = is_interior and not in_primal_tree
+        # Both endpoints share a component, so one depth says whether the tree reached the edge.
+        # Only a mesh the connectivity guard rejects has an unreached edge, and the guard reads its
+        # counts after the forest and the loop sizing: this keeps them, and the tracer's climb
+        # through ``NO_PARENT``, off those edges.
+        reached = distances[a] >= 0
+        out_candidate[e] = is_interior and reached and not in_primal_tree
         if is_interior:
             interior = interior + 1
 
@@ -344,6 +351,7 @@ def guards_and_dual_candidates(
             unique_edges,
             edge_face_count,
             parents,
+            distances,
             chunk - vertex_blocks,
             lane,
             out_candidate,
