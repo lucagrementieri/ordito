@@ -596,7 +596,11 @@ def icp(
     # weightless (its test compares against an ``inf`` previous cost), which only a distance gate
     # can make it -- uniform weights sum to ``n`` -- so only a gated call reads the round counter,
     # which a weightless round does not advance, before launching what it recorded. The read comes
-    # after the recording, so it finds round 0 finished and waits on nothing.
+    # after the recording, so it finds round 0 finished and waits on nothing. Declined
+    # (2026-11-09): issuing the rounds from the host instead (a round past convergence would refine
+    # the fit, so several a read need the three kernels gated): one a read lost 1.02-1.14x over
+    # ``icp_point_cloud``, ``icp_point_to_plane_cloud`` and ``icp_mesh`` on ``sphere_small`` to
+    # ``sphere_large``, so the recording costs less than the reads it removes.
     iterate()
     if max_iterations > 1:
         replay = record_device_loop(
@@ -1026,6 +1030,7 @@ def icp_point_to_plane(
 
             replay = rounds_serial
         elif max_iterations > 1:
+            # Recorded rather than issued from the host: see the decline at ``icp``'s loop.
             replay = record_device_loop(
                 device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), iterate
             )

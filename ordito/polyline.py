@@ -2092,6 +2092,10 @@ def _triangulate_ring(
                 device=device,
             )
 
+        # Declined (2026-11-09): two or four rounds a replayed body, the three kernels returning
+        # once the condition is down (a round past the last clip is otherwise not idle). Same faces;
+        # 2 rounds 0.96-1.00x on star and noisy rings of 1 024-16 384 vertices, the benchmark's
+        # 1 024-vertex star at par; 4 rounds 0.98-1.01x.
         condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
         run_device_loop(device, condition, clip_round)
 
