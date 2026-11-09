@@ -76,6 +76,7 @@ from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import tangent_space as kernel_tangent_space
 from ordito.laplacian import (
     MeshOperatorPattern,
+    cotmatrix_entries_and_pattern,
     cotmatrix_entries_intrinsic,
     mass_matrix_entries,
     mesh_operator_pattern,
@@ -1861,7 +1862,13 @@ def _heat_operators(
         # The gradient and divergence stages below still use the extrinsic positions, so this makes
         # the *solves* robust rather than turning the whole method intrinsic.
         lengths, _ = mollify_intrinsic(vertices, faces)
-        cot_entries = cotmatrix_entries_intrinsic(lengths)
+        if pattern is None and faces.size > 0:
+            # The half-cotangents are written by the pattern's key pass.
+            cot_entries, pattern = cotmatrix_entries_and_pattern(
+                vertices, faces, edge_lengths=lengths
+            )
+        else:
+            cot_entries = cotmatrix_entries_intrinsic(lengths)
     device = vertices.device
     n_faces = faces.size // 3
     n_vertices = vertices.size

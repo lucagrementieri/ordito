@@ -1709,7 +1709,7 @@
  },
  "benchmarks/test_energies.py::test_lscm_hessian[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
+   "launch": 5,
    "alloc": 8,
    "memset": 1,
    "d2h": 1,
@@ -3585,6 +3585,15 @@
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_laplacian.py::test_cotmatrix_entries_and_pattern[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "memset": 1,
+   "scan": 1,
+   "sort": 1
   }
  },
  "benchmarks/test_laplacian.py::test_cotmatrix_entries_intrinsic[sphere_small-ordito-cuda]": {

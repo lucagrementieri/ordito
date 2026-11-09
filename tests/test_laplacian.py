@@ -655,6 +655,47 @@ def test_mesh_operator_pattern_rejects_a_mismatch(
         )
 
 
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64], ids=["f32", "f64"])
+@pytest.mark.parametrize("intrinsic", [False, True], ids=["extrinsic", "intrinsic"])
+@pytest.mark.parametrize("threshold", [10**12, 0], ids=["directed", "undirected"])
+def test_cotmatrix_entries_and_pattern(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    dtype: type,
+    intrinsic: bool,
+    threshold: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Ordito against ordito: the pair equals ``cotmatrix_entries`` and ``mesh_operator_pattern``.
+
+    The two separate calls carry their own oracles (``test_cotmatrix_entries``,
+    ``test_cotmatrix_entries_intrinsic``, ``test_cotmatrix``); this pins the fused build, which
+    writes the weights in the pattern's key pass below ``_UNDIRECTED_PATTERN_FROM_FACES`` and in a
+    pass of their own above it (both forced), to them bit for bit.
+    """
+    monkeypatch.setattr(od.laplacian, "_UNDIRECTED_PATTERN_FROM_FACES", threshold)
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    lengths = od.edges.face_edge_lengths(vertices, faces) if intrinsic else None
+    cot_entries, pattern = od.laplacian.cotmatrix_entries_and_pattern(
+        vertices, faces, dtype, edge_lengths=lengths
+    )
+    if lengths is None:
+        separate = od.laplacian.cotmatrix_entries(vertices, faces, dtype=dtype)
+    else:
+        separate = od.laplacian.cotmatrix_entries_intrinsic(lengths, dtype=dtype)
+    alone = od.laplacian.mesh_operator_pattern(faces, len(mesh_tm.vertices))
+    assert cot_entries.dtype == dtype
+    assert np.ptp(separate.numpy()) > 1e-3
+    assert np.array_equal(cot_entries.numpy(), separate.numpy())
+    assert pattern.operator == alone.operator
+    assert pattern.n_keys == alone.n_keys
+    n_entries = int(alone.offsets.numpy()[-1])
+    assert n_entries > len(mesh_tm.vertices)
+    assert np.array_equal(pattern.offsets.numpy(), alone.offsets.numpy())
+    assert np.array_equal(pattern.columns.numpy()[:n_entries], alone.columns.numpy()[:n_entries])
+
+
 # -----------------------------------------------------------------------------------------
 # robust_laplacian (libigl reference)
 #

@@ -59,7 +59,12 @@ from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix_entries, mesh_operator_pattern
+from ordito.laplacian import (
+    MeshOperatorPattern,
+    cotmatrix_entries,
+    cotmatrix_entries_and_pattern,
+    mesh_operator_pattern,
+)
 
 
 def edge_length_loss(
@@ -1460,7 +1465,9 @@ def lscm_hessian(
     if faces.size == 0:
         return od.array.empty_square_bsr(2 * n, wp.float64, device)
     n_faces = faces.size // 3
-    if cot_entries is None:
+    if cot_entries is None and pattern is None:
+        cot_entries, pattern = cotmatrix_entries_and_pattern(vertices, faces, dtype=wp.float64)
+    elif cot_entries is None:
         cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
     elif int(cot_entries.shape[0]) != n_faces:
         raise ValueError(

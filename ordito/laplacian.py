@@ -1056,6 +1056,74 @@ def mesh_operator_pattern(
     )
 
 
+def cotmatrix_entries_and_pattern(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type = wp.float32,
+    *,
+    edge_lengths: odt.Array2dFloat32 | None = None,
+) -> tuple[odt.Array2dFloat, MeshOperatorPattern]:
+    """
+    Half-cotangent weights and the ``"cotmatrix"`` pattern, built together.
+
+    The pair a caller assembling its own cotangent operator needs:
+    [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries] (or, given ``edge_lengths``,
+    [`cotmatrix_entries_intrinsic`][ordito.laplacian.cotmatrix_entries_intrinsic]) and
+    [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] with its default operator.
+    The answer is identical to the two calls; built together, the weights are written by the
+    pattern's own pass over the faces wherever that pass reads them anyway.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer.
+    dtype
+        Scalar type of the weights: ``wp.float32`` (default) or ``wp.float64``.
+    edge_lengths
+        ``(n_faces, 3)`` edge lengths, column ``e`` opposite corner ``e``: the weights are then the
+        intrinsic ones of these lengths, and ``vertices`` sets only the vertex count.
+
+    Returns
+    -------
+    cot_entries : odt.Array2dFloat
+        ``(n_faces, 3)`` half-cotangent weights, column ``e`` for the edge opposite corner ``e``.
+    pattern : MeshOperatorPattern
+        The ``"cotmatrix"`` pattern of ``faces``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices``, ``faces`` and ``edge_lengths`` are not all on one device.
+
+    See Also
+    --------
+    [`cotmatrix`][ordito.laplacian.cotmatrix]
+    [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    cot_entries, pattern = od.laplacian.cotmatrix_entries_and_pattern(vertices, faces)
+    print(cot_entries.shape, pattern.operator)  # (320, 3) cotmatrix
+    plain = od.laplacian.cotmatrix_entries(vertices, faces)
+    print(np.array_equal(cot_entries.numpy(), plain.numpy()))  # True
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, edge_lengths=edge_lengths)
+    if faces.size == 0:
+        return odt.empty_2d((0, 3), dtype, device=faces.device), mesh_operator_pattern(
+            faces, vertices.size
+        )
+    return _cotmatrix_entries_and_pattern(vertices, faces, dtype, edge_lengths=edge_lengths)
+
+
 def _mesh_operator_pattern(
     faces: wp.array[wp.int32],
     n_vertices: int,

@@ -311,6 +311,22 @@ def test_mesh_operator_pattern(bench_case: BenchCase) -> None:
     assert pattern.offsets.shape == (n_vertices + 1,)
 
 
+@pytest.mark.benchmark(group="cotmatrix_entries_and_pattern")
+@pytest.mark.benchlibs("ordito")
+def test_cotmatrix_entries_and_pattern(bench_case: BenchCase) -> None:
+    """
+    The half-cotangents and the cotangent pattern together, read against ``mesh_operator_pattern``.
+
+    Below the undirected threshold the weights ride the pattern's key pass, so the pair costs about
+    the pattern alone.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    cot_entries, _pattern = bench_case.run(
+        lambda: od.laplacian.cotmatrix_entries_and_pattern(vertices, faces)
+    )
+    assert cot_entries.shape == (bench_case.n_faces, 3)
+
+
 @pytest.mark.benchmark(group="laplacian_entries")
 @pytest.mark.benchlibs("ordito")
 def test_laplacian_entries(bench_case: BenchCase) -> None:
