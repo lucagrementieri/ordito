@@ -510,7 +510,10 @@ def lattice_winding_numbers(
     # sign (with its ``delta`` margin) open. A node whose sign matters -- it may end a crossing edge
     # or sit on the other side of ``iso`` under either sign (``distance >= sign_irrelevant_below``)
     # -- and whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
-    # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too).
+    # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too). ``out_count[1]`` counts
+    # those whose winding number is near 1/2 on the lattice: the lattice value is exact unless it is
+    # in doubt, so summing such a node over every face leaves it near 1/2 again, and it ends up
+    # taking Warp's sign. One of them settles that Warp's solid-angle BVH is built.
     i, j, k = wp.tid()
     p = lattice_position(lower, step, i, j, k)
     base = wp.float32(crossings_z[i, j, k])
@@ -549,8 +552,9 @@ def lattice_winding_numbers(
                 winding = winding + term[0]
                 on_cone = wp.max(on_cone, term[1])
     out_winding[i, j, k] = winding
+    near_half = wp.abs(winding - 0.5) < delta
     doubtful = (
-        wp.abs(winding - 0.5) < delta
+        near_half
         or ambiguous[i, j, k] != 0
         or on_cone != 0.0
         or crossings_z[i, j, k] != crossings_x[i, j, k]
@@ -561,6 +565,8 @@ def lattice_winding_numbers(
         slot = append_slot(out_count, 0) + 1
         if slot <= out_undecided.shape[0]:
             out_undecided[slot - 1] = p
+        if near_half:
+            append_slot(out_count, 1)
     out_slots[i, j, k] = slot
 
 
@@ -594,7 +600,9 @@ def take_exact_winding(
 ) -> None:
     # In place: an undecided node takes its exact winding number and is settled, unless that too is
     # within ``delta`` of 1/2, where only Warp's own approximation reproduces Warp's sign; those
-    # keep their slot and are counted. This and ``warp_winding_sign`` sweep every node for at most
+    # keep their slot and are counted. Launched only when no node was near 1/2 on the lattice
+    # (``lattice_winding_numbers``' second count), so ``out_count`` arrives zero. This and
+    # ``warp_winding_sign`` sweep every node for at most
     # ``_EXACT_WINDING_CAPACITY`` slots; together 0.73 ms of 22.5 ms device time at 256**3 and
     # 1.2 of 64 ms at 384**3 (``bunny``, 2026-11-02), so a node list (and an overflow path beside
     # it) is declined.

@@ -46,7 +46,7 @@ from warp.geometry import sparse_marching_cubes
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device, scan_count
+from ordito._common import read_scalar, read_values, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import levelset as kernel_levelset
@@ -986,12 +986,19 @@ def _winding_band_field(
         ],
         device=device,
     )
-    # Whether any node is in doubt decides whether a second pass (and possibly Warp's solid-angle
-    # BVH) is needed at all, which the host has to know to launch it.
-    n_undecided = int(read_scalar(counts, 0))
+    # Whether any node is in doubt, and whether any is near 1/2, decide whether a second pass and
+    # Warp's solid-angle BVH are needed at all, which the host has to know to launch them.
+    n_undecided, n_near_half = (int(n) for n in read_values(counts, 0, 2))
     if n_undecided > 0:
         _settle_undecided_winding(
-            vertices, faces, (lower, step), undecided, n_undecided, winding, slots, counts
+            vertices,
+            faces,
+            (lower, step),
+            undecided,
+            (n_undecided, n_near_half),
+            winding,
+            slots,
+            counts,
         )
 
     field = odt.empty_3d(shape, wp.float32, device=device)
@@ -1116,7 +1123,7 @@ def _settle_undecided_winding(
     faces: wp.array[wp.int32],
     lattice: tuple[wp.vec3, wp.vec3],
     undecided: wp.array[wp.vec3],
-    n_undecided: int,
+    undecided_counts: tuple[int, int],
     winding: odt.Array3dFloat32,
     slots: wp.array[wp.int32, Literal[3]],
     counts: wp.array[wp.int32],
@@ -1126,13 +1133,21 @@ def _settle_undecided_winding(
 
     The exact winding number, summed over every face with Warp's per-triangle solid angle, settles
     a node unless it too lies within the margin of 1/2; only those, or all of them when they are
-    too many to sum, are evaluated by Warp itself, which needs its solid-angle BVH. ``lattice`` is
-    the ``(lower, step)`` pair the nodes' positions are formed from.
+    too many to sum, are evaluated by Warp itself, which needs its solid-angle BVH. The sum is only
+    a way of not building that BVH, so it is skipped when a node near 1/2 on the lattice already
+    needs it (``undecided_counts``' second, ``kernels/levelset.lattice_winding_numbers``): Warp's
+    sign is the one the sum stands in for. ``lattice`` is the ``(lower, step)`` pair the nodes'
+    positions are formed from.
     """
     device = vertices.device
     n_faces = faces.size // 3
+    n_undecided, n_near_half = undecided_counts
     n_warp = n_undecided
-    if n_undecided <= _EXACT_WINDING_CAPACITY and n_undecided * n_faces <= _EXACT_WINDING_WORK:
+    if (
+        n_near_half == 0
+        and n_undecided <= _EXACT_WINDING_CAPACITY
+        and n_undecided * n_faces <= _EXACT_WINDING_WORK
+    ):
         exact = _launch.zeros(n_undecided, dtype=wp.float32, device=device)
         n_slices = max(1, min(n_faces, (1 << 20) // n_undecided))
         _launch.launch(
