@@ -49,16 +49,15 @@ The round reads its components from an immutable ``roots`` snapshot taken before
 what makes that argument exact here -- deciding against a ``label`` array that other threads are
 mutating would let one component accept two edges in a round and could close a cycle.
 
-**Both loops carry their own condition so the wrapper can capture them**, and both do it through
-the package's shared round-loop slot table rather than one of their own -- ``array.LOOP_ROUND`` /
-``LOOP_CONDITION`` / ``LOOP_PROGRESS``, closed by ``array.loop_advance`` (``loop_advance_by`` for
-the level loop) and driven by ``_common.run_device_loop``. A per-round host readback drains the
-pipeline the round's launches just filled, and there were about thirty of them across the two
-loops; the wrapper now synchronizes twice in the whole call (the edge numbering's count, and the
-guards with the generators' total, read after the forest). Each loop passes its own round cap: the
-merge count and the claim flag are each a sound termination argument on their own, but a captured
-loop that fails one hangs the device rather than returning a wrong answer, so the cap is cheap
-insurance rather than a schedule.
+**The level loop carries its own condition so the wrapper can capture it**, through the package's
+shared round-loop slot table -- ``array.LOOP_ROUND`` / ``LOOP_CONDITION`` / ``LOOP_PROGRESS``,
+closed by ``array.loop_advance_by`` and driven by ``_common.run_device_loop``: it runs a level per
+vertex of depth, and a per-level host readback would drain the pipeline each level just filled. The
+forest runs a handful of rounds, which the wrapper issues a few at a time between reads of a merge
+flag ``forest_round_setup`` clears and ``forest_link`` raises: recording them cost more than the
+reads. Each loop has a round cap: the merge flag and the claim flag are each a sound termination
+argument on their own, but a captured loop that fails one hangs the device rather than returning a
+wrong answer, so the cap is cheap insurance rather than a schedule.
 
 **The tracing is two kernels and a scan rather than a Python loop per generator.** Each
 generator edge ``(a, b)`` closes into a loop through the tree as ``a -> lca(a, b) -> b``, and its
@@ -373,7 +372,10 @@ def open_forest_round(
 
 @wp.kernel
 def forest_round_setup(
-    labels: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_proposal: wp.array[wp.uint64]
+    labels: wp.array[wp.int32],
+    out_roots: wp.array[wp.int32],
+    out_proposal: wp.array[wp.uint64],
+    out_merged: wp.array[wp.int32],
 ) -> None:
     # Open a Boruvka round: freeze this round's component of every node and empty the proposal
     # slots. ``find_representative`` path-compresses ``labels`` as it goes, so the snapshot doubles
@@ -383,11 +385,13 @@ def forest_round_setup(
     # [`ecl_flatten`][ordito.kernels.algorithms.connected_components.ecl_flatten] verbatim; what
     # this adds is the proposal fill, which used to be a host-side ``fill_`` call per round and is a
     # store here because the kernel already runs at ``dim=n_faces`` and touches every element of
-    # ``out_proposal`` anyway. The round's merge flag is *not* reset here -- ``array.loop_advance``
-    # clears it when it closes the round, which is the only point at which the round's claim has
-    # already been tested.
+    # ``out_proposal`` anyway. Thread 0 also clears the merge flag ``forest_link`` raises, so the
+    # flag the host reads after a run of rounds is the last round's, and no closing launch is
+    # needed.
     f = wp.int32(wp.tid())
     open_forest_round(labels, f, out_roots, out_proposal)
+    if f == 0:
+        out_merged[0] = 0
 
 
 @wp.func
@@ -498,7 +502,7 @@ def forest_link(
     distances: wp.array[wp.int32],
     proposal: wp.array[wp.uint64],
     labels: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
+    out_merged: wp.array[wp.int32],
 ) -> None:
     # Accept the edge either side chose and union the two components. Both endpoints may name the
     # same edge, and one edge may be the choice of two components at once; either way the union runs
@@ -509,7 +513,7 @@ def forest_link(
     # round: the thread reads only its own entry, and from the next round on the edge's two faces
     # share a root, so ``boruvka_cross_edge`` rejects it whether or not the bit is still set.
     #
-    # ``LOOP_PROGRESS`` is raised by a plain store rather than counted with ``wp.atomic_add``:
+    # ``out_merged`` is raised by a plain store rather than counted with ``wp.atomic_add``:
     # nothing reads the merge *count*, only whether the round merged anything, and a round that
     # merged nothing means every component is spanned -- which is the loop's real exit.
     #
@@ -522,7 +526,7 @@ def forest_link(
         candidate, edge_faces, roots, unique_edges, distances, proposal, labels, e
     )
     if accepted != 0:
-        out_state[LOOP_PROGRESS] = 1
+        out_merged[0] = 1
 
 
 @wp.kernel
@@ -537,9 +541,9 @@ def serial_dual_forest(
     out_labels: wp.array[wp.int32],
 ) -> None:
     # dim=1, the CPU device's Boruvka loop: every round's ``forest_round_setup``,
-    # ``forest_propose``, ``forest_link`` and ``array.loop_advance`` as loops of one thread, in the
-    # order a device running each launch's threads one after another runs them, so the forest is
-    # the launched loop's own. The same round cap, and the same stop on a round that merged nothing.
+    # ``forest_propose`` and ``forest_link`` as loops of one thread, in the order a device running
+    # each launch's threads one after another runs them, so the forest is the launched loop's own.
+    # The same round cap, and the same stop on a round that merged nothing.
     n_faces = out_labels.shape[0]
     n_candidates = candidate.shape[0]
     rounds = wp.int32(0)

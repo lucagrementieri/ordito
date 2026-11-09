@@ -26,16 +26,25 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_values, require_same_device, run_device_loop
+from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import homology as kernel_homology
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 
-# Where the two device loops' state words sit in ``homology_generators_with_offsets``' one upload.
+# Where the level loop's state word and the dual forest's merge flag sit in
+# ``homology_generators_with_offsets``' one upload.
 _PRIMAL_STATE = slice(0, 3)
-_FOREST_STATE = slice(3, 6)
+_FOREST_MERGED = slice(3, 4)
+
+# Boruvka rounds the dual forest issues between two reads of its merge flag. The forest takes 3 to 7
+# rounds on the benchmark meshes, where a recorded loop paid its recording and its first launch.
+# Whole calls (2026-11-09, CUDA, byte-identical) at 2 / 3 / 4 / 8 rounds a read against the captured
+# loop: a 256-face torus 0.95 / 0.91 / 0.93 / 1.05x (medians), ``sphere_med`` 0.97 / 0.95 / 0.95 /
+# 0.98x, ``handles_64`` 1.01 / 1.01 / 0.99 / 0.96x, a scrambled 2 M-face torus 0.99 / 1.00 / 0.99 /
+# 1.01x.
+_FOREST_ROUNDS_PER_READ = 4
 
 
 def homology_generators(
@@ -268,16 +277,14 @@ def homology_generators_with_offsets(
     # resolves competing claims by lowest vertex index, not by column position.
     neighbors, offsets = od.graph.edges_to_neighbor_lists(n_vertices, unique_edges, validate=False)
     # Every small ``int32`` buffer the decomposition needs, uploaded at once holding its initial
-    # values: the primal level loop's state, the dual forest's and a caller's root. Each loop's
-    # condition starts true because ``wp.capture_while`` reads it before the first round; the
-    # primal loop claims level 1 first and nothing is claimed yet.
-    small = _launch.array(
-        [1, 1, 0, 0, 1, 0, 0 if root is None else root], dtype=wp.int32, device=device
-    )
+    # values: the primal level loop's state, the dual forest's merge flag and a caller's root. The
+    # level loop's condition starts true because ``wp.capture_while`` reads it before the first
+    # round; it claims level 1 first and nothing is claimed yet.
+    small = _launch.array([1, 1, 0, 0, 0 if root is None else root], dtype=wp.int32, device=device)
     parents, distances = _primal_spanning_tree(
         offsets,
         neighbors,
-        odt.as_dense(unique_edges[0] if root is None else small[_FOREST_STATE.stop :]),
+        odt.as_dense(unique_edges[0] if root is None else small[_FOREST_MERGED.stop :]),
         odt.as_dense(small[_PRIMAL_STATE]),
         labels,
         tree,
@@ -321,7 +328,7 @@ def homology_generators_with_offsets(
         distances,
         labels,
         roots,
-        odt.as_dense(small[_FOREST_STATE]),
+        odt.as_dense(small[_FOREST_MERGED]),
     )
     pairs = _launch.view_as(loop_counts, wp.vec2i)
     _size_generator_loops(candidate, unique_edges, parents, distances, apex, pairs)
@@ -450,7 +457,7 @@ def _remove_dual_spanning_forest(
     distances: wp.array[wp.int32],
     labels: wp.array[wp.int32],
     roots: wp.array[wp.int32],
-    state: wp.array[wp.int32],
+    merged: wp.array[wp.int32],
 ) -> None:
     """
     Clear from ``candidate``, in place, a spanning forest of the dual graph over its edges.
@@ -461,10 +468,10 @@ def _remove_dual_spanning_forest(
     Boruvka: each round hands every component its incident candidate edge whose loop through the
     root is longest (``kernels/homology.forest_edge_key``, lowest index on a tie), accepts
     those edges and unions the components, so the component count at least halves per round and the
-    loop finishes in ``O(log n_faces)`` of them. Four launches per round and no host
-    synchronization, or on the CPU one launch running the whole loop; the round cap in the state
-    word only bounds a loop the halving argument already bounds, since a captured loop that runs
-    away hangs the device.
+    loop finishes in ``O(log n_faces)`` of them. Three launches per round, issued
+    ``_FOREST_ROUNDS_PER_READ`` at a time between reads of the merge flag, or on the CPU one launch
+    running the whole loop; a round that merges nothing ends it, and a round past it changes
+    nothing. The round cap only bounds a loop the halving argument already bounds.
 
     A **forest** is all the decomposition needs — the cotree is read as a set, and the loop tracing
     walks the *primal* parents — so the dual side has no root and no parent pointers, and its shape
@@ -472,7 +479,7 @@ def _remove_dual_spanning_forest(
     non-primal-tree edges is already nearly a tree, so its diameter is enormous.
 
     ``labels`` arrives as the identity over the faces, ``roots`` as ``(n_faces,)`` scratch and
-    ``state`` as the round word ``[0, 1, 0]``.
+    ``merged`` as ``(1,)`` scratch, the last round's merge flag.
     """
     device = candidate.device
     n_candidates = candidate.size
@@ -482,41 +489,52 @@ def _remove_dual_spanning_forest(
     proposal = _launch.empty(n_faces, dtype=wp.uint64, device=device)
     # The component count at least halves per round, so ``bit_length`` -- ``ceil(log2)`` plus one --
     # caps a loop the halving argument already bounds; it can only be reached by a logic error.
-    max_rounds = wp.int32(max(1, n_faces.bit_length()) + 1)
+    max_rounds = max(1, n_faces.bit_length()) + 1
     if wp.get_device(device).is_cpu:
-        # The CPU runs a launch's threads one after another, so the rounds' four launches run as
-        # one thread's loops in that same order (``kernels/homology.serial_dual_forest``).
+        # The CPU runs a launch's threads one after another, so the rounds' launches run as one
+        # thread's loops in that same order (``kernels/homology.serial_dual_forest``).
         _launch.launch(
             kernel_homology.serial_dual_forest,
             dim=1,
-            inputs=[candidate, edge_faces, unique_edges, distances, max_rounds],
+            inputs=[candidate, edge_faces, unique_edges, distances, wp.int32(max_rounds)],
             outputs=[roots, proposal, labels],
             device=device,
         )
         return
 
-    def round_of_boruvka() -> None:
-        _launch.launch(
-            kernel_homology.forest_round_setup,
-            dim=n_faces,
-            inputs=[labels, roots, proposal],
-            device=device,
-        )
-        _launch.launch(
-            kernel_homology.forest_propose,
-            dim=n_candidates,
-            inputs=[candidate, edge_faces, roots, unique_edges, distances, proposal],
-            device=device,
-        )
-        _launch.launch(
-            kernel_homology.forest_link,
-            dim=n_candidates,
-            inputs=[candidate, edge_faces, roots, unique_edges, distances, proposal, labels, state],
-            device=device,
-        )
-        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
-
-    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_of_boruvka)
+    for _ in range(0, max_rounds, _FOREST_ROUNDS_PER_READ):
+        for _ in range(_FOREST_ROUNDS_PER_READ):
+            _launch.launch(
+                kernel_homology.forest_round_setup,
+                dim=n_faces,
+                inputs=[labels, roots, proposal, merged],
+                device=device,
+            )
+            _launch.launch(
+                kernel_homology.forest_propose,
+                dim=n_candidates,
+                inputs=[candidate, edge_faces, roots, unique_edges, distances, proposal],
+                device=device,
+            )
+            _launch.launch(
+                kernel_homology.forest_link,
+                dim=n_candidates,
+                inputs=[
+                    candidate,
+                    edge_faces,
+                    roots,
+                    unique_edges,
+                    distances,
+                    proposal,
+                    labels,
+                    merged,
+                ],
+                device=device,
+            )
+        # Whether the last round merged anything: a round that merged nothing found every
+        # component spanned.
+        if read_scalar(merged) == 0:
+            return
 
 
 def _size_generator_loops(
