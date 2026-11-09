@@ -1292,6 +1292,7 @@ class _Plan:
                             numeric.blocks,
                         ],
                         device=device,
+                        block_dim=kernel_cholesky.UPDATE_TILES_BLOCK_DIM if tiled else 256,
                     )
             for children, width in self.extend[h]:
                 _launch.launch(

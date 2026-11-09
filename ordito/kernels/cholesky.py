@@ -616,14 +616,17 @@ def update_panel_entries(
 UPDATE_TILE = 4
 # ``update_panel_tiles`` takes a panel's update when the level's widest front updates at least
 # ``UPDATE_TILES_MIN_FRONT`` tiles and the launch holds at least ``UPDATE_TILES_MIN_THREADS``;
-# ``update_panel_entries`` takes the rest. A tile thread's sixteen sums cost a narrow launch 3-8x
-# what a thread an entry costs, so the tiles pay only on wide launches, and a level of many small
-# fronts (the leaves, launched at their widest) stays a thread an entry; narrower blocks (32 to
-# 128 lanes) did not lower that floor.
-# Fitted per launch on icospheres of 4-7 subdivisions, scalar and 2 x 2 expanded: the update
-# 0.68x at 164 k rows and 0.47-0.72x expanded, every smaller case at par (2026-11-09).
-UPDATE_TILES_MIN_FRONT = 256
-UPDATE_TILES_MIN_THREADS = 65536
+# ``update_panel_entries`` takes the rest. A tile thread issues sixteen times the ``float64``
+# multiply-adds of an entry's, and ``float64`` issue is per SM, so a narrow launch of tiles waits
+# on few SMs: ``UPDATE_TILES_BLOCK_DIM`` lanes a block spread them over the most (a narrow
+# launch's tiles 1.8-2.0x a thread an entry's time at 32 lanes, 3.6-3.9x at 256; wide launches
+# best at 32 too). A level of many small fronts (the leaves, launched at their widest) stays a
+# thread an entry. Fitted on every update launch timed both ways, icospheres of 4-7 subdivisions,
+# scalar and 2 x 2 expanded (2026-11-09). Declined: a 2 x 2 tile form chosen between the two
+# (the update 0.95x against 0.98x at 41 k rows, about 1 % of the factor, for a third kernel).
+UPDATE_TILES_MIN_FRONT = 512
+UPDATE_TILES_MIN_THREADS = 32768
+UPDATE_TILES_BLOCK_DIM = 32
 
 
 @wp.func
@@ -681,7 +684,8 @@ def panel_tile_product(
     return total
 
 
-@wp.kernel
+# A module of its own: launched at ``UPDATE_TILES_BLOCK_DIM`` lanes (§12.4).
+@wp.kernel(enable_backward=False, module="unique")
 def update_panel_tiles(
     level: wp.array[wp.int32],
     front_offset: wp.array[wp.int64],

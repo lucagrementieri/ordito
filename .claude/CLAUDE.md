@@ -1011,13 +1011,16 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   share `max_tangent_sphere` does not show). A target past a kernel's optimum re-slices a grid
   that was already full: `1 << 17` cost the arg-max 1.2-2x over 437 k points at eight rays and
   the winding number 1.5x on bunny at 64 queries.
-- **A `float64` rank-k update register-blocks only on wide launches** (2026-11-09,
-  `kernels/cholesky.update_panel_tiles`): a 4 x 4 tile a thread (four times the multiply-adds a
-  load) over the lower triangle's tiles alone took the multifrontal update 0.47-0.72x where a
-  launch holds 65 536 tiles, but costs a narrow launch 3-8x a thread an entry, whatever the block
-  width (32-256): choose per launch from both widths, and fit the rule on every launch timed both
-  ways, never on whole calls in one process (an in-process threshold sweep read 0.92x where the
-  interleaved A/B read par).
+- **A `float64` rank-k update register-blocks only on wide launches, in narrow blocks**
+  (2026-11-09, `kernels/cholesky.update_panel_tiles`): a 4 x 4 tile a thread (four times the
+  multiply-adds a load) over the lower triangle's tiles alone took the multifrontal update
+  0.40-0.66x on wide launches. `float64` issue is per SM, so sixteen sums a thread pile a narrow
+  launch's work onto few SMs: 32-lane blocks cut that floor from 3.6-3.9x to 1.8-2.0x a thread an
+  entry's time and won at the wide end too (in a module of its own, §12.4). Choose per launch from
+  both widths, fitted on every launch timed both ways, never on whole calls in one process (an
+  in-process threshold sweep read 0.92x where the interleaved A/B read par), and never beside
+  another GPU job (one such run "showed" block width did not matter). A 2 x 2 form as a third
+  choice bought about 1 % of the factor.
 - **Gather-form fusion** (recomputing a neighbour's per-face value from positions instead of reading a table) wins below ~100 k faces and on grid-ordered meshes but loses 1.7-2.1x on scrambled ~1 M-face meshes (`cotmatrix`, `filter_normals`). Price it on a scrambled large mesh.
 - **Independent per-item iterations collapse into one in-thread loop:** a per-round launch plus convergence readback over items that converge independently (`max_tangent_sphere`) became one kernel, 1.1-1.2x device time and no per-round sync. Keep that loop out of a kernel holding another long walk (1.1-1.6x, registers).
 - **Occupancy for pointer-chasing tree walks:** a thread-per-query BVH descent that chases nodes through L1 runs faster with fewer warps resident. The `k = 1` point-tree descent (40 registers) at 1024-thread blocks was 0.75-0.87x its 256-wide launch from about two blocks per SM, and 1.04-1.67x below one (too few blocks), so its width is gated on the query count (`kernels/neighbors.DESCENT_WIDE_BLOCK_DIM`). Fewer registers do not make a walk faster by themselves: at 256 the same descent lost 1.1-1.2x to Warp's 53-register mesh query on the same tree, and a line-for-line port of that query lost the same. Check a new walk at two widths before reading its per-node code.
@@ -1202,13 +1205,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **`sparse_cholesky` below ~40 k rows** (2026-11-09): the factor is at par there after the
-  register-blocked update, because its update launches are narrow and the tile thread's floor
-  (3-8x a thread an entry, not lowered by narrower blocks; `kernels/cholesky.UPDATE_TILES_*`) keeps
-  them a thread an entry. Undiagnosed: whether the floor is the sixteen sums' issue or the four
-  rows' scattered loads; a per-thread 2 x 2 tile or a shared-memory panel stage are the next
-  shapes to price. The analysis (~2 ms host-bound at every benchmark size: ~10 dissection depths of
-  nine operations) is untouched; its replay is a recorded decline.
+- **`sparse_cholesky`'s analysis** (2026-11-09): ~2 ms host-bound at every benchmark size
+  (~10 dissection depths of nine operations, a sort and a scan each, then the structure and
+  schedule passes with two readbacks); the factor below ~40 k rows is at par after the tiled
+  update (its launches are narrow; a tile thread's floor is its `float64` issue). The analysis'
+  replay is a recorded decline.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
