@@ -921,6 +921,27 @@ return value;
 def warp_lanes_max_nonnegative(lanes: wp.int32, value: wp.float32) -> wp.float32: ...
 
 
+# The ``value`` of the lane below, for a whole converged warp: a wavefront whose lane ``t`` reads
+# what lane ``t - 1`` wrote a step earlier passes it in a register instead of through memory and a
+# barrier. Lane 0 gets its own ``value``. One native a dtype (a native cannot return its argument's
+# type). The CPU device returns ``value``: its blocks run one lane.
+_WARP_SHUFFLE_UP = """
+#if defined(__CUDA_ARCH__)
+return __shfl_up_sync(0xffffffffu, value, 1);
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_SHUFFLE_UP)
+def warp_shuffle_up_float(value: wp.float32) -> wp.float32: ...
+
+
+@wp.func_native(_WARP_SHUFFLE_UP)
+def warp_shuffle_up_int(value: wp.int32) -> wp.int32: ...
+
+
 @wp.func
 def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
     # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the

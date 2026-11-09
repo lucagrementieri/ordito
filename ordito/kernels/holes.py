@@ -31,6 +31,8 @@ from ordito.kernels.reduce import (
     last_ticket,
     take_ticket,
     thread_fence,
+    warp_shuffle_up_float,
+    warp_shuffle_up_int,
 )
 from ordito.kernels.triangles import corner_triple
 
@@ -1517,23 +1519,6 @@ def stitch_edge_metric(a: wp.vec3, b: wp.vec3, lft: wp.vec3, rgt: wp.vec3) -> wp
     return (1.0 - wp.dot(norm_l, norm_r)) * 1.0e4
 
 
-@wp.func
-def stitch_prev_apex(
-    a_pos: wp.array[wp.vec3],
-    b_pos: wp.array[wp.vec3],
-    came: wp.array2d[wp.int32],
-    n_a: wp.int32,
-    n_b: wp.int32,
-    i: wp.int32,
-    j: wp.int32,
-) -> wp.vec3:
-    # Apex of the band triangle already placed at cell (i, j) -- the vertex advanced to reach it.
-    # Only called when came[i, j] is valid.
-    if came[i, j] == CAME_A:
-        return a_pos[(i - 1) % n_a]
-    return b_pos[(j - 1) % n_b]
-
-
 @wp.kernel
 def seed_stitch_tables(out_dp: wp.array2d[wp.float32], out_came: wp.array2d[wp.int32]) -> None:
     # Seed the stitch grid DP: every cell unreached (``BAD_METRIC``, no predecessor) except the
@@ -1575,6 +1560,89 @@ class StitchTables:
 
 
 @wp.func
+def stitch_rim_index(k: wp.int32, n: wp.int32) -> wp.int32:
+    # ``k`` modulo a rim of ``n`` for ``k`` in ``[-n, 2 n)``, which covers every index a cell
+    # reads (``i - 2`` to ``i`` for ``i`` in ``[0, n]``) with no division.
+    return wp.where(k < 0, k + n, wp.where(k >= n, k - n, k))
+
+
+@wp.func
+def stitch_cell_cost(
+    tables: StitchTables,
+    i: wp.int32,
+    j: wp.int32,
+    a_back: wp.vec3,
+    a_prev: wp.vec3,
+    a_cur: wp.vec3,
+    a_opp_ok: wp.int32,
+    a_opp: wp.vec3,
+    b_back: wp.vec3,
+    b_prev: wp.vec3,
+    b_cur: wp.vec3,
+    b_opp_ok: wp.int32,
+    b_opp: wp.vec3,
+    up_dp: wp.float32,
+    up_came: wp.int32,
+    left_dp: wp.float32,
+    left_came: wp.int32,
+) -> tuple[wp.float32, wp.int32]:
+    # One cell of the stitch grid DP: ``dp[i, j]`` is the min cost of the band consuming ``i``
+    # edges of A and ``j`` edges of B from the aligned start at cell (0, 0), and ``came[i, j]``
+    # says which rim the last step advanced. It reads *only* its two predecessors' entries,
+    # ``(i - 1, j)`` as ``up_*`` and ``(i, j - 1)`` as ``left_*`` (unread where ``i`` or ``j`` is
+    # 0), which is what lets the kernels below schedule it differently, and keep the cells they
+    # read in memory or in registers, and still agree cell for cell.
+    #
+    # Every position it reads is an argument: ``a_*`` are A's vertices ``i - 2``, ``i - 1`` and
+    # ``i`` and the opposite vertex of rim edge ``i - 1`` with its validity, ``b_*`` B's at ``j``,
+    # indices taken modulo the rim (``stitch_rim_index``). None depends on another
+    # cell, so a schedule issues all of their loads at once, ahead of the predecessors.
+    #
+    # The caller owns cell (0, 0) and must not call here for it. The cost is returned rather than
+    # stored so that no schedule has to decide where the answer goes.
+    up = tables.up
+    metric_id = tables.metric_id
+    # Never let a full ring come from one loop before touching the other.
+    if (i == tables.n_a and j == 0) or (j == tables.n_b and i == 0):
+        return BAD_METRIC, CAME_NONE
+
+    complex_edge = metric_id == METRIC_COMPLEX_STITCH
+    # Both steps' costs are formed whether or not their predecessor exists, and chosen after: two
+    # independent chains the compiler interleaves, where a branch each ran them in turn.
+    #
+    # Advance loop A: new triangle (a[i-1], b[j], a[i]). Whichever rim advances, the connection
+    # edge the step introduces is (a[i], b[j]) -- the other two corners were already joined at the
+    # cell this came from -- so both branches pass it as ``stitch_triangle_metric``'s first and
+    # third arguments and the rim-side corner as the second.
+    w_a = up_dp + stitch_triangle_metric(a_cur, a_prev, b_cur, up, metric_id)
+    # Advance loop B: new triangle (a[i], b[j-1], b[j]).
+    w_b = left_dp + stitch_triangle_metric(a_cur, b_prev, b_cur, up, metric_id)
+    if complex_edge:
+        # The apex of the band triangle placed at each predecessor: the vertex advanced to it.
+        up_apex = wp.where(up_came == CAME_A, a_back, b_prev)
+        left_apex = wp.where(left_came == CAME_A, a_prev, b_back)
+        w_a = wp.where(
+            up_came != CAME_NONE, w_a + stitch_edge_metric(a_prev, b_cur, up_apex, a_cur), w_a
+        )
+        w_b = wp.where(
+            left_came != CAME_NONE, w_b + stitch_edge_metric(a_cur, b_prev, left_apex, b_cur), w_b
+        )
+        w_a = wp.where(a_opp_ok != 0, w_a + stitch_edge_metric(a_cur, a_prev, a_opp, b_cur), w_a)
+        # ``stitch_rolled_rims`` keys slot k on the rim edge (loop[k], loop[k + 1]), so the edge
+        # (b[j - 1], b[j]) introduced by the B step is slot j - 1, not j -- the same convention
+        # the A step uses.
+        w_b = wp.where(b_opp_ok != 0, w_b + stitch_edge_metric(b_prev, b_cur, b_opp, a_cur), w_b)
+    best = FLOAT32_INF_CONSTANT
+    best_came = CAME_NONE
+    if i >= 1 and up_dp < BAD_METRIC:
+        update_argmin(best, best_came, w_a, CAME_A)
+    if j >= 1 and left_dp < BAD_METRIC:
+        update_argmin(best, best_came, w_b, CAME_B)
+
+    return best, best_came
+
+
+@wp.func
 def stitch_dp_cell(
     tables: StitchTables,
     i: wp.int32,
@@ -1582,63 +1650,57 @@ def stitch_dp_cell(
     out_dp: wp.array2d[wp.float32],
     out_came: wp.array2d[wp.int32],
 ) -> tuple[wp.float32, wp.int32]:
-    # One cell of the stitch grid DP: ``dp[i, j]`` is the min cost of the band consuming ``i``
-    # edges of A and ``j`` edges of B from the aligned start at cell (0, 0), and ``came[i, j]``
-    # says which rim the last step advanced. It reads *only* ``(i - 1, j)`` and ``(i, j - 1)``,
-    # which is what lets the two kernels below schedule it differently and still agree cell for
-    # cell -- one thread per anti-diagonal cell, or one block per tile of the grid.
-    #
-    # The caller owns cell (0, 0) and must not call here for it. The cost is returned rather than
-    # stored so that neither schedule has to decide where the answer goes.
-    a_pos = tables.a_pos
-    b_pos = tables.b_pos
-    up = tables.up
-    metric_id = tables.metric_id
+    # ``stitch_cell_cost`` reading its predecessors from the tables, as every schedule that keeps
+    # the grid in memory does, and its positions at wrapped indices, every one unconditionally:
+    # those it does not read are in range and unused, and the ones only ``complex_stitch`` reads
+    # under that metric alone.
+    up_dp = BAD_METRIC
+    up_came = CAME_NONE
+    if i >= 1:
+        up_dp = out_dp[i - 1, j]
+        up_came = out_came[i - 1, j]
+    left_dp = BAD_METRIC
+    left_came = CAME_NONE
+    if j >= 1:
+        left_dp = out_dp[i, j - 1]
+        left_came = out_came[i, j - 1]
     n_a = tables.n_a
     n_b = tables.n_b
-    # Never let a full ring come from one loop before touching the other.
-    if (i == n_a and j == 0) or (j == n_b and i == 0):
-        return BAD_METRIC, CAME_NONE
-
-    complex_edge = metric_id == METRIC_COMPLEX_STITCH
-    best = FLOAT32_INF_CONSTANT
-    best_came = CAME_NONE
-
-    # Advance loop A: new triangle (a[i-1], b[j], a[i]). Whichever rim advances, the connection
-    # edge the step introduces is (a[i], b[j]) -- the other two corners were already joined at the
-    # cell this came from -- so both branches pass it as ``stitch_triangle_metric``'s first and
-    # third arguments and the rim-side corner as the second.
-    if i >= 1 and out_dp[i - 1, j] < BAD_METRIC:
-        a_prev = a_pos[(i - 1) % n_a]
-        a_cur = a_pos[i % n_a]
-        b_cur = b_pos[j % n_b]
-        w = out_dp[i - 1, j] + stitch_triangle_metric(a_cur, a_prev, b_cur, up, metric_id)
-        if complex_edge:
-            if out_came[i - 1, j] != CAME_NONE:
-                c_op = stitch_prev_apex(a_pos, b_pos, out_came, n_a, n_b, i - 1, j)
-                w = w + stitch_edge_metric(a_prev, b_cur, c_op, a_cur)
-            if tables.a_opp_valid[(i - 1) % n_a] != 0:
-                w = w + stitch_edge_metric(a_cur, a_prev, tables.a_opp[(i - 1) % n_a], b_cur)
-        update_argmin(best, best_came, w, CAME_A)
-
-    # Advance loop B: new triangle (a[i], b[j-1], b[j]).
-    if j >= 1 and out_dp[i, j - 1] < BAD_METRIC:
-        a_cur = a_pos[i % n_a]
-        b_prev = b_pos[(j - 1) % n_b]
-        b_cur = b_pos[j % n_b]
-        w = out_dp[i, j - 1] + stitch_triangle_metric(a_cur, b_prev, b_cur, up, metric_id)
-        if complex_edge:
-            if out_came[i, j - 1] != CAME_NONE:
-                c_op = stitch_prev_apex(a_pos, b_pos, out_came, n_a, n_b, i, j - 1)
-                w = w + stitch_edge_metric(a_cur, b_prev, c_op, b_cur)
-            # ``stitch_rolled_rims`` keys slot k on the rim edge (loop[k], loop[k + 1]), so
-            # the edge (b[j - 1], b[j]) introduced by this step is slot j - 1, not j -- the same
-            # convention the A branch uses above.
-            if tables.b_opp_valid[(j - 1) % n_b] != 0:
-                w = w + stitch_edge_metric(b_prev, b_cur, tables.b_opp[(j - 1) % n_b], a_cur)
-        update_argmin(best, best_came, w, CAME_B)
-
-    return best, best_came
+    a_slot = stitch_rim_index(i - 1, n_a)
+    b_slot = stitch_rim_index(j - 1, n_b)
+    # Only ``complex_stitch`` reads the apexes before the rim edges and the opposite vertices.
+    a_back = wp.vec3()
+    a_opp_ok = wp.int32(0)
+    a_opp = wp.vec3()
+    b_back = wp.vec3()
+    b_opp_ok = wp.int32(0)
+    b_opp = wp.vec3()
+    if tables.metric_id == METRIC_COMPLEX_STITCH:
+        a_back = tables.a_pos[stitch_rim_index(i - 2, n_a)]
+        a_opp_ok = tables.a_opp_valid[a_slot]
+        a_opp = tables.a_opp[a_slot]
+        b_back = tables.b_pos[stitch_rim_index(j - 2, n_b)]
+        b_opp_ok = tables.b_opp_valid[b_slot]
+        b_opp = tables.b_opp[b_slot]
+    return stitch_cell_cost(
+        tables,
+        i,
+        j,
+        a_back,
+        tables.a_pos[a_slot],
+        tables.a_pos[stitch_rim_index(i, n_a)],
+        a_opp_ok,
+        a_opp,
+        b_back,
+        tables.b_pos[b_slot],
+        tables.b_pos[stitch_rim_index(j, n_b)],
+        b_opp_ok,
+        b_opp,
+        up_dp,
+        up_came,
+        left_dp,
+        left_came,
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -1699,6 +1761,95 @@ def stitch_dp_sweep(
 # it fails every run.
 STITCH_DP_TILE = 32
 
+# Lanes of one CUDA warp: the tile width at which ``stitch_dp_tile`` keeps its wavefront in
+# registers (``stitch_dp_warp_tile``).
+WARP_LANES = 32
+
+
+@wp.func
+def stitch_dp_warp_tile(
+    tables: StitchTables,
+    i0: wp.int32,
+    j0: wp.int32,
+    t: wp.int32,
+    out_dp: wp.array2d[wp.float32],
+    out_came: wp.array2d[wp.int32],
+):
+    # ``stitch_dp_tile``'s ``WARP_LANES``-square at ``(i0, j0)`` by one warp, lane ``t`` owning its
+    # row ``i0 + t`` and computing column ``j0 + d - t`` at step ``d``. A cell's left predecessor is
+    # then the lane's own cell of the step before and its upper one lane ``t - 1``'s, passed by a
+    # shuffle: only the square's top row and left column read the grid, which earlier launches
+    # wrote. The memory form chained the predecessor loads of every step through L2 behind a
+    # barrier; the cells are ``stitch_cell_cost``'s, so the two agree bit for bit.
+    i = i0 + t
+    n_a = tables.n_a
+    n_b = tables.n_b
+    # The lane's A side, the same at every step of its row.
+    # A lane past the grid's last row reads row ``n_a``'s, unused.
+    i_read = wp.min(i, n_a)
+    a_slot = stitch_rim_index(i_read - 1, n_a)
+    a_back = tables.a_pos[stitch_rim_index(i_read - 2, n_a)]
+    a_prev = tables.a_pos[a_slot]
+    a_cur = tables.a_pos[stitch_rim_index(i_read, n_a)]
+    a_opp_ok = tables.a_opp_valid[a_slot]
+    a_opp = tables.a_opp[a_slot]
+    # The lane's last cell: ``(i, j - 1)`` at the next step, and lane ``t + 1``'s upper predecessor.
+    mine_dp = wp.float32(BAD_METRIC)
+    mine_came = wp.int32(CAME_NONE)
+    for d in range(2 * WARP_LANES - 1):
+        # The step's B side first, by every lane at a column clamped into the grid (an idle lane's
+        # values are unused): no load waits on a cell.
+        j = j0 + d - t
+        j_read = wp.clamp(j, 0, n_b)
+        b_slot = stitch_rim_index(j_read - 1, n_b)
+        b_back = tables.b_pos[stitch_rim_index(j_read - 2, n_b)]
+        b_prev = tables.b_pos[b_slot]
+        b_cur = tables.b_pos[stitch_rim_index(j_read, n_b)]
+        b_opp_ok = tables.b_opp_valid[b_slot]
+        b_opp = tables.b_opp[b_slot]
+        # Every lane shuffles, the idle ones included: a shuffle needs the whole warp.
+        up_dp = warp_shuffle_up_float(mine_dp)
+        up_came = warp_shuffle_up_int(mine_came)
+        dj = d - t
+        if dj >= 0 and dj < WARP_LANES:
+            if t == 0 and i >= 1:
+                up_dp = out_dp[i - 1, j]
+                up_came = out_came[i - 1, j]
+            left_dp = mine_dp
+            left_came = mine_came
+            if dj == 0 and j >= 1:
+                left_dp = out_dp[i, j - 1]
+                left_came = out_came[i, j - 1]
+            if i <= n_a and j <= n_b:
+                if i != 0 or j != 0:
+                    best, best_came = stitch_cell_cost(
+                        tables,
+                        i,
+                        j,
+                        a_back,
+                        a_prev,
+                        a_cur,
+                        a_opp_ok,
+                        a_opp,
+                        b_back,
+                        b_prev,
+                        b_cur,
+                        b_opp_ok,
+                        b_opp,
+                        up_dp,
+                        up_came,
+                        left_dp,
+                        left_came,
+                    )
+                    out_dp[i, j] = best
+                    out_came[i, j] = best_came
+                    mine_dp = best
+                    mine_came = best_came
+                else:
+                    # The seed the driver wrote.
+                    mine_dp = out_dp[i, j]
+                    mine_came = out_came[i, j]
+
 
 @wp.kernel(enable_backward=False)
 def stitch_dp_tile(
@@ -1728,12 +1879,24 @@ def stitch_dp_tile(
     # each anti-diagonal in turn -- correct, because the cells of one anti-diagonal are independent
     # of each other. With the constant it would compute one cell in ``tile`` and leave the rest of
     # the square at its fill value.
+    #
+    # **A square of one warp keeps its wavefront in registers** (``stitch_dp_warp_tile``), the
+    # shipped CUDA width: the memory form's step was a chain of L2 loads -- the predecessors, then
+    # the positions behind their branches -- and its cells' arithmetic ran a branch at a time.
+    # With the predecessors shuffled, every position load issued ahead of the cell and both of a
+    # cell's step costs formed before the choice (``stitch_cell_cost``), the kernel took 0.67x at
+    # rims of 512 and 1 024 (2026-11-09), byte-identical. What is left is the complex metric's
+    # arithmetic latency, one warp to an SM. The memory form below is the CPU device's (one lane a
+    # block) and any wider tile's.
     blk, t = wp.tid()
     bi = bi_lo + blk
     i0 = bi * tile
     j0 = (block_diag - bi) * tile
     n_a = tables.n_a
     n_b = tables.n_b
+    if wp.block_dim() == WARP_LANES and tile == WARP_LANES and kernel_array.device_is_cpu() == 0:
+        stitch_dp_warp_tile(tables, i0, j0, t, out_dp, out_came)
+        return
     for d in range(2 * tile - 1):
         di = t
         while di < tile:
