@@ -3061,8 +3061,8 @@
  "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cpu-True]": {
   "counts": {
    "launch": 19,
-   "alloc": 24,
-   "h2h": 3,
+   "alloc": 25,
+   "h2h": 4,
    "readback": 8,
    "scan": 6,
    "sort": 1

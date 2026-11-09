@@ -3360,9 +3360,9 @@
  "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cuda-True]": {
   "counts": {
    "launch": 23,
-   "alloc": 26,
-   "memset": 8,
-   "d2d": 3,
+   "alloc": 27,
+   "memset": 9,
+   "d2d": 4,
    "d2h": 8,
    "scan": 6,
    "sort": 1

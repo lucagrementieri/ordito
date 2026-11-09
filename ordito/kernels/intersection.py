@@ -1726,18 +1726,23 @@ def section_rim_edges(
     source: wp.array[wp.int32],
     shifted: wp.array[wp.float32],
     out_edges: wp.array2d[wp.int32],
+    out_count: wp.array[wp.int32],
 ) -> None:
     # Rim edge ``e`` when it is a section edge (both ends on the level set), else ``(-1, -1)``,
     # which ``graph.successor_cycles(validate=False)`` drops: the section is chained in the
-    # mesh's own vertex numbering, with no host compaction. A rim edge whose two ends merged into
-    # one crossing (a face the cut collapsed) is a loop on one vertex: it bounds nothing, and kept
-    # it would give that vertex a second successor, which the chaining picks by arrival order.
+    # mesh's own vertex numbering, with no host compaction. ``out_count[0]`` (zeroed) counts the
+    # section edges, which a clean section's cycles cover once each. A rim edge whose two ends
+    # merged into one crossing (a face the cut collapsed) is a loop on one vertex: it bounds
+    # nothing, and kept it would give that vertex a second successor, which the chaining picks by
+    # arrival order.
     e = wp.int32(wp.tid())
     a = rim[e, 0]
     b = rim[e, 1]
     keep = a != b and on_level_set(source, shifted, a) and on_level_set(source, shifted, b)
     out_edges[e, 0] = wp.where(keep, a, -1)
     out_edges[e, 1] = wp.where(keep, b, -1)
+    if keep:
+        wp.atomic_add(out_count, 0, 1)
 
 
 @wp.kernel

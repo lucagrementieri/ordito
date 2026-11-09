@@ -2074,6 +2074,40 @@ def test_clip_mesh_with_field_capped_closes_around_a_collapsed_cut_face(device: 
     assert od.validation.is_watertight(capped_v, proper_wp)
 
 
+def test_clip_mesh_with_field_capped_splits_a_pinched_section(device: str) -> None:
+    """
+    Ordito against ordito: a section passing one point twice is capped as two loops.
+
+    Vertex 0 sits just outside the level set's tolerance on the dropped side with its fan's
+    neighbours far kept, far kept, dropped, far kept, far kept: every crossing on its edges is its
+    own position, so they merge into one point the section passes twice (two edges in, two out).
+    The vertex chaining keeps one of its two successors; its ranks then collided and the cap was
+    built on a vertex off the section (seven open edges, self-intersecting). The section must be
+    split at the point into loops the cap closes: the only boundary edges left are the collapsed
+    faces' one-vertex edges, the cap crosses nothing, and the result repeats call to call.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=2, device=device)
+    heights_np = vertices_wp.numpy()[:, 2].astype(np.float64)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    neighbours = np.setdiff1d(faces_np[(faces_np == 0).any(axis=1)], [0])
+    assert neighbours.size == 5
+    field_np = heights_np - heights_np[0] + 0.3 * np.sign(heights_np[0])
+    field_np[0] = -1e-4
+    field_np[neighbours] = np.where(np.array([True, True, False, True, True]), 1e7, -0.5)
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+
+    results = [
+        od.intersection.clip_mesh_with_field(vertices_wp, faces_wp, field_wp, cap=True)
+        for _ in range(2)
+    ]
+    capped_v, capped_f = results[0]
+    assert np.array_equal(results[1][1].numpy(), capped_f.numpy())
+    boundary_np = od.boundary.boundary_edges(capped_v, capped_f).numpy()
+    assert len(boundary_np) > 0  # non-vacuity: the cut collapsed faces
+    assert np.array_equal(boundary_np[:, 0], boundary_np[:, 1])
+    assert not od.validation.is_self_intersecting(wp.Mesh(points=capped_v, indices=capped_f))
+
+
 @pytest.mark.parametrize("height_fraction", [0.81])
 def test_clip_mesh_with_field_planar_cap_matches_the_min_weight_cap(
     device: str, height_fraction: float, monkeypatch: pytest.MonkeyPatch

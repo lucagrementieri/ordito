@@ -2111,16 +2111,108 @@ def clip_mesh_with_field(
     # The rim's section edges, chained in the vertex numbering: a non-section row reads
     # ``(-1, -1)`` and the chaining drops it, so nothing is read back before the cycles' totals.
     edges = odt.empty_2d((n_rim, 2), wp.int32, device=device)
+    n_section = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.section_rim_edges,
         dim=n_rim,
-        inputs=[rim, source, shifted, edges],
+        inputs=[rim, source, shifted],
+        outputs=[edges, n_section],
         device=device,
     )
     cycles, offsets = od.graph.successor_cycles(edges, new_vertices.size, validate=False)
-    if cycles.size == 0:
+    # A clean section's cycles cover each section edge once. Where they do not, the section is not
+    # a set of disjoint cycles: a chain into an input boundary, or a pinch, where two crossings
+    # merged into one point the section passes twice and the vertex chaining keeps one of its two
+    # successors (its ranks then collide and name vertices off the section). The cap reads the
+    # count back with its own bookkeeping and gives up on a mismatch, so a clean section pays no
+    # read for it; the section is then chained on the host.
+    capped = None
+    if cycles.size > 0:
+        capped = _cap_section_loops(new_vertices, new_faces, cycles, offsets, n_section)
+    # Readback, where no cycle came out: whether there was a section at all.
+    elif int(read_scalar(n_section)) == 0:
         return new_vertices, new_faces
-    return new_vertices, _cap_section_loops(new_vertices, new_faces, cycles, offsets)
+    if capped is None:
+        cycles, offsets = _section_cycles_on_host(edges)
+        if cycles.size == 0:
+            return new_vertices, new_faces
+        capped = _cap_section_loops(new_vertices, new_faces, cycles, offsets)
+        assert capped is not None
+    return new_vertices, capped
+
+
+def _section_cycles_on_host(
+    edges: odt.Array2dInt32,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Chain a section that is not a set of disjoint cycles on the host: ``(cycles, offsets)``.
+
+    ``edges`` are ``section_rim_edges``' rows, ``(-1, -1)`` where a rim edge is not a section edge.
+    At a vertex the section passes more than once each edge into it is paired with an edge out of
+    it in index order, the walks are cut into simple cycles at the vertices they repeat, and a walk
+    that ends (a chain into an input boundary) is dropped, as the vertex chaining drops it. A cut
+    cycle is the pinch vertex and one of the chains between its visits, whichever way the edges
+    were paired. The cycles come out as [`successor_cycles`][ordito.graph.successor_cycles] orders
+    a clean section's: each from its smallest vertex, ascending by it.
+    """
+    device = edges.device
+    # Readback: the section edges, chained here (a section that is not a set of disjoint cycles is
+    # rare and small).
+    rows_np = read_array(edges)
+    rows_np = rows_np[rows_np[:, 0] >= 0]
+    outgoing: dict[int, list[int]] = {}
+    incoming: dict[int, list[int]] = {}
+    for e, (a, b) in enumerate(rows_np.tolist()):
+        outgoing.setdefault(a, []).append(e)
+        incoming.setdefault(b, []).append(e)
+    successor: dict[int, int] = {}
+    for vertex, into in incoming.items():
+        for k, e in enumerate(into):
+            out = outgoing.get(vertex, [])
+            if k < len(out):
+                successor[e] = out[k]
+    cycles: list[list[int]] = []
+    visited = [False] * len(rows_np)
+    for first in range(len(rows_np)):
+        if visited[first]:
+            continue
+        walk: list[int] = []
+        e = first
+        while e is not None and not visited[e]:
+            visited[e] = True
+            walk.append(e)
+            e = successor.get(e)
+        if e != first:
+            continue  # a chain, or the tail of a walk already cut
+        # Cut the closed walk into simple cycles at its repeated vertices.
+        path: list[int] = []
+        position: dict[int, int] = {}
+        for vertex in [int(rows_np[e, 0]) for e in walk]:
+            if vertex in position:
+                start = position[vertex]
+                cycles.append(path[start:])
+                for cut in path[start + 1 :]:
+                    del position[cut]
+                del path[start + 1 :]
+            else:
+                position[vertex] = len(path)
+                path.append(vertex)
+        cycles.append(path)
+    cycles = [c for c in cycles if len(c) >= 3]
+    if not cycles:
+        return _launch.empty_packed(wp.int32, device)
+    rotated = []
+    for cycle in cycles:
+        low = cycle.index(min(cycle))
+        rotated.append(cycle[low:] + cycle[:low])
+    rotated.sort(key=lambda cycle: cycle[0])
+    bounds = np.cumsum([0] + [len(c) for c in rotated], dtype=np.int32)
+    packed = _launch.array(
+        np.concatenate([bounds, np.concatenate(rotated)]).astype(np.int32),
+        dtype=wp.int32,
+        device=device,
+    )
+    return odt.as_dense(packed[bounds.size :]), odt.as_dense(packed[: bounds.size])
 
 
 def _cap_section_loops(
@@ -2128,9 +2220,14 @@ def _cap_section_loops(
     faces: wp.array[wp.int32],
     cycles: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
-) -> wp.array[wp.int32]:
+    section_count: wp.array[wp.int32] | None = None,
+) -> wp.array[wp.int32] | None:
     """
-    Append a cap for every section loop to ``faces``.
+    Append a cap for every section loop to ``faces``; ``None`` if the loops miss a section edge.
+
+    ``section_count`` holds the section's edge count, which the cycles of a clean section cover
+    once each: read back with the loops' bookkeeping, a count other than ``cycles.size`` returns
+    ``None`` before anything is appended. ``None`` checks nothing.
 
     A planar loop is ear-clipped, any other gets the min-weight fill. A loop is planar when every
     point lies within ``_CAP_PLANAR_TOLERANCE`` of the loop's extent from its best-fit plane, which
@@ -2142,14 +2239,18 @@ def _cap_section_loops(
     device = vertices.device
     n_loops = offsets.size - 1
     n_points = cycles.size
-    # The loop offsets, the loops' face offsets and their points share one byte buffer, so the host
-    # reads everything it decides on in one copy: offsets first, then face offsets (both 4-byte
-    # aligned), then the points' ``float32`` words.
+    # The loop offsets, the loops' face offsets, the section's edge count and the loops' points
+    # share one byte buffer, so the host reads everything it decides on in one copy: offsets
+    # first, then face offsets, then the count (all 4-byte aligned), then the points' ``float32``
+    # words.
     offsets_bytes = 4 * (n_loops + 1)
-    packed = _launch.empty(2 * offsets_bytes + 12 * n_points, dtype=wp.uint8, device=device)
-    gathered = _byte_view(packed, 2 * offsets_bytes, wp.vec3, n_points)
+    points_start = 2 * offsets_bytes + 4
+    packed = _launch.empty(points_start + 12 * n_points, dtype=wp.uint8, device=device)
+    gathered = _byte_view(packed, points_start, wp.vec3, n_points)
     _launch.copy(gathered, vertices[cycles])
     _launch.copy(_byte_view(packed, 0, wp.int32, n_loops + 1), offsets)
+    if section_count is not None:
+        _launch.copy(_byte_view(packed, 2 * offsets_bytes, wp.int32, 1), section_count)
     # Every loop is ear-clipped, all of them together, while the host tests which are planar; a
     # non-planar loop's triangulation is then discarded.
     triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(gathered, offsets)
@@ -2158,7 +2259,10 @@ def _cap_section_loops(
     packed_np = read_array(packed)
     offsets_np = packed_np[:offsets_bytes].view(np.int32)
     face_offsets_np = packed_np[offsets_bytes : 2 * offsets_bytes].view(np.int32)
-    points_np = packed_np[2 * offsets_bytes :].view(np.float32).reshape(-1, 3).astype(np.float64)
+    if section_count is not None:
+        if int(packed_np[2 * offsets_bytes : points_start].view(np.int32)[0]) != n_points:
+            return None
+    points_np = packed_np[points_start:].view(np.float32).reshape(-1, 3).astype(np.float64)
 
     cap_rows_np = np.full(n_loops, -1, dtype=np.int32)
     n_cap_rows = 0
