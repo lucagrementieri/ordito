@@ -79,6 +79,11 @@ wp.set_module_options({"enable_backward": False})
 AMBIGUOUS_CROSSING = wp.float32(1.0e-3)
 # Cone components seen from farther than this many bounding radii are bounded rather than summed.
 CONE_NEAR_RADII = wp.float32(4.0)
+# A nearer component is bounded too while the nearer components' bounds, its own included, stay
+# within this (in component order; every other one is summed). Under ``1/2 - delta`` of margin it
+# leaves a node far from 1/2 decided, and keeps the node more than 1.15 radii from such a cone, so
+# not on it.
+CONE_NEAR_ALLOWANCE = wp.float32(0.15)
 INV_FOUR_PI = wp.float32(0.07957747154594767)
 
 
@@ -461,6 +466,16 @@ def ball_winding_bound(distance: wp.float32, radius: wp.float32) -> wp.float32:
 
 
 @wp.func
+def near_cone_bound_taken(reach: wp.float32, radius: wp.float32, spent: wp.float32) -> wp.float32:
+    # The bound a cone component nearer than ``CONE_NEAR_RADII`` radii is left at instead of being
+    # summed, after ``spent`` of such bounds: its own while the near bounds stay within
+    # ``CONE_NEAR_ALLOWANCE``, ``-1`` to sum it. The one rule ``lattice_winding_numbers``' first
+    # loop applies and its fallback replays, so the fallback sums exactly the components left.
+    bound = ball_winding_bound(reach, radius)
+    return wp.where(spent + bound <= CONE_NEAR_ALLOWANCE, bound, -1.0)
+
+
+@wp.func
 def cone_component_winding(
     vertices: wp.array[wp.vec3],
     chain: wp.array2d[wp.int32],
@@ -505,9 +520,18 @@ def lattice_winding_numbers(
     out_undecided: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # The node's winding number: the column count plus the cones' solid angle, every cone farther
-    # than ``CONE_NEAR_RADII`` of its radius bounded instead of summed unless the bound leaves the
-    # sign (with its ``delta`` margin) open. A node whose sign matters -- it may end a crossing edge
+    # The node's winding number: the column count plus the cones' solid angle, a cone farther than
+    # ``CONE_NEAR_RADII`` of its radius, and a nearer one while ``near_cone_bound_taken`` allows,
+    # bounded instead of summed unless the bounds leave the sign (with its ``delta`` margin) open.
+    # Then the near ones left are summed first, and the far ones only where their bound alone
+    # still leaves it open, so a node walks the far components twice only where it did when every
+    # near one was summed. Measured on CUDA (2026-11-09) against summing every component within
+    # four radii: 0.36x this kernel on ``bunny`` at 1/256 (five large holes), 0.84-0.92x on
+    # ``dragon`` (407 small ones). Declined there: one allowance shared with the far bounds
+    # (``dragon`` 1.45x, more fallbacks), totalling the far bounds first (1.6x, a third walk), the
+    # near ones' indices kept in registers for the fallback (1.12x), and a two-radius cut with no
+    # allowance (1.7-2.5x on a busy device; the far bounds then summing past the margin).
+    # A node whose sign matters -- it may end a crossing edge
     # or sit on the other side of ``iso`` under either sign (``distance >= sign_irrelevant_below``)
     # -- and whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
     # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too). ``out_count[1]`` counts
@@ -528,6 +552,7 @@ def lattice_winding_numbers(
         return
     near = wp.float32(0.0)
     far_bound = wp.float32(0.0)
+    near_spent = wp.float32(0.0)
     on_cone = wp.float32(0.0)
     n_components = starts.shape[0] - 1
     for component in range(n_components):
@@ -536,12 +561,32 @@ def lattice_winding_numbers(
         if reach > CONE_NEAR_RADII * radius[component]:
             far_bound = far_bound + ball_winding_bound(reach, radius[component])
         else:
-            term = cone_component_winding(
-                vertices, chain, order, apex, starts[component], starts[component + 1], p
-            )
-            near = near + term[0]
-            on_cone = wp.max(on_cone, term[1])
+            bound = near_cone_bound_taken(reach, radius[component], near_spent)
+            if bound >= 0.0:
+                near_spent = near_spent + bound
+            else:
+                term = cone_component_winding(
+                    vertices, chain, order, apex, starts[component], starts[component + 1], p
+                )
+                near = near + term[0]
+                on_cone = wp.max(on_cone, term[1])
     winding = base + near
+    if near_spent > 0.0 and wp.abs(winding - 0.5) <= far_bound + near_spent + delta:
+        # First the near components left bounded, picked out again by replaying their allowance;
+        # then, only where the farther ones' bound alone leaves the sign open, those too.
+        spent = wp.float32(0.0)
+        for component in range(n_components):
+            apex = vertices[sorted_keys[starts[component]]]
+            reach = wp.length(p - apex)
+            if reach <= CONE_NEAR_RADII * radius[component]:
+                bound = near_cone_bound_taken(reach, radius[component], spent)
+                if bound >= 0.0:
+                    spent = spent + bound
+                    term = cone_component_winding(
+                        vertices, chain, order, apex, starts[component], starts[component + 1], p
+                    )
+                    winding = winding + term[0]
+                    on_cone = wp.max(on_cone, term[1])
     if wp.abs(winding - 0.5) <= far_bound + delta:
         for component in range(n_components):
             apex = vertices[sorted_keys[starts[component]]]
