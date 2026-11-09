@@ -21,6 +21,7 @@ from ordito.kernels.predicates import (
     triangle_normal,
     vector_angle,
 )
+from ordito.kernels.reduce import block_chunk_1d, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -764,6 +765,23 @@ def face_area_weighted_centroid(
     v0, v1, v2 = face_vertices(vertices, faces, f)
     area = 0.5 * triangle_double_area(v0, v1, v2)
     return (v0 + v1 + v2) * (area / 3.0), area
+
+
+@wp.func
+def block_area_weighted_centroid_sum(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], block: wp.int32, lane: wp.int32
+) -> wp.vec4:
+    # The block's sum of ``face_area_weighted_centroid`` over the faces ``block_chunk_1d`` gives it
+    # (components 0-2 the weighted barycentres, 3 the area), in every lane: lanes stride the chunk
+    # by ``wp.block_dim()`` (the one CPU lane walks it all) and ``block_sum`` combines them. The
+    # block half of ``measures.surface_centroid`` and of ``sample.sample_volume``'s fan apex, which
+    # differ only in how they commit the block sums.
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
+    for k in range(lane, count, wp.block_dim()):
+        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
+        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
+    return block_sum(total)
 
 
 @wp.kernel

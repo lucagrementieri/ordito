@@ -5,8 +5,6 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import append_slot, scanned_count
 from ordito.kernels.reduce import (
-    block_chunk_1d,
-    block_sum,
     fold_block_totals,
     last_ticket_vector,
     minmax_vec3_chunk,
@@ -14,8 +12,8 @@ from ordito.kernels.reduce import (
     write_block_value,
 )
 from ordito.kernels.triangles import (
+    block_area_weighted_centroid_sum,
     face_area,
-    face_area_weighted_centroid,
     face_signed_volume,
     face_vertices,
 )
@@ -116,10 +114,9 @@ def surface_centroid_apex(
 ) -> None:
     # The area-weighted surface centroid ``sample.sample_volume`` fans its tetrahedra from, in one
     # launch: each block folds the ``triangles.face_area_weighted_centroid`` sums (components 0-2)
-    # and areas (component 3) of the faces ``block_chunk_1d`` gives it, lanes striding them by
-    # ``wp.block_dim()`` (so the one CPU lane walks them all), into its row of a
-    # ``_launch.block_partials``-layout buffer of width 1; the block drawing the last ticket adds
-    # the rows in a fixed order and writes the centroid (all-NaN for zero area, as
+    # and areas (component 3) of its faces (``triangles.block_area_weighted_centroid_sum``) into
+    # its row of a ``_launch.block_partials``-layout buffer of width 1; the block drawing the last
+    # ticket adds the rows in a fixed order and writes the centroid (all-NaN for zero area, as
     # ``measures.surface_centroid`` returns) and the area into slot 0. Always the fixed-order
     # commit, so a seeded draw repeats on CUDA: the apex moves every sample. Its own module
     # (``module="unique"``): the only tiled launch here, at ``TILE_1D``, so the module launched at
@@ -130,12 +127,7 @@ def surface_centroid_apex(
     if block == 0 and lane == 0:
         out_volumes[out_volumes.shape[0] - 1] = wp.float32(0.0)
     n_blocks = out_apex.shape[0] - 2
-    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
-    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
-    for k in range(lane, count, wp.block_dim()):
-        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
-        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
-    folded = block_sum(total)
+    folded = block_area_weighted_centroid_sum(vertices, faces, block, lane)
     if stage_block_total(block, lane, folded, out_apex, 0, 1, n_blocks, last_ticket_vector) != 0:
         summed = fold_block_totals(lane, out_apex, 0, 1, n_blocks, wp.vec4(0.0, 0.0, 0.0, 0.0))
         area = summed[3]

@@ -156,9 +156,9 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
     per 64-face tile there. A *symmetric* mesh hides that completely -- the centroid of every 64th
     face of a sphere is still the sphere's centre -- which is why the mesh is stretched and sheared
     first. Measured: the sub-sampled sum was off by 1.1e-2 on this shape and by 4e-8 on the
-    unmodified sphere. The reduction is one kernel on both devices now (``centroid_partials``, lanes
-    striding by ``wp.block_dim()``), and the parametrization covers both, the single-lane CPU block
-    being the case the old bug lived in.
+    unmodified sphere. The reduction is one kernel on both devices now (``surface_centroid_totals``,
+    lanes striding by ``wp.block_dim()``), and the parametrization covers both, the single-lane CPU
+    block being the case the old bug lived in.
     """
     if kernel_device.startswith("cuda") and not wp.is_cuda_available():
         pytest.skip("no CUDA device")
@@ -181,7 +181,7 @@ def test_surface_centroid_is_reproducible(sphere_irregular: tuple[tm.Trimesh, wp
     The oracle for the value is ``test_surface_centroid``; this pins repeatability. One float
     atomic per block summed the blocks in arrival order, and on CUDA the result moved in its last
     bits on every call: 10 distinct centroids in 10 calls on every scan mesh. The per-block partials
-    are folded in a fixed order now.
+    are folded in a fixed order now (the deterministic setting, on for every test).
     """
     _, mesh_wp = sphere_irregular
     centroids = {

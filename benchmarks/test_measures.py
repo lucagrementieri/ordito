@@ -3,9 +3,9 @@ Benchmarks for ``ordito.measures``: the whole-mesh reductions, which are readbac
 
 Every group here ends in a host-side value, so each pays at least one device-to-host crossing on top
 of its device pass -- and at the sizes in the scan sweep that latency is a large share of the total.
-That is the axis these rows measure: not the arithmetic, which is trivially parallel per face, but
-how many crossings the *shape of the return type* forces. Read ``surface_centroid`` (two crossings)
-against ``moments`` (four, for ten sums) -- the gap is nearly all latency.
+That is the axis these rows measure at the small end: each group is now one launch and one
+crossing, so ``volume`` and ``surface_centroid`` read as the floor of a host-side reduction and
+``moments`` as what its ``float64`` integrand adds on top.
 
 What this axis is **not** is a licence to copy arrays. Reducing the ``vec3d`` integrand buffers
 with ``.numpy().sum(axis=0)`` is not a crossing per return value but 72 bytes *per face* moved to be
@@ -44,12 +44,12 @@ from conftest import BenchCase, skip_larger_than
 @pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib")
 def test_surface_centroid(bench_case: BenchCase) -> None:
     """
-    The area-weighted shell centroid: one pass over the faces plus two host readbacks.
+    The area-weighted shell centroid: one pass over the faces plus one host readback.
 
-    Two reductions and therefore two crossings, which is the floor for a function whose return
-    type is a host-side ``wp.vec3`` -- and the baseline ``moments`` below is read against, since
-    that one pays three for ten sums. One kernel on both devices, ``centroid_partials``, whose
-    per-block sums ``reduce.sum`` folds in a fixed order (reproducible on CUDA).
+    One launch on both devices, ``surface_centroid_totals``, whose ``float32`` block sums are
+    widened and committed into ``float64`` slots (the last block folds them in a fixed order with
+    the deterministic setting on), and one read of the four sums -- the floor for a function whose
+    return type is a host-side ``wp.vec3``.
 
     meshlib's ``findCenterFromFaces`` is this exact quantity and nothing more -- unlike the
     pymeshlab row above, which returns five measures at once. Note it has a sibling,

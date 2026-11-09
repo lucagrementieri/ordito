@@ -8,24 +8,20 @@ from ordito.kernels.array import OverloadTable, mark_at, sorted_run_start
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
-    block_sum,
     commit_block_sum,
     last_ticket,
+    last_ticket_vector,
     store_block_sum,
     store_block_total,
+    store_folded_total,
 )
 from ordito.kernels.triangles import (
-    face_area_weighted_centroid,
+    block_area_weighted_centroid_sum,
     face_signed_volume,
     face_vertices_vec3d,
 )
 
 wp.set_module_options({"enable_backward": False})
-
-# Block partials at or below which ``measures.surface_centroid`` folds them on the host: the
-# readback of a few thousand beats a device reduction's launches; past it, the device fold wins
-# (28 M faces).
-CENTROID_HOST_FOLD_BLOCKS = 8192
 
 
 @wp.kernel
@@ -51,58 +47,20 @@ def mesh_signed_volume(
 
 
 @wp.kernel
-def centroid_partials(
+def surface_centroid_totals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    n_faces: wp.int32,
-    out_partials: wp.array[wp.vec4],
+    stride: wp.int32,
+    out_totals: wp.array[wp.vec4d],
 ) -> None:
-    # Each block's area-weighted centroid sum (components 0-2) and area (component 3), stored in the
-    # block's own slot for ``reduce.sum`` to fold in a fixed order. A block owns the
-    # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it and its lanes stride them by
-    # ``wp.block_dim()`` -- so the one CPU lane walks them all) and one
-    # kernel serves both devices -- and the per-face contribution is
-    # ``triangles.face_area_weighted_centroid``.
-    #
-    # Partials rather than an atomic commit: one ``atomic_add`` per block summed the blocks in
-    # arrival order, so on CUDA the centroid's last bits moved from run to run, and with them every
-    # point ``sample.sample_volume`` fans from it -- a seeded draw was not reproducible (10
-    # distinct centroids in 10 calls on every scan mesh). It is also the faster form: against the
-    # old one-tile-per-block atomic kernel 5.4x at 28 M faces and 1.1x at 0.87 M on CUDA, level
-    # below; against the old lane-free ``_sliced`` CPU kernel 1.1-1.4x small and 2.1x at 28 M.
+    # The whole surface's area-weighted barycentre sum (components 0-2) and area (component 3), in
+    # ``_launch.block_partials``' slot 0 for ``measures.surface_centroid`` to read and divide. Each
+    # block's ``float32`` sum (``triangles.block_area_weighted_centroid_sum``) is widened to
+    # ``float64`` before it is committed, so the order the blocks add in moves only digits far
+    # below the ``float32`` centroid the wrapper returns, whichever commit the setting picks.
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(n_faces, block)
-    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
-    for k in range(lane, count, wp.block_dim()):
-        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
-        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
-    block_total = block_sum(total)
-    if lane == 0:
-        out_partials[block] = block_total
-
-
-@wp.kernel
-def fold_centroid_partials(partials: wp.array[wp.vec4], out_center: wp.array[wp.vec3]) -> None:
-    # One block folds every ``centroid_partials`` slot into the area-weighted centroid, on the
-    # device, so ``sample.sample_volume`` feeds its fan apex to the volume kernels without a sync.
-    # Lanes stride the partials by ``wp.block_dim()`` (the one CPU lane walks them all) and
-    # ``block_sum`` combines the lanes: a fixed order, so the bits repeat from call to call, but a
-    # different order and precision from ``measures.surface_centroid``'s ``float64`` host fold, so
-    # the two agree to rounding, not bit for bit. The apex only has to be a point the solid is
-    # star-shaped about; float32 over a few thousand partials is far inside that. All-NaN when the
-    # area sums to zero, as ``surface_centroid`` returns.
-    _block, lane = wp.tid()
-    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
-    for b in range(lane, partials.shape[0], wp.block_dim()):
-        total += partials[b]
-    folded = block_sum(total)
-    if lane == 0:
-        area = folded[3]
-        nan = wp.float32(wp.nan)
-        if area == wp.float32(0.0):
-            out_center[0] = wp.vec3(nan, nan, nan)
-        else:
-            out_center[0] = wp.vec3(folded[0] / area, folded[1] / area, folded[2] / area)
+    folded = block_area_weighted_centroid_sum(vertices, faces, block, lane)
+    store_folded_total(block, lane, wp.vec4d(folded), out_totals, 0, stride, last_ticket_vector)
 
 
 @wp.func

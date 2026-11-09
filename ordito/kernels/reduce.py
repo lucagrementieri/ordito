@@ -224,12 +224,13 @@ def thread_fence(): ...
 @wp.func
 def take_ticket(out: wp.array[Any], counter: wp.int32, unit: Any):
     # Lane 0's ticket, once it has stored its row: the count of rows stored before it, kept in
-    # ``out[counter]`` in ``out``'s own dtype (``unit`` is any value of it; whole counts are exact).
-    # The fence publishes the row before the ticket can be seen. A vector or matrix counter is one
-    # atomic per component, so only a component's count is a ticket: ``last_ticket_vector`` and
-    # ``last_ticket_matrix`` read the first.
+    # ``out[counter]`` in ``out``'s own dtype (whole counts are exact; ``unit`` is any value of it,
+    # no longer read). The fence publishes the row before the ticket can be seen. A vector or
+    # matrix counter is one atomic per component, so only a component's count is a ticket:
+    # ``last_ticket_vector`` and ``last_ticket_matrix`` read the first. The one is
+    # ``out.dtype(1.0)``, not a ``float32`` fill, which a ``float64`` vector or matrix rejects.
     thread_fence()
-    return wp.atomic_add(out, counter, type(unit)(wp.float32(1.0)))
+    return wp.atomic_add(out, counter, out.dtype(1.0))
 
 
 @wp.func
@@ -358,7 +359,7 @@ def write_block_value(
     # next launch over the same buffer (a loop's next round) needs no clearing.
     if lane == 0:
         out[result] = total
-        out[counter] = type(total)(wp.float32(0.0))
+        out[counter] = out.dtype(0.0)
 
 
 @wp.func
@@ -491,6 +492,24 @@ def store_block_sum(
 
 
 @wp.func
+def store_folded_total(
+    block: wp.int32,
+    lane: wp.int32,
+    folded: Any,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    is_last: wp.Function,
+):
+    # ``store_block_total``'s commit of a block sum already folded (the same value in every lane):
+    # for a caller that folds in one type and commits in another, such as ``float32`` block sums
+    # widened to ``float64`` before the blocks are added.
+    if stage_block_fold(block, lane, folded, out, slot, stride, is_last) != 0:
+        n_blocks = (out.shape[0] - stride - 1) // stride
+        finish_block_total(lane, out, slot, stride, n_blocks, out.dtype(0.0))
+
+
+@wp.func
 def store_block_total(
     block: wp.int32,
     lane: wp.int32,
@@ -503,10 +522,7 @@ def store_block_total(
     # ``store_block_sum`` for a single value (scalar, vector or matrix, matching ``out``'s dtype),
     # stored whole in slot ``slot`` of the block's row and of the result row. ``is_last`` reads the
     # ticket of ``out``'s kind: ``last_ticket``, ``last_ticket_vector`` or ``last_ticket_matrix``.
-    folded = block_sum(local)
-    if stage_block_fold(block, lane, folded, out, slot, stride, is_last) != 0:
-        n_blocks = (out.shape[0] - stride - 1) // stride
-        finish_block_total(lane, out, slot, stride, n_blocks, type(folded)(wp.float32(0.0)))
+    store_folded_total(block, lane, block_sum(local), out, slot, stride, is_last)
 
 
 @wp.func

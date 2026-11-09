@@ -4250,7 +4250,8 @@
  "benchmarks/test_measures.py::test_surface_centroid[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },
