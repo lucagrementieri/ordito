@@ -2105,44 +2105,21 @@ def clip_mesh_with_field(
         device=device,
     )
     rim = od.boundary.oriented_boundary_edges(new_vertices, touching)
-    # Host bookkeeping over the touching faces' rim alone: its edges and their section flags cross
-    # in one small copy, and the section edges go back in one.
     n_rim = int(rim.shape[0])
     if n_rim == 0:
         return new_vertices, new_faces
-    rim_rows = odt.empty_2d((n_rim, 3), wp.int32, device=device)
+    # The rim's section edges, chained in the vertex numbering: a non-section row reads
+    # ``(-1, -1)`` and the chaining drops it, so nothing is read back before the cycles' totals.
+    edges = odt.empty_2d((n_rim, 2), wp.int32, device=device)
     _launch.launch(
         kernel_intersections.section_rim_edges,
         dim=n_rim,
-        inputs=[rim, source, shifted, rim_rows],
+        inputs=[rim, source, shifted, edges],
         device=device,
     )
-    # Readback: the section edges are chained on the host.
-    rim_rows_np = read_array(rim_rows)
-    # A rim edge whose two ends merged into one crossing (a face the cut collapsed) is a loop on
-    # one vertex: it bounds nothing, and kept it would give that vertex a second successor, whose
-    # choice the chaining leaves to arrival order.
-    section_np = rim_rows_np[
-        (rim_rows_np[:, 2] != 0) & (rim_rows_np[:, 0] != rim_rows_np[:, 1]), :2
-    ]
-    if section_np.shape[0] == 0:
+    cycles, offsets = od.graph.successor_cycles(edges, new_vertices.size, validate=False)
+    if cycles.size == 0:
         return new_vertices, new_faces
-    # The section's vertices are numbered compactly for the chaining, so its tables are sized by
-    # the section rather than the mesh; one upload carries the edges and the numbering back.
-    section_ids, compact_np = np.unique(section_np, return_inverse=True)
-    n_ids = section_ids.size
-    upload = _launch.array(
-        np.concatenate((section_ids, compact_np.reshape(-1))).astype(np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    section_edges = odt.as_array2d(odt.as_dense(upload[n_ids:]).reshape((-1, 2)), wp.int32)
-    compact_cycles, offsets = od.graph.successor_cycles(section_edges, n_ids, validate=False)
-    if compact_cycles.size == 0:
-        return new_vertices, new_faces
-    cycles = cast(
-        "wp.array[wp.int32]", od.array.gather(odt.as_dense(upload[:n_ids]), compact_cycles)
-    )
     return new_vertices, _cap_section_loops(new_vertices, new_faces, cycles, offsets)
 
 
