@@ -3186,7 +3186,7 @@
  },
  "benchmarks/test_holes.py::test_stitch_loops_min_weight[rim_short-ordito-cuda]": {
   "counts": {
-   "launch": 44,
+   "launch": 11,
    "alloc": 8,
    "memset": 1,
    "d2d": 3,
@@ -3196,7 +3196,7 @@
  },
  "benchmarks/test_holes.py::test_stitch_min_weight[rim_short-ordito-cuda]": {
   "counts": {
-   "launch": 58,
+   "launch": 25,
    "alloc": 16,
    "memset": 7,
    "d2d": 3,
@@ -3207,7 +3207,7 @@
  },
  "benchmarks/test_holes.py::test_stitch_smooth[rim_short-ordito-cuda]": {
   "counts": {
-   "launch": 113,
+   "launch": 80,
    "alloc": 65,
    "memset": 30,
    "d2d": 3,
