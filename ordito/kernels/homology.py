@@ -11,8 +11,8 @@ search that has to reproduce ``scipy.sparse.csgraph.breadth_first_order`` spends
 compacting its claims into a FIFO in ``(rank, ascending node id)`` order -- a tiled block scan plus
 a serial advance, more than a third of the level's cost against the claim/commit pair that actually
 builds the tree. Nothing downstream of a spanning tree reads a discovery order, so the scan is gone
-and the level is ``bfs_push_level`` plus a one-thread
-[`loop_advance`][ordito.kernels.array.loop_advance].
+and the level is one ``bfs_push_level``; a replayed body issues ``BFS_LEVELS_PER_REPLAY`` of them
+and closes with a one-thread [`loop_advance_by`][ordito.kernels.array.loop_advance_by].
 
 **What replaces the order as the tie-break is ``wp.atomic_min`` on the parent**, and it buys two
 things beyond the launch. The tree stays deterministic -- ``parents[w]`` is the lowest-indexed
@@ -95,6 +95,14 @@ COUNT_REACHED = 1
 COUNT_REFERENCED = 2
 COUNT_SIZE = 3
 
+# Breadth-first levels one replayed body of the captured level loop issues before its closing
+# ``array.loop_advance_by``. A conditional-graph iteration costs about what a level's launch does,
+# so a body of one level paid twice per level; past the last level a launch finds an empty frontier
+# and exits. Whole calls (2026-11-09, CUDA, byte-identical) at 2 / 4 / 8 / 16 levels against 1:
+# ``sphere_med`` (193 levels) 0.82 / 0.73 / 0.69 / 0.70x, ``handles_64`` 0.84 / 0.78 / 0.75 /
+# 0.76x, a scrambled 2 M-face torus (683 levels) 0.85 / 0.77 / 0.73 / 0.72x.
+BFS_LEVELS_PER_REPLAY = 8
+
 
 @wp.func
 def seed_root_and_identity_label(
@@ -164,6 +172,7 @@ def claim_bfs_vertex(
 def bfs_push_level(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
+    step: wp.int32,
     state: wp.array[wp.int32],
     out_parents: wp.array[wp.int32],
     out_distances: wp.array[wp.int32],
@@ -173,12 +182,13 @@ def bfs_push_level(
     # is a tiled scan per level and the early exit is one coalesced load, and the launch is the same
     # width either way.
     #
-    # ``state`` is the shared round-loop word of ``kernels/array.py``: this reads the level to claim
-    # from ``LOOP_ROUND`` and raises ``LOOP_PROGRESS``, which the closing ``array.loop_advance``
-    # turns into the next round's condition. A plain store, not an atomic -- one address, one value.
-    # The claim rule is ``claim_bfs_vertex``, shared with ``serial_spanning_tree``.
+    # ``state`` is the shared round-loop word of ``kernels/array.py``: this claims level
+    # ``LOOP_ROUND + step``, ``step`` its place among the ``BFS_LEVELS_PER_REPLAY`` levels of one
+    # replayed body, and raises ``LOOP_PROGRESS``, which the closing ``array.loop_advance_by`` turns
+    # into the next body's condition. A plain store, not an atomic -- one address, one value. The
+    # claim rule is ``claim_bfs_vertex``, shared with ``serial_spanning_tree``.
     v = wp.int32(wp.tid())
-    level = state[LOOP_ROUND]
+    level = state[LOOP_ROUND] + step
     if out_distances[v] != level - 1:
         return
     for k in range(offsets[v], offsets[v + 1]):

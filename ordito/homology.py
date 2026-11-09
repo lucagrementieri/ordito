@@ -351,9 +351,9 @@ def _primal_spanning_tree(
     """
     Rooted spanning tree of the vertex graph as ``(parents, distances)``, views of ``tree``.
 
-    A breadth-first level loop, pushed from the frontier, two launches per level and no host
-    synchronization at all; on the CPU, one first-in first-out traversal in a single launch that
-    writes the same tree. ``parents`` holds
+    A breadth-first level loop, pushed from the frontier: one launch per level, one closing launch
+    per replayed body of several levels, and no host synchronization at all; on the CPU, one
+    first-in first-out traversal in a single launch that writes the same tree. ``parents`` holds
     [`NO_PARENT`][ordito.kernels.homology.NO_PARENT] at the root and at every unreferenced vertex,
     which the tree never reaches; ``distances`` holds the depth, or ``-1`` for the same vertices.
 
@@ -408,20 +408,28 @@ def _primal_spanning_tree(
         device=device,
     )
 
-    # A level claims at least one vertex or the loop is over, so ``n_vertices + 1`` bounds it --
-    # cheap insurance against a captured loop hanging the device rather than answering wrongly.
-    max_levels = wp.int32(n_vertices + 1)
+    # A level claims at least one vertex or the loop is over, so ``n_vertices + 1`` bounds it,
+    # plus the idle tail of the last body -- cheap insurance against a captured loop hanging the
+    # device rather than answering wrongly.
+    levels_per_body = int(kernel_homology.BFS_LEVELS_PER_REPLAY)
+    max_levels = wp.int32(n_vertices + levels_per_body)
 
-    def level() -> None:
+    def levels() -> None:
+        for step in range(levels_per_body):
+            _launch.launch(
+                kernel_homology.bfs_push_level,
+                dim=n_vertices,
+                inputs=[offsets, columns, step, state, parents, distances],
+                device=device,
+            )
         _launch.launch(
-            kernel_homology.bfs_push_level,
-            dim=n_vertices,
-            inputs=[offsets, columns, state, parents, distances],
+            kernel_array.loop_advance_by,
+            dim=1,
+            inputs=[levels_per_body, max_levels, state],
             device=device,
         )
-        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_levels, state], device=device)
 
-    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), level)
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), levels)
     return parents, distances
 
 

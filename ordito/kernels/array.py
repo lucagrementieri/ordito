@@ -50,12 +50,20 @@ LOOP_PROGRESS_VIEW = slice(int(LOOP_PROGRESS), int(LOOP_PROGRESS) + 1)
 
 
 @wp.func
-def advance_round_loop(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
-    # ``loop_advance``'s body, for a CPU kernel running a whole round loop in one thread.
-    out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + 1
+def advance_round_loop_by(
+    step: wp.int32, max_rounds: wp.int32, out_state: wp.array[wp.int32]
+) -> None:
+    # ``advance_round_loop`` for a replayed body issuing ``step`` rounds (``loop_advance_by``).
+    out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + step
     keep_going = out_state[LOOP_PROGRESS] != 0 and out_state[LOOP_ROUND] < max_rounds
     out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
     out_state[LOOP_PROGRESS] = 0
+
+
+@wp.func
+def advance_round_loop(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
+    # ``loop_advance``'s body, for a CPU kernel running a whole round loop in one thread.
+    advance_round_loop_by(wp.int32(1), max_rounds, out_state)
 
 
 @wp.kernel
@@ -83,6 +91,16 @@ def loop_advance(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
     # ``out_state[LOOP_ROUND]`` for the cap test was tried and measured flat, so the plainer
     # spelling stays; nvcc forwards the store.
     advance_round_loop(max_rounds, out_state)
+
+
+@wp.kernel
+def loop_advance_by(step: wp.int32, max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
+    # dim=1. ``loop_advance`` closing a replayed body that issued ``step`` rounds, each reading its
+    # round as ``LOOP_ROUND`` plus its place in the body. A round past the fixpoint finds nothing to
+    # do, so a body of several rounds trades an idle tail of at most ``step - 1`` launches for one
+    # conditional-graph iteration a round, which costs about what a launch does
+    # (``kernels/homology.bfs_push_level``).
+    advance_round_loop_by(step, max_rounds, out_state)
 
 
 @wp.func

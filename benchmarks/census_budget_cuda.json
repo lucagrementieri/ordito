@@ -3218,7 +3218,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators[handles_1-ordito-cuda]": {
   "counts": {
-   "launch": 16,
+   "launch": 23,
    "alloc": 11,
    "memset": 2,
    "h2d": 1,
@@ -3229,7 +3229,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators[handles_64-ordito-cuda]": {
   "counts": {
-   "launch": 16,
+   "launch": 23,
    "alloc": 11,
    "memset": 2,
    "h2d": 1,
@@ -3240,7 +3240,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 15,
+   "launch": 22,
    "alloc": 10,
    "memset": 3,
    "h2d": 1,
@@ -3251,7 +3251,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators_with_offsets[handles_1-ordito-cuda]": {
   "counts": {
-   "launch": 16,
+   "launch": 23,
    "alloc": 10,
    "memset": 2,
    "h2d": 1,
@@ -3262,7 +3262,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators_with_offsets[handles_64-ordito-cuda]": {
   "counts": {
-   "launch": 16,
+   "launch": 23,
    "alloc": 10,
    "memset": 2,
    "h2d": 1,
@@ -3273,7 +3273,7 @@
  },
  "benchmarks/test_homology.py::test_homology_generators_with_offsets[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 15,
+   "launch": 22,
    "alloc": 10,
    "memset": 3,
    "h2d": 1,
@@ -6793,7 +6793,7 @@
  },
  "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cuda]": {
   "counts": {
-   "launch": 89,
+   "launch": 96,
    "alloc": 47,
    "memset": 9,
    "d2d": 3,
@@ -6805,7 +6805,7 @@
  },
  "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cuda]": {
   "counts": {
-   "launch": 90,
+   "launch": 97,
    "alloc": 47,
    "memset": 9,
    "d2d": 3,
@@ -6817,7 +6817,7 @@
  },
  "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_1-ordito-cuda]": {
   "counts": {
-   "launch": 49,
+   "launch": 56,
    "alloc": 35,
    "memset": 6,
    "d2d": 2,
@@ -6829,7 +6829,7 @@
  },
  "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_64-ordito-cuda]": {
   "counts": {
-   "launch": 49,
+   "launch": 56,
    "alloc": 35,
    "memset": 6,
    "d2d": 2,
