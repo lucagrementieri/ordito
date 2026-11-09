@@ -16,7 +16,6 @@ from ordito.kernels.array import (
     trilinear_weight,
     unpack_edge_key,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next
 from ordito.kernels.reduce import (
     GroupSumPass,
     add_group_sum_term,
@@ -755,6 +754,35 @@ def accumulate_endpoint_value(
     add_value_and_count(vj, value, out_sum, out_valence)
 
 
+@wp.func
+def accumulate_oriented_edge(
+    edges: wp.array2d[wp.int32],
+    edges_orientation: wp.array2d[wp.int32],
+    edge_values: wp.array[wp.float32],
+    f: wp.int32,
+    j: wp.int32,
+    u: wp.int32,
+    v: wp.int32,
+    out_sum: wp.array[Any],
+    out_valence: wp.array[wp.float32],
+) -> None:
+    # Face ``f``'s edge ``j`` from ``u`` to ``v``, unless it is the negatively oriented copy. Half
+    # of a closed mesh's halfedges are, in no pattern a branch predictor learns, so the CPU adds an
+    # exact zero for them instead of branching (the same bits): the kernel 0.51x on dragon, the
+    # call 0.42x, with a three-call form over the corners in place of a ``continue`` loop 0.83x of
+    # that. The CUDA arm keeps the branch, where a doubled atomic would cost more than divergence.
+    if device_is_cpu() != 0:
+        kept = edges_orientation[f, j] >= 0
+        weight = wp.where(kept, wp.float32(1.0), wp.float32(0.0))
+        value = out_sum.dtype(wp.where(kept, edge_values[edges[f, j]], wp.float32(0.0)))
+        wp.atomic_add(out_sum, u, value)
+        wp.atomic_add(out_valence, u, weight)
+        wp.atomic_add(out_sum, v, value)
+        wp.atomic_add(out_valence, v, weight)
+    elif edges_orientation[f, j] >= 0:
+        accumulate_endpoint_value(u, v, edge_values[edges[f, j]], out_sum, out_valence)
+
+
 @wp.kernel
 def scatter_edges_sum_and_valence(
     faces: wp.array[wp.int32],
@@ -765,12 +793,18 @@ def scatter_edges_sum_and_valence(
     out_valence: wp.array[wp.float32],
 ) -> None:
     # Half-edge form: launch over faces, skip the negatively oriented copy of each interior edge.
+    # Edge ``j`` is halfedge ``halfedge_next(3 f + j)``, running from corner ``j + 1`` to ``j + 2``.
     f = wp.int32(wp.tid())
-    for j in range(3):
-        if edges_orientation[f, j] < 0:
-            continue
-        u, v = halfedge_endpoints(faces, halfedge_next(f * 3 + j))
-        accumulate_endpoint_value(u, v, edge_values[edges[f, j]], out_sum, out_valence)
+    a, b, c = corner_triple(faces, f)
+    accumulate_oriented_edge(
+        edges, edges_orientation, edge_values, f, 0, b, c, out_sum, out_valence
+    )
+    accumulate_oriented_edge(
+        edges, edges_orientation, edge_values, f, 1, c, a, out_sum, out_valence
+    )
+    accumulate_oriented_edge(
+        edges, edges_orientation, edge_values, f, 2, a, b, out_sum, out_valence
+    )
 
 
 @wp.func
