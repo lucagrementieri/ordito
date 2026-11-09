@@ -805,6 +805,59 @@ def test_marching_triangles_device_link_matches_host_link(
             assert np.array_equal(points_device, points_host)
 
 
+@pytest.mark.usefixtures("set_bit_launch")
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_cut_faces_as_counted_bits_match_flags(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the cut faces' counted bits give the flags' answer exactly.
+
+    ``mesh_with_plane`` and ``marching_triangles`` flag their cut faces as a counted bit a face
+    from ``_CUT_BITS_FROM_FACES`` faces on CUDA, which no fixture reaches: the gate is forced each
+    way and the segments, their faces and the curves (through both links) must be equal bit for
+    bit, under both shapes of the bits' compaction (``set_bit_launch``). The flags carry the
+    trimesh, potpourri3d, igl and MeshLib comparisons above.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    if not mesh_wp.device.is_cuda:
+        pytest.skip("the counted bits are a CUDA form")
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    center = vertices_np.mean(axis=0)
+    values_wp = wp.array(
+        np.sin(9.0 * vertices_np[:, 0]) * np.cos(7.0 * vertices_np[:, 1]),
+        dtype=wp.float32,
+        device=mesh_wp.device,
+    )
+    results = []
+    for gate in (1 << 40, 0):
+        monkeypatch.setattr(od.intersection, "_CUT_BITS_FROM_FACES", gate)
+        lines_wp, faces_wp = od.intersection.mesh_with_plane(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.vec3(0.3, 0.5, 0.8),
+            wp.vec3(*center.tolist()),
+            return_faces=True,
+        )
+        links = _marching_triangles_both_links(
+            monkeypatch, mesh_wp.points, mesh_wp.indices, values_wp, 0.1
+        )
+        results.append((lines_wp.numpy(), faces_wp.numpy(), links))
+
+    (lines_np, faces_np, links_np), (lines_bits, faces_bits, links_bits) = results
+    assert lines_np.shape[0] > 0
+    assert len(links_np[0][0]) > 0
+    assert np.array_equal(lines_bits, lines_np)
+    assert np.array_equal(faces_bits, faces_np)
+    for (curves_bits, closed_bits), (curves_flags, closed_flags) in zip(
+        links_bits, links_np, strict=True
+    ):
+        assert closed_bits == closed_flags
+        assert len(curves_bits) == len(curves_flags)
+        for points_bits, points_flags in zip(curves_bits, curves_flags, strict=True):
+            assert np.array_equal(points_bits, points_flags)
+
+
 def test_marching_triangles_rejects_inconsistent_winding(
     monkeypatch: pytest.MonkeyPatch, device: str
 ) -> None:

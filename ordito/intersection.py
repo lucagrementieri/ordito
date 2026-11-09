@@ -242,23 +242,24 @@ def mesh_with_plane(
 
     # A flag a face, then the cut faces' segments formed again in the compaction: a segment pair
     # stored for every face would be written for the few the plane cuts.
-    cut = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    cut = _cut_flags(n_faces, device)
     plane = [vertices, faces, plane_normal, plane_origin]
     _launch.launch(
         kernel_intersections.mesh_with_plane_flags,
         dim=n_faces,
         inputs=plane,
-        outputs=[cut],
+        outputs=cut.stored(),
         device=device,
     )
-    n_kept = _scan_cut_flags(cut)
+    n_kept = cut.rank()
     lines = odt.empty_2d((n_kept, 2), wp.vec3, device=device)
     hit_faces = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_faces else None
     if n_kept > 0:
+        dim, ranked = cut.compaction(n_kept)
         _launch.launch(
             kernel_intersections.compact_plane_segments,
-            dim=n_faces,
-            inputs=[*plane, cut],
+            dim=dim,
+            inputs=[*plane, *ranked],
             outputs=[lines, hit_faces],
             device=device,
         )
@@ -534,30 +535,37 @@ def _marching_curves(
     # A flag a face, then the cut faces' segments and keys formed again in the compaction: a
     # segment pair and a key pair stored for every face would be written for the few cut.
     field = [vertices, faces, values, values.dtype(isovalue)]
-    cut = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    cut = _cut_flags(n_faces, device)
     _launch.launch(
         kernel_intersections.MARCHING_TRIANGLES_FLAGS[values.dtype],
         dim=n_faces,
         inputs=field,
-        outputs=[cut],
+        outputs=cut.stored(),
         device=device,
     )
-    n_segments = _scan_cut_flags(cut)
+    n_segments = cut.rank()
     if n_segments == 0:
         return None
     compact = kernel_intersections.COMPACT_CUT_SEGMENT_KEYS[values.dtype]
-    return _link_curves(cut, compact, [*field, wp.int64(key_base)], n_segments, key_base)
+    dim, ranked = cut.compaction(n_segments)
+    compact_inputs: list[object] = [*field, wp.int64(key_base), *ranked]
+    return _link_curves(compact, compact_inputs, dim, n_segments, key_base, cut.device)
 
 
 def _link_curves(
-    inclusive: wp.array[wp.int32],
     compact: odt.Kernel,
-    field: list[object],
+    compact_inputs: list[object],
+    compact_dim: int,
     n_segments: int,
     key_base: int,
+    device: wp.Device,
 ) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
     """
     Compact the cut segments and chain them into curves: ``(points, bounds, closed)``.
+
+    ``compact`` is launched over ``compact_dim`` threads with ``compact_inputs`` (the field, the
+    key base and the ranked cut flags, ``_CutFlags.compaction``), then the outputs this link hands
+    it.
 
     ``points`` packs every curve in order, curve ``c`` occupying ``points[bounds[c] :
     bounds[c + 1]]``. Above ``_LINK_ON_DEVICE_FROM`` segments on a CUDA device the chaining runs
@@ -565,9 +573,8 @@ def _link_curves(
     walk -- and on the CPU device, whose serial launches never beat NumPy's walk, through
     ``_link_segments``; both produce the identical packing.
     """
-    device = cast("wp.Device", inclusive.device)
     if _links_on_device(device, n_segments):
-        return _link_on_device(inclusive, compact, field, n_segments, key_base)
+        return _link_on_device(compact, compact_inputs, compact_dim, n_segments, key_base, device)
     n = n_segments
     # The host link needs the kept segments' keys *and* their endpoints, so both are compacted into
     # one buffer and read back together: ``2 n`` keys, then the ``2 n`` endpoint positions in the
@@ -581,8 +588,8 @@ def _link_curves(
     )
     _launch.launch(
         compact,
-        dim=inclusive.size,
-        inputs=[*field, inclusive, record_points, record, None],
+        dim=compact_dim,
+        inputs=[*compact_inputs, record_points, record, None],
         device=device,
     )
     # The one readback of the host link.
@@ -601,11 +608,12 @@ def _links_on_device(device: wp.Device, n_segments: int) -> bool:
 
 
 def _link_on_device(
-    inclusive: wp.array[wp.int32],
     compact: odt.Kernel,
-    field: list[object],
+    compact_inputs: list[object],
+    compact_dim: int,
     n_segments: int,
     key_base: int,
+    device: wp.Device,
 ) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
     """
     Device counterpart of ``_link_on_host``, with the same result.
@@ -617,15 +625,14 @@ def _link_on_device(
     readback of that scan sizes the output and gives the bounds; a level set the device cannot
     pair cleanly is handed to the host link, which judges it exactly as it always did.
     """
-    device = inclusive.device
     n = n_segments
     m = 2 * n
     hit_segments = odt.empty_2d((n, 2), wp.vec3, device=device)
     keys, endpoints = _launch.sort_buffers(m, wp.int64, device)
     _launch.launch(
         compact,
-        dim=inclusive.size,
-        inputs=[*field, inclusive, hit_segments, keys, endpoints],
+        dim=compact_dim,
+        inputs=[*compact_inputs, hit_segments, keys, endpoints],
         device=device,
     )
     # Every key packs two vertex indices below ``key_base``, so only its low bits need sorting.
@@ -2601,6 +2608,57 @@ def _clip_with_sources(
         out_vertices, out_faces, return_inverse=True
     )
     return new_vertices, new_faces, source
+
+
+# The cut faces of a plane or level set are flagged as a counted bit a face rather than a 0 / 1
+# ``int32`` flag from this many faces on CUDA (``kernels/array.store_flag_or_counted_bit``): the
+# bits' zeroed buffer, views and memset cost ~11 us of host where the flags' ``empty`` costs 3.5,
+# which a host-bound call pays in full, and the saving is the flags' 16 bytes a face of writing,
+# scanning and reading, which pays once the call is device-bound. CUDA bits/flags over lucy's
+# first faces, ``mesh_with_plane``: 1.23-1.26x at 1 M, 1.03-1.08x at 2-4 M, 0.84-0.90x at 8 M,
+# 0.72-0.77x at 16 M and 0.60-0.62x at 28 M; ``marching_triangles`` on icospheres at par from
+# 0.3 to 5 M faces and 0.80-0.90x at 21 M. Byte-identical either way.
+_CUT_BITS_FROM_FACES = 1 << 23
+
+
+class _CutFlags(NamedTuple):
+    """A cut pass's flags, or its counted bits (``words``, ``ranks``); the unused form ``None``."""
+
+    flags: wp.array[wp.int32] | None
+    words: wp.array[wp.uint32] | None
+    ranks: wp.array[wp.int32] | None
+    n_faces: int
+    device: wp.Device
+
+    def stored(self) -> list[object]:
+        """Return the flag pass's three outputs (``kernels/array.store_flag_or_counted_bit``)."""
+        return [self.flags, self.words, self.ranks]
+
+    def rank(self) -> int:
+        """Scan the flags, or the words' counts, in place and return the cut count."""
+        # The cut count sizes every compacted output.
+        counts = self.flags if self.flags is not None else self.ranks
+        assert counts is not None
+        return scan_count(counts)
+
+    def compaction(self, n_cut: int) -> tuple[int, list[object]]:
+        """Return the compaction's ``dim`` and its ``launched_flag_or_bit`` inputs, once ranked."""
+        if self.flags is not None:
+            return self.n_faces, [self.flags, None, None, False]
+        dim, by_rank = _launch.set_bit_launch(self.n_faces, n_cut, self.device)
+        return dim, [None, self.words, self.ranks, by_rank]
+
+
+def _cut_flags(n_faces: int, device: wp.DeviceLike) -> _CutFlags:
+    """Allocate a cut pass's flags, or its zeroed counted bits from ``_CUT_BITS_FROM_FACES``."""
+    device = wp.get_device(device)
+    if not device.is_cuda or n_faces < _CUT_BITS_FROM_FACES:
+        flags = _launch.empty(n_faces, dtype=wp.int32, device=device)
+        return _CutFlags(flags, None, None, n_faces, device)
+    n_words = (n_faces + 31) // 32
+    buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    return _CutFlags(None, words, _launch.view(buffer, n_words, 2 * n_words), n_faces, device)
 
 
 def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:

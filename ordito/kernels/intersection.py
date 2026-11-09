@@ -206,20 +206,15 @@ def mesh_with_plane_flags(
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
     out_cut: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # A ``0`` / ``1`` flag a face, whether the plane cuts it, which the caller scans in place.
+    # Whether the plane cuts each face, as a ``0`` / ``1`` flag or a counted bit
+    # (``kernel_array.store_flag_or_counted_bit``), which the caller ranks.
     #
-    # DECLINED (2026-11-09): a counted ballot bit a face (``store_counted_ballot_bit``) and the
-    # compaction launched over the set bits (``_launch.set_bit_launch``), here and in
-    # ``marching_triangles_flags``. Byte-identical on both devices, and 0.60x on ``lucy`` (28 M
-    # faces, device-bound), but 1.26-1.38x from ``bunny_decimated`` to ``happy_buddha`` (+11-17
-    # us): the zeroed words-and-counts buffer and its views cost 11 us of host against 3.5 us for
-    # the flags' ``empty``, and its memset sits ahead of the readback; marching triangles
-    # 1.02-1.10x on ``sphere_small`` to ``sphere_large``. Only a size gate keeping both forms
-    # would take lucy's win.
     f = wp.int32(wp.tid())
     valid, _p0, _p1 = plane_face_segment(vertices, faces, plane_normal, plane_origin, f)
-    out_cut[f] = wp.where(valid, 1, 0)
+    kernel_array.store_flag_or_counted_bit(out_cut, out_words, out_word_counts, f, valid)
 
 
 @wp.kernel
@@ -229,16 +224,20 @@ def compact_plane_segments(
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
     inclusive: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     out_segments: wp.array2d[wp.vec3],
     out_rows: wp.array[wp.int32],
 ) -> None:
-    # The cut faces' segments, in face order, from the in-place inclusive scan of
-    # ``mesh_with_plane_flags``: each formed again by the same function on the same operands, so
-    # equal to the flags pass's bit for bit. ``out_rows`` (each kept segment's face) is optional
-    # -- a caller with no use for it passes ``None``, whose shape reads 0.
-    f = wp.int32(wp.tid())
-    slot, cut = kernel_array.scanned_count(inclusive, f)
-    if cut == 0:
+    # The cut faces' segments, in face order, from ``mesh_with_plane_flags``' ranked flags or bits
+    # (``kernel_array.launched_flag_or_bit``): each formed again by the same function on the same
+    # operands, so equal to the flags pass's bit for bit. ``out_rows`` (each kept segment's face)
+    # is optional -- a caller with no use for it passes ``None``, whose shape reads 0.
+    f, slot, cut = kernel_array.launched_flag_or_bit(
+        inclusive, words, word_ranks, by_rank, wp.int32(wp.tid())
+    )
+    if not cut:
         return
     _valid, p0, p1 = plane_face_segment(vertices, faces, plane_normal, plane_origin, f)
     out_segments[slot, 0] = p0
@@ -1935,14 +1934,17 @@ def marching_triangles_flags(
     values: wp.array[wp.Float],
     isovalue: wp.Float,
     out_cut: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # A ``0`` / ``1`` flag a face, whether the level set cuts it (``marching_triangle_segment``),
-    # which the caller scans in place. The keys are not formed here, so their base is not taken.
+    # Whether the level set cuts each face (``marching_triangle_segment``), stored as
+    # ``mesh_with_plane_flags`` stores it. The keys are not formed here, so their base is not
+    # taken.
     f = wp.int32(wp.tid())
     cut, _p0, _p1, _e0, _e1 = marching_triangle_segment(
         vertices, faces, values, isovalue, wp.int64(1), f
     )
-    out_cut[f] = cut
+    kernel_array.store_flag_or_counted_bit(out_cut, out_words, out_word_counts, f, cut != 0)
 
 
 @wp.kernel
@@ -1953,20 +1955,25 @@ def compact_cut_segment_keys(
     isovalue: wp.Float,
     key_base: wp.int64,
     inclusive: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     out_segments: wp.array2d[wp.vec3],
     out_keys: wp.array[wp.int64],
     out_endpoints: wp.array[wp.int32],
 ) -> None:
-    # The cut faces' segments and crossing keys, in face order, from the in-place inclusive scan of
-    # ``marching_triangles_flags``, each formed again by ``marching_triangle_segment`` on the same
-    # operands (equal to a stored pair bit for bit). The key of endpoint ``e`` of kept segment ``s``
-    # goes to slot ``2 s + e`` of ``out_keys``. The device link hands it a radix sort's
-    # double-width key buffer and the endpoint ids ``2 s + e`` as the sort's payload, so the sort
-    # needs no staging pass; the host link passes ``None`` for the payload and reads keys and
-    # segments back together, ``out_segments`` aliasing the tail of ``out_keys``' buffer.
-    f = wp.int32(wp.tid())
-    slot, cut = kernel_array.scanned_count(inclusive, f)
-    if cut == 0:
+    # The cut faces' segments and crossing keys, in face order, from ``marching_triangles_flags``'
+    # ranked flags or bits (as ``compact_plane_segments`` reads them), each formed again by
+    # ``marching_triangle_segment`` on the same operands (equal to a stored pair bit for bit). The
+    # key of endpoint ``e`` of kept segment ``s`` goes to slot ``2 s + e`` of ``out_keys``. The
+    # device link hands it a radix sort's double-width key buffer and the endpoint ids ``2 s + e``
+    # as the sort's payload, so the sort needs no staging pass; the host link passes ``None`` for
+    # the payload and reads keys and segments back together, ``out_segments`` aliasing the tail of
+    # ``out_keys``' buffer.
+    f, slot, cut = kernel_array.launched_flag_or_bit(
+        inclusive, words, word_ranks, by_rank, wp.int32(wp.tid())
+    )
+    if not cut:
         return
     _cut, p0, p1, e0, e1 = marching_triangle_segment(vertices, faces, values, isovalue, key_base, f)
     out_segments[slot, 0] = p0
@@ -2146,7 +2153,10 @@ def _register_overloads() -> None:
     field = (wp.array[wp.vec3], wp.array[wp.int32])
     MARCHING_TRIANGLES_FLAGS = OverloadTable(
         marching_triangles_flags,
-        {d: [*field, wp.array[d], d, wp.array[wp.int32]] for d in (wp.float32, wp.float64)},
+        {
+            d: [*field, wp.array[d], d, wp.array[wp.int32], wp.array[wp.uint32], wp.array[wp.int32]]
+            for d in (wp.float32, wp.float64)
+        },
     )
     COMPACT_CUT_SEGMENT_KEYS = OverloadTable(
         compact_cut_segment_keys,
@@ -2157,6 +2167,9 @@ def _register_overloads() -> None:
                 d,
                 wp.int64,
                 wp.array[wp.int32],
+                wp.array[wp.uint32],
+                wp.array[wp.int32],
+                wp.bool,
                 wp.array2d[wp.vec3],
                 wp.array[wp.int64],
                 wp.array[wp.int32],

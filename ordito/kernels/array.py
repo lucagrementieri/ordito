@@ -2609,6 +2609,44 @@ def launched_set_bit(
     return t, rank, flagged
 
 
+# A sparse flag a position stored in one of two forms, chosen by the caller on size
+# (``intersection._cut_flags``): a 0 / 1 ``int32`` flag (``flags`` non-empty), scanned in place,
+# whose ``empty`` allocation and one scan are the cheapest while the call is host-bound; or a
+# counted ballot bit (``flags`` empty, ``words`` and ``word_counts`` zeroed), a 32nd of the bytes
+# written and scanned and a compaction launched over the set bits alone, which pays once the
+# flags' traffic is the call's device time. The test is warp-uniform, so the ballot's lanes stay
+# converged.
+@wp.func
+def store_flag_or_counted_bit(
+    flags: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_counts: wp.array[wp.int32],
+    index: wp.int32,
+    flag: wp.bool,
+):
+    if flags.shape[0] > 0:
+        flags[index] = wp.where(flag, 1, 0)
+    else:
+        store_counted_ballot_bit(words, word_counts, index, flag)
+
+
+@wp.func
+def launched_flag_or_bit(
+    inclusive: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
+    t: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # Thread ``t`` of a compaction over ``store_flag_or_counted_bit``'s flags once ranked: the
+    # position, its compacted slot and whether it is flagged, from the flags' in-place inclusive
+    # scan (a thread a position) or from the ranked bits (``launched_set_bit``).
+    if inclusive.shape[0] > 0:
+        slot, count = scanned_count(inclusive, t)
+        return t, slot, count != 0
+    return launched_set_bit(words, word_ranks, t, by_rank)
+
+
 @wp.func
 def float_order_bits(value: wp.float32) -> wp.uint64:
     # A **non-negative** float reinterpreted as the high half of a sortable integer key. The
