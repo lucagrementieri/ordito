@@ -1174,11 +1174,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   would need `ear_grade_grid`), or re-grading only the corners a clip can change (not local in
   general: removing a tip can make a distant corner an ear). Needs the user's choice.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): the 120 ms on `sphere_small` is the
-  input, which VTK also takes 500 iterations on (9 on `sphere_med`). The block runs at 128 lanes
-  now (0.62-0.72x); what is left is ~190 us an iteration on one SM against VTK's ~90 us on one
-  CPU thread, of which the `float64` `wp.svd3` is ~50 us and the exact re-search ~70 us. Open: a
-  `float32` SVD refined by one `float64` Newton step on the rotation (a method change, at
-  rounding level).
+  input, which VTK also takes 500 iterations on (9 on `sphere_med`). The block runs 128 lanes and
+  its rotation fit is `kernels/registration.rotation_from_covariance_d` (a `float32` SVD refined
+  in `float64`, ~18 us where the `float64` `wp.svd3` took ~50 us); `sphere_small` 120 -> 70 ms.
+  What is left is ~150 us an iteration on one SM against VTK's ~90 us on one CPU thread, ~70 us
+  of it the exact `float64` re-search (`proximity.closest_offset_d`). Open.
 - **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
   (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
   0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the

@@ -847,6 +847,59 @@ def strided_centroid(points: wp.array[wp.vec3], lane: wp.int32) -> wp.vec3d:
     return block_sum(total) / wp.float64(points.shape[0])
 
 
+# ``rotation_from_covariance_d``'s Newton steps and the conditioning below which it hands the
+# fit to the ``float64`` SVD: its Newton matrix's determinant against the cube of its trace.
+ROTATION_NEWTON_STEPS = 2
+ROTATION_NEWTON_CONDITION = wp.float64(1e-6)
+
+
+@wp.func
+def rotation_from_covariance_d(cov: wp.mat33d) -> wp.mat33d:
+    # ``rotation_from_covariance(cov, False)`` for a ``float64`` covariance, from a ``float32`` SVD
+    # of the scaled covariance made orthonormal in ``float64`` and then two Newton steps on
+    # ``trace(R^T cov)`` over rotations ``R0 exp([w])``: the gradient is the axial part of
+    # ``R0^T cov``, the Hessian ``trace(S) I - S`` for its symmetric part ``S``. Against NumPy's
+    # ``float64`` SVD the rotation is within 3e-13 (``wp.svd3`` in ``float64``: also 3e-13) and
+    # 4e-16 at the median, a quarter of the cost: the ``float64`` SVD is ~50 us of latency on one
+    # thread. A covariance out of ``float32`` range after scaling, or a Newton matrix too close to
+    # singular (planar or collinear landmarks, a rotation the data does not fix), takes the
+    # ``float64`` SVD. Scaling first also keeps a covariance near 1e-30, where the ``float64``
+    # ``wp.svd3`` returns a wrong rotation, in range (2026-11-09).
+    scale = wp.float64(0.0)
+    for i in range(3):
+        for j in range(3):
+            scale = wp.max(scale, wp.abs(cov[i, j]))
+    if not (scale > wp.float64(0.0) and scale < wp.float64(1e300)):
+        return rotation_from_covariance(cov, False)
+    c = cov / scale
+    eye = wp.identity(3, dtype=wp.float64)
+    r = wp.mat33d(rotation_from_covariance(wp.mat33(c), False))
+    for _ in range(2):
+        r = r * (eye * wp.float64(1.5) - wp.transpose(r) * r * wp.float64(0.5))
+    for _ in range(ROTATION_NEWTON_STEPS):
+        q = wp.transpose(r) * c
+        gradient = wp.vec3d(q[2, 1] - q[1, 2], q[0, 2] - q[2, 0], q[1, 0] - q[0, 1])
+        s = (q + wp.transpose(q)) * wp.float64(0.5)
+        h = eye * wp.trace(s) - s
+        t = wp.trace(h)
+        minor = h[0, 0] * h[1, 1] - h[0, 1] * h[1, 0]
+        if not (h[0, 0] > wp.float64(0.0) and minor > wp.float64(0.0)):
+            return rotation_from_covariance(cov, False)
+        if not (wp.determinant(h) > ROTATION_NEWTON_CONDITION * t * t * t):
+            return rotation_from_covariance(cov, False)
+        w = wp.inverse(h) * gradient
+        k = wp.skew(w)
+        angle_sq = wp.dot(w, w)
+        a = wp.float64(1.0) - angle_sq / wp.float64(6.0)
+        b = wp.float64(0.5) - angle_sq / wp.float64(24.0)
+        if angle_sq > wp.float64(1e-8):
+            angle = wp.sqrt(angle_sq)
+            a = wp.sin(angle) / angle
+            b = (wp.float64(1.0) - wp.cos(angle)) / angle_sq
+        r = r * (eye + k * a + k * k * b)
+    return r
+
+
 # Lanes of the one ``landmark_icp`` block: a lane a landmark for up to 128 of VTK's 100-199
 # landmarks, each lane's match being a chain of dependent BVH loads. Against 64 lanes (two matches a
 # lane), whole ``icp(method="pyvista")`` calls 0.72x on ``sphere_small`` (500 iterations), 0.67x
@@ -910,7 +963,7 @@ def landmark_icp(
             p = linear * wp.vec3d(source[k * landmark_step]) + shift
             cov += wp.outer(closest[k] - q_centroid, p - p_centroid)
             k += wp.block_dim()
-        rotation = rotation_from_covariance(block_sum(cov), False)
+        rotation = rotation_from_covariance_d(block_sum(cov))
         translation = q_centroid - rotation * p_centroid
 
         # How far the fit moves the landmarks, and how far it leaves them from their matches.
