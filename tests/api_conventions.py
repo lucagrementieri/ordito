@@ -664,9 +664,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``quadric_decimate``'s hub sums are added in place to the boundary planes the gather left in
     # each hub's quadric, so the array is read and written, not an output.
     ("remesh", "gather_hub_quadrics"): frozenset({"quadrics"}),
-    # ``robust_laplacian``'s exact rounding check keeps each face's terms between the group sum's
-    # two passes: scratch the first pass writes and the second reads, not an output.
-    ("laplacian", "intrinsic_rounding_rows"): frozenset({"terms"}),
     # ``quadric_pass_head`` (the CPU's one-launch grouping) clears the deterministic setting's hub
     # count as ``count_pass_edges_exact`` does: per-pass scratch the exact gather appends to.
     ("remesh", "quadric_pass_head"): frozenset({"hub_count"}),

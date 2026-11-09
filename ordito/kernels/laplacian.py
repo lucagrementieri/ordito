@@ -4,6 +4,7 @@ import warp as wp
 
 from ordito.kernels.array import (
     OverloadTable,
+    append_slot_if,
     csr_key,
     csr_run_start,
     device_is_cpu,
@@ -266,20 +267,81 @@ def add_rounding_terms_out_of_line(
     add_rounding_terms(faces, f, bound, weight, sums)
 
 
+@wp.func
+def half_cotangent_sensitivities(
+    l0: wp.float32, l1: wp.float32, l2: wp.float32
+) -> tuple[wp.vec3, wp.vec3]:
+    # A face's ``float32`` half-cotangents ``c_k`` and, beside them, a first-order bound ``S_k``
+    # on ``sum_m |l_m dc_k/dl_m|``: with ``c_k = (l_i^2 + l_j^2 - l_k^2) / 4A`` and
+    # ``l_m dA/dl_m = l_m^2 cot(theta_m) / 2 = l_m^2 c_m``, each term is at most
+    # ``l_m^2 / 2A + |c_k| l_m^2 |c_m| / A``. ``half_cotangent_rounding``'s finite difference
+    # under a relative step ``h`` is ``h S_k`` to first order. A zero area returns infinite bounds.
+    dbl_area = doublearea_from_lengths(l0, l1, l2)
+    c0, c1, c2 = cot_entries_from_edge_lengths(l0, l1, l2)
+    q0 = l0 * l0
+    q1 = l1 * l1
+    q2 = l2 * l2
+    area = wp.float32(0.5) * dbl_area
+    lead = (q0 + q1 + q2) / (wp.float32(2.0) * area)
+    tail = (q0 * wp.abs(c0) + q1 * wp.abs(c1) + q2 * wp.abs(c2)) / area
+    c = wp.vec3(c0, c1, c2)
+    bound = wp.vec3(lead + wp.abs(c0) * tail, lead + wp.abs(c1) * tail, lead + wp.abs(c2) * tail)
+    return c, bound
+
+
+# How far under the warning limit a ``float32`` sensitivity must put a row term for
+# ``flag_rounding_rows`` to leave it unflagged: the margin covers the finite difference's second
+# order and the ``float32`` evaluation, both far below it wherever a term passes.
+ROUNDING_FILTER_MARGIN = wp.float32(4.0)
+
+
 @wp.kernel
-def intrinsic_rounding_rows(
+def flag_rounding_rows(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    limit: wp.float32,
+    out_flags: wp.array[wp.int32],
+    out_listed: wp.array[wp.int32],
+) -> None:
+    # The rows ``intrinsic_rounding_rows`` must sum exactly. Face ``f`` adds to the row of its
+    # corner ``j`` the bounds and weights of its half-cotangents ``j + 1`` and ``j + 2``, and a
+    # row's ratio is a mediant of those pairs: it exceeds no pair's ``(b_{j+1} + b_{j+2}) /
+    # (|c_{j+1}| + |c_{j+2}|)``. A pair whose ``float32`` sensitivity (``half_cotangent_
+    # sensitivities``) puts it a ``ROUNDING_FILTER_MARGIN`` under ``limit`` cannot raise its row
+    # past the limit; any other pair (a NaN or infinite bound included) flags its row. A row
+    # nothing flags stays under the limit whatever subset of its terms is summed, so only the faces
+    # touching a flagged row need the ``float64`` pass, and those rows get every term they had.
+    # Thread 0 also zeroes ``out_listed``'s counter for ``list_rounding_faces`` (when listing).
+    f = wp.int32(wp.tid())
+    if f == 0 and out_listed.shape[0] != 0:
+        out_listed[0] = 0
+    l0, l1, l2 = row_triple(edge_lengths, f)
+    c, bound = half_cotangent_sensitivities(l0, l1, l2)
+    step = wp.float32(LENGTH_ROUNDING)
+    for j in range(3):
+        a = (j + 1) % 3
+        b = (j + 2) % 3
+        spread = ROUNDING_FILTER_MARGIN * step * (bound[a] + bound[b])
+        if not (spread <= limit * (wp.abs(c[a]) + wp.abs(c[b]))):
+            out_flags[faces[f * 3 + j]] = 1
+
+
+@wp.func
+def add_intrinsic_rounding_rows(
     faces: wp.array[wp.int32],
     edge_lengths: wp.array2d[wp.float32],
     terms: wp.array2d[wp.vec3d],
     sums: GroupSumPass,
     out_rows: wp.array[wp.vec2d],
+    f: wp.int32,
 ) -> None:
     # Each half-cotangent's rounding movement, summed into the rows of the edge it weights, beside
     # the row's sum of ``|weight|``: ``(error, scale)`` rows of a ``_launch.group_sums`` buffer,
     # so with ``ordito.config``'s deterministic setting on the rows, the largest ratio and the
     # warning repeat bit for bit on CUDA. Bound by its ``float64`` arithmetic, not by the commits:
     # a first pass marking the rows that can exceed the limit (a row's ratio is a mediant of its
-    # terms') measured slower, since the faces it keeps evaluate the bound twice.
+    # terms') measured slower, since the faces it keeps evaluate the bound twice; the ``float32``
+    # filter that replaced it (``flag_rounding_rows``) evaluates it once.
     #
     # With the setting on, the first pass keeps each face's terms in ``terms`` (``(n_faces, 2)``:
     # bounds, then weights) for the second to read; off, ``terms`` is ``None`` and unwritten.
@@ -302,7 +364,6 @@ def intrinsic_rounding_rows(
     # launch fewer and byte-identical, device time 0.92x on ``bunny``; but ``robust_laplacian``
     # new/old CUDA 0.97-0.99x on ``sphere_small``, 1.00-1.02x on ``bunny_decimated`` and
     # 1.04-1.10x on ``bunny`` (all six minima slower), the call rising where the device fell.
-    f = wp.int32(wp.tid())
     bound = wp.vec3d()
     weight = wp.vec3d()
     if sums.phase == 0:
@@ -324,6 +385,67 @@ def intrinsic_rounding_rows(
         add_rounding_terms_out_of_line(faces, f, bound, weight, sums)
     else:
         add_rounding_terms(faces, f, bound, weight, sums)
+
+
+@wp.func
+def touches_flagged_row(
+    faces: wp.array[wp.int32], flags: wp.array[wp.int32], f: wp.int32
+) -> wp.int32:
+    # Non-zero when face ``f`` adds to a row ``flag_rounding_rows`` flagged.
+    return flags[faces[f * 3]] + flags[faces[f * 3 + 1]] + flags[faces[f * 3 + 2]]
+
+
+@wp.kernel
+def intrinsic_rounding_rows(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    flags: wp.array[wp.int32],
+    terms: wp.array2d[wp.vec3d],
+    sums: GroupSumPass,
+    out_rows: wp.array[wp.vec2d],
+) -> None:
+    # One thread a face: ``add_intrinsic_rounding_rows``. With ``flags`` (``flag_rounding_rows``;
+    # empty to take every face) a face touching no flagged row returns first, in both phases: the
+    # CPU's form, whose threads run in turn. On CUDA the faces kept are scattered over most warps,
+    # which then issue the ``float64`` work all the same (``lucy`` 1.06x, ``dragon`` 0.94x device
+    # time with 16-23 % of the faces kept), so CUDA walks a list instead
+    # (``intrinsic_rounding_rows_listed``).
+    f = wp.int32(wp.tid())
+    if flags.shape[0] != 0:
+        if touches_flagged_row(faces, flags, f) == 0:
+            return
+    add_intrinsic_rounding_rows(faces, edge_lengths, terms, sums, out_rows, f)
+
+
+@wp.kernel
+def list_rounding_faces(
+    faces: wp.array[wp.int32], flags: wp.array[wp.int32], out_listed: wp.array[wp.int32]
+) -> None:
+    # The faces touching a flagged row, appended from ``out_listed[1]`` with their count in
+    # ``out_listed[0]`` (zeroed by ``flag_rounding_rows``), one atomic a warp. Their order is the
+    # arrival order, which neither commit of ``add_intrinsic_rounding_rows`` reads: CUDA's
+    # arrival-order atomics take any order, the exact group sum is the same in all.
+    f = wp.int32(wp.tid())
+    slot = append_slot_if(out_listed, 0, touches_flagged_row(faces, flags, f))
+    if slot >= 0:
+        out_listed[slot + 1] = f
+
+
+@wp.kernel
+def intrinsic_rounding_rows_listed(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    listed: wp.array[wp.int32],
+    width: wp.int32,
+    terms: wp.array2d[wp.vec3d],
+    sums: GroupSumPass,
+    out_rows: wp.array[wp.vec2d],
+) -> None:
+    # ``intrinsic_rounding_rows`` over ``list_rounding_faces``' list, ``width`` threads striding
+    # it: the kept faces fill whole warps, and the count stays on the device.
+    t = wp.int32(wp.tid())
+    for k in range(t, listed[0], width):
+        add_intrinsic_rounding_rows(faces, edge_lengths, terms, sums, out_rows, listed[k + 1])
 
 
 @wp.func

@@ -21,6 +21,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from ordito.constants import TOLERANCE_MOLLIFY
+from ordito.kernels import laplacian as kernel_laplacian
 from tests.comparisons import assert_nonconstant, meshlab_umbrella, sparse_allclose
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -33,6 +34,7 @@ from tests.conversions import (
     trimesh_to_meshlib,
     trimesh_to_pytorch3d,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 # The intrinsic route takes ``float32`` edge lengths, and on needles those lengths do not determine
@@ -924,6 +926,63 @@ def test_robust_laplacian_warns_where_lengths_do_not_determine_it(
     row_scale = np.asarray(abs(reference).sum(axis=1)).ravel()
     movement = (np.asarray(moved.max(axis=1).todense()).ravel() / row_scale).max()
     assert movement > 1e-5 if warns else movement < 1e-6
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "saddle_graded", "torus_irregular_holes"]
+)
+def test_robust_laplacian_rounding_filter_keeps_every_row_near_the_limit(
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the ``float32`` row filter is ordito's own shortcut.
+
+    ``kernels/laplacian.flag_rounding_rows`` leaves a row unflagged only when its ``float32``
+    sensitivity proves every term under the warning limit, so the ``float64`` pass may skip it.
+    Every unflagged row's full ``float64`` ratio must then sit under the limit -- here under a
+    quarter of it, the margin the filter claims -- and on these needle fixtures the filter must
+    flag some rows and leave others. A filter whose bound were too small would leave a row at the
+    limit unflagged and fail the first assert. The filtered call must also give the unfiltered one's
+    operator and warning, bit for bit.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    n_vertices = vertices.size
+    lengths, _ = od.laplacian.mollify_intrinsic(vertices, faces)
+    limit = od.laplacian._INTRINSIC_ROUNDING_LIMIT  # pyright: ignore[reportPrivateUsage]
+    flags = wp.zeros(n_vertices, dtype=wp.int32, device=vertices.device)
+    wp.launch(
+        kernel_laplacian.flag_rounding_rows,
+        dim=faces.size // 3,
+        inputs=[faces, lengths, wp.float32(limit)],
+        outputs=[flags, warp_empty(0, wp.int32, vertices.device)],
+        device=vertices.device,
+    )
+    flagged = flags.numpy() != 0
+    with od.config.deterministic(False):
+        rows = od.laplacian._intrinsic_rounding_rows(  # pyright: ignore[reportPrivateUsage]
+            n_vertices, faces, lengths
+        )
+    assert rows.out is not None
+    rows_np = rows.out.numpy()
+    weighted = rows_np[:, 1] > 0.0
+    ratio = np.where(weighted, rows_np[:, 0] / np.where(weighted, rows_np[:, 1], 1.0), 0.0)
+    assert 0 < int(flagged.sum()) < int(weighted.sum())
+    assert ratio[~flagged].max() < 0.25 * limit
+    results = []
+    for threshold in (0, 10**12):
+        monkeypatch.setattr(od.laplacian, "_ROUNDING_FILTER_FROM_FACES", threshold)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            matrix = od.laplacian.robust_laplacian(vertices, faces, use_intrinsic_delaunay=False)
+        n_entries = matrix.nnz_sync()
+        results.append(
+            (
+                matrix.values.numpy()[:n_entries].tobytes(),
+                [str(w.message) for w in caught if "robust_laplacian:" in str(w.message)],
+            )
+        )
+    assert results[0] == results[1]
 
 
 def test_robust_laplacian_warning_repeats_run_to_run(

@@ -484,6 +484,12 @@ def cotmatrix(
 # error, 100x the ``float32`` floor.
 _INTRINSIC_ROUNDING_LIMIT = 1e-4
 
+# ``robust_laplacian``'s rounding check filters its rows in ``float32`` from this many faces
+# (``kernels/laplacian.flag_rounding_rows``), and on CUDA walks the kept faces with this many
+# threads.
+_ROUNDING_FILTER_FROM_FACES = 1 << 18
+_ROUNDING_LIST_WIDTH = 1 << 18
+
 
 def robust_laplacian(
     vertices: wp.array[wp.vec3],
@@ -671,10 +677,49 @@ def _intrinsic_rounding_rows(
     rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device, fused=True)
     # The first pass's terms, for the second (the setting on only).
     terms = None if rows.words is None else odt.empty_2d((n_faces, 2), wp.vec3d, device=device)
-    _launch.launch_group_sums(
-        kernel_laplacian.intrinsic_rounding_rows,
+    if n_faces < _ROUNDING_FILTER_FROM_FACES:
+        _launch.launch_group_sums(
+            kernel_laplacian.intrinsic_rounding_rows,
+            dim=n_faces,
+            inputs=[faces, lengths, None, terms],
+            sums=rows,
+            device=device,
+        )
+        return rows
+    # The rows a ``float32`` sensitivity cannot keep under the limit: only their faces take the
+    # ``float64`` pass, which gives those rows every term and leaves the rest under the limit. The
+    # CPU skips the other faces in place; CUDA lists the kept ones, so they fill whole warps.
+    listing = not wp.get_device(device).is_cpu
+    flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    listed = _launch.empty(n_faces + 1 if listing else 0, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_laplacian.flag_rounding_rows,
         dim=n_faces,
-        inputs=[faces, lengths, terms],
+        inputs=[faces, lengths, wp.float32(_INTRINSIC_ROUNDING_LIMIT)],
+        outputs=[flags, listed],
+        device=device,
+    )
+    if not listing:
+        _launch.launch_group_sums(
+            kernel_laplacian.intrinsic_rounding_rows,
+            dim=n_faces,
+            inputs=[faces, lengths, flags, terms],
+            sums=rows,
+            device=device,
+        )
+        return rows
+    _launch.launch(
+        kernel_laplacian.list_rounding_faces,
+        dim=n_faces,
+        inputs=[faces, flags],
+        outputs=[listed],
+        device=device,
+    )
+    width = min(n_faces, _ROUNDING_LIST_WIDTH)
+    _launch.launch_group_sums(
+        kernel_laplacian.intrinsic_rounding_rows_listed,
+        dim=width,
+        inputs=[faces, lengths, listed, width, terms],
         sums=rows,
         device=device,
     )
