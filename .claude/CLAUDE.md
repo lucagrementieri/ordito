@@ -1195,13 +1195,20 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **The capped clip's section is ear-clipping time** (2026-11-09 intersection sweep):
-  `clip_mesh_with_field(cap=True)` spends 2.4 of 4.3 ms on dragon and 8.4 of 23 ms on lucy in
-  `polyline`'s packed-ring ear loop (graph replays and `triangulate_rings`), against ~0.1 ms for
-  the clip. Not yet diagnosed whether the scan sections hit the thin-ring zipper above or the
-  unpriced packed-ring capture. Also open there: the cut faces' bitset
-  (`kernels/intersection.mesh_with_plane_flags`) wins only on device-bound meshes (lucy 0.60x)
-  and would need a size gate keeping both forms.
+- **The capped clip's section is ear-clipping time** (diagnosed 2026-11-09):
+  `clip_mesh_with_field(cap=True)` costs 2.2 ms on bunny, 4.3 on dragon and 23 on lucy against
+  0.1-10 ms uncapped. Not the thin-ring zipper above: the long loops take 39 (bunny, 963 points),
+  65 (dragon) and 162 rounds (lucy, 8 030 points). Bunny's rounds sit at the four-launch latency
+  floor (~19 us a captured round) and its 300-odd-point loops cost ~0.3 ms in the one-block clip,
+  whose `EAR_ONE_BLOCK_MAX` split is already at its measured level; half its 2.2 ms wall is the
+  host waiting between the cap's nine readbacks. On dragon most of the device time is the
+  min-weight fill of one 451-point section whose projection is not simple (the ear clip returns
+  446 of its 449 triangles, so it falls back by design). On lucy `ring_compute_ears` is ~33 of a
+  round's ~52 us: it re-grades every live corner each round, though an ear's grade changes only
+  when a neighbour is clipped or the loop's `check_thin` flips. Options, none priced: carry the
+  grades across rounds behind a dirty mark (shared by every ear-clipping path; at most ~0.88x on
+  lucy, nothing at bunny's floor), or fewer cap readbacks. Declined: dropping the ~120 one- and
+  two-point cycles dragon's sections hand the fill (byte-identical, 0.997-1.014x).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
