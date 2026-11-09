@@ -2122,6 +2122,7 @@ def ordered_pop_block(
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_pop_pass(
     parity: wp.int32,
+    step: wp.int32,
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
     angles: wp.array[wp.vec3d],
@@ -2147,14 +2148,16 @@ def ordered_pop_pass(
     out_scratch_targets: wp.array[wp.int32],
     out_scratch_offers: wp.array[wp.float64],
 ) -> None:
-    # One step's selection and pops, a block per listed vertex: ``ordered_pop_block``.
+    # One step's selection and pops, a block per listed vertex: ``ordered_pop_block``. The round
+    # is ``LOOP_ROUND + step``, ``step`` its place in a replayed body of several (``heat.py``,
+    # ``_ORDERED_FRONT_STEPS_PER_BODY``); the relabel and settle passes read it the same way.
     block, lane = wp.tid()
     ordered_pop_block(
         block,
         lane,
         blocks,
         parity,
-        state[LOOP_ROUND],
+        state[LOOP_ROUND] + step,
         lengths,
         cosines,
         angles,
@@ -2235,6 +2238,7 @@ def ordered_relabel_block(
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_relabel_pass(
     parity: wp.int32,
+    step: wp.int32,
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
     angles: wp.array[wp.vec3d],
@@ -2258,7 +2262,7 @@ def ordered_relabel_pass(
         lane,
         blocks,
         parity,
-        state[LOOP_ROUND],
+        state[LOOP_ROUND] + step,
         lengths,
         cosines,
         angles,
@@ -2327,6 +2331,7 @@ def ordered_settle_block(
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_settle_pass(
     parity: wp.int32,
+    step: wp.int32,
     touched: wp.array[wp.int32],
     relaxed: wp.array[wp.float64],
     next_source_of: wp.array[wp.int32],
@@ -2350,7 +2355,7 @@ def ordered_settle_pass(
         lane,
         blocks,
         parity,
-        state[LOOP_ROUND],
+        state[LOOP_ROUND] + step,
         touched,
         relaxed,
         next_source_of,

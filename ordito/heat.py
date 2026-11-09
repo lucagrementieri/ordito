@@ -908,13 +908,18 @@ def _unfolding_front(
         )
         return labels
 
+    steps_per_body = _ORDERED_FRONT_STEPS_PER_BODY
+
     def front_steps() -> None:
-        for parity in range(2):
+        # ``steps_per_body`` rounds of both parities, round ``LOOP_ROUND + step``: a round past the
+        # fixpoint has no front, and the conditional node and closing launch come once a body.
+        for step, parity in ((t, q) for t in range(steps_per_body) for q in range(2)):
             _launch.launch_tiled(
                 kernel_heat.ordered_pop_pass,
                 dim=blocks,
                 inputs=[
                     parity,
+                    step,
                     lengths,
                     cosines,
                     angles,
@@ -951,6 +956,7 @@ def _unfolding_front(
                     dim=blocks,
                     inputs=[
                         parity,
+                        step,
                         lengths,
                         cosines,
                         angles,
@@ -973,12 +979,17 @@ def _unfolding_front(
             _launch.launch_tiled(
                 kernel_heat.ordered_settle_pass,
                 dim=blocks,
-                inputs=[parity, touched, relaxed, next_source_of, popped_step, state, blocks],
+                inputs=[parity, step, touched, relaxed, next_source_of, popped_step, state, blocks],
                 outputs=[labels, source_of, bids, popped, pop_count, front, counts, window, state],
                 device=device,
                 block_dim=lanes,
             )
-        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+        _launch.launch(
+            kernel_array.loop_advance_by,
+            dim=1,
+            inputs=[steps_per_body, max_rounds, state],
+            device=device,
+        )
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_steps)
     return labels
@@ -988,6 +999,10 @@ def _unfolding_front(
 # 2-ring), blocks striding over lists that hold a few thousand vertices on a scan mesh.
 _ORDERED_FRONT_LANES = 32
 _ORDERED_FRONT_ROUNDS_PER_VERTEX = 64
+# Rounds a replayed body of the ordered front's CUDA loop runs. Two against one, whole calls
+# (2026-11-09, byte-identical): one source 0.96-0.99x from ``sphere_small`` to bunny, sixteen
+# 0.98-1.00x; four 0.94-1.05x.
+_ORDERED_FRONT_STEPS_PER_BODY = 2
 _ORDERED_FRONT_BLOCKS = 1 << 12
 
 
