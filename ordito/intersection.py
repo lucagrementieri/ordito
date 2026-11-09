@@ -2119,7 +2119,12 @@ def clip_mesh_with_field(
     )
     # Readback: the section edges are chained on the host.
     rim_rows_np = read_array(rim_rows)
-    section_np = rim_rows_np[rim_rows_np[:, 2] != 0, :2]
+    # A rim edge whose two ends merged into one crossing (a face the cut collapsed) is a loop on
+    # one vertex: it bounds nothing, and kept it would give that vertex a second successor, whose
+    # choice the chaining leaves to arrival order.
+    section_np = rim_rows_np[
+        (rim_rows_np[:, 2] != 0) & (rim_rows_np[:, 0] != rim_rows_np[:, 1]), :2
+    ]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
     # The section's vertices are numbered compactly for the chaining, so its tables are sized by

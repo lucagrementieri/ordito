@@ -2035,6 +2035,45 @@ def test_clip_mesh_with_field_capped_seals_a_vertex_within_tolerance_of_the_leve
     assert capped_f.size == reference_f.size
 
 
+def test_clip_mesh_with_field_capped_closes_around_a_collapsed_cut_face(device: str) -> None:
+    """
+    Ordito against ordito: a cut face whose two crossings merge into one point is sealed.
+
+    Vertex 0 sits just outside the level set's tolerance on the dropped side and every neighbour
+    far on the kept side, so each crossing on its edges interpolates to its own position (from it,
+    the lower-numbered endpoint) and the cut faces between two of those neighbours collapse: their
+    rim edge joins the merged crossing to itself. Kept in the section, that edge gave the crossing
+    a second successor, which the chaining chose by arrival, and the cap could take the one-vertex
+    cycle and leave the real loop open (scan meshes: lucy's single loop came out whole on some
+    calls and as six pieces on others). The section must close: apart from the collapsed faces,
+    whose repeated vertex no cap can remove, the result is watertight, and it repeats call to call.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=3, device=device)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    field_np = vertices_wp.numpy()[:, 2].astype(np.float64) - vertices_wp.numpy()[0, 2] + 0.2
+    neighbours = np.setdiff1d(faces_np[(faces_np == 0).any(axis=1)], [0])
+    assert np.all(field_np[neighbours] > 0.0)
+    field_np[0] = -1e-4
+    field_np[neighbours] = 1e7
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+
+    results = [
+        od.intersection.clip_mesh_with_field(vertices_wp, faces_wp, field_wp, cap=True)
+        for _ in range(2)
+    ]
+    capped_v, capped_f = results[0]
+    assert np.array_equal(results[1][1].numpy(), capped_f.numpy())
+    rows_np = capped_f.numpy().reshape(-1, 3)
+    collapsed = (
+        (rows_np[:, 0] == rows_np[:, 1])
+        | (rows_np[:, 1] == rows_np[:, 2])
+        | (rows_np[:, 0] == rows_np[:, 2])
+    )
+    assert collapsed.sum() > 0  # non-vacuity: the cut collapsed faces
+    proper_wp = wp.array(rows_np[~collapsed].reshape(-1), dtype=wp.int32, device=device)
+    assert od.validation.is_watertight(capped_v, proper_wp)
+
+
 @pytest.mark.parametrize("height_fraction", [0.81])
 def test_clip_mesh_with_field_planar_cap_matches_the_min_weight_cap(
     device: str, height_fraction: float, monkeypatch: pytest.MonkeyPatch
