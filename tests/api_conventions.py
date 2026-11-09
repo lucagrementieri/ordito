@@ -877,6 +877,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # problem, so it cannot be a kernel local. Neither an input nor the answer, which is
     # ``out_triangles`` beside ``out_counts``.
     ("holes", "traceback_fill_triangles"): frozenset({"stack"}),
+    # The striped band DP's handout word: ``ticket`` hands each block its stripe in the order
+    # blocks start, arriving ``-1``. (Its ``progress`` words are written inside
+    # ``stitch_dp_warp_rows``, which this check does not read.)
+    ("holes", "stitch_dp_stripes"): frozenset({"ticket"}),
     ("visibility", "shape_diameter"): frozenset({"scratch"}),
     # The shrink runs each seeded sphere to convergence in place: ``radii`` / ``centers`` hold the
     # seed on entry and the answer on exit.

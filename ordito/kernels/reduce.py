@@ -942,6 +942,41 @@ def warp_shuffle_up_float(value: wp.float32) -> wp.float32: ...
 def warp_shuffle_up_int(value: wp.int32) -> wp.int32: ...
 
 
+# An element another block of the same launch wrote, read from L2 (``ld.cg``) rather than through
+# this SM's L1, which may hold the line from before the write. Pair it with the writer's
+# ``thread_fence`` before whatever it publishes, and read only after seeing that. The CPU device
+# runs its blocks in turn and reads plainly.
+_LOAD_COHERENT_2D = """
+#if defined(__CUDA_ARCH__)
+return __ldcg(wp::data_at_byte_offset(values, wp::byte_offset(values, i, j)));
+#else
+return *wp::data_at_byte_offset(values, wp::byte_offset(values, i, j));
+#endif
+"""
+
+# A flag another block raises, read anew every call through a ``volatile`` pointer: a spin on it
+# must not be hoisted out of its loop. ``__ldcv`` is not ``volatile`` to the compiler, which
+# assumed a loop over it alone terminates and dropped it (2026-11-09). Fence once the flag is seen,
+# before reading what it published.
+_LOAD_VOLATILE = """
+return *(volatile int*)wp::data_at_byte_offset(values, wp::byte_offset(values, index));
+"""
+
+
+@wp.func_native(_LOAD_COHERENT_2D)
+def load_coherent_float_2d(
+    values: wp.array2d[wp.float32], i: wp.int32, j: wp.int32
+) -> wp.float32: ...
+
+
+@wp.func_native(_LOAD_COHERENT_2D)
+def load_coherent_int_2d(values: wp.array2d[wp.int32], i: wp.int32, j: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_LOAD_VOLATILE)
+def load_volatile_int(values: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
+
+
 @wp.func
 def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
     # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the

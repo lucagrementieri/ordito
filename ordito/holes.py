@@ -3420,11 +3420,15 @@ def stitch_loops_min_weight(
     n_ab = n_a + n_b
     # Every rim-sized buffer below is a view of one allocation per dtype. The ``int32`` one holds
     # ``[start_a, start_b, face range flag, band triangle count]``, the rolled loops A and B, the
-    # closest columns and each rim's rim-opposite scratch, and arrives ``RIM_NO_FACE``-filled, which
-    # the scratch needs and the rest overwrite; the closest-pair launch clears the flag both
-    # rim-opposite probes may raise.
+    # closest columns, each rim's rim-opposite scratch and the band DP's stripe ticket and progress,
+    # and arrives ``RIM_NO_FACE``-filled (``-1``), which the scratch and the DP's slots need and the
+    # rest overwrite; the closest-pair launch clears the flag both rim-opposite probes may raise.
+    n_dp_slots = 1 + _stitch_stripe_count(n_a)
     ints = _launch.full(
-        4 + 2 * n_ab + n_a + 4 * n_ab, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=device
+        4 + 2 * n_ab + n_a + 4 * n_ab + n_dp_slots,
+        kernel_holes.RIM_NO_FACE,
+        dtype=wp.int32,
+        device=device,
     )
     pair_and_count = _launch.view(ints, 0, 4)
     flag = _launch.view(pair_and_count, 2, 3)
@@ -3480,9 +3484,6 @@ def stitch_loops_min_weight(
 
     dp = odt.empty_2d((n_a + 1, n_b + 1), wp.float32, device=device)
     came = odt.empty_2d((n_a + 1, n_b + 1), wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.seed_stitch_tables, dim=(n_a + 1, n_b + 1), inputs=[dp, came], device=device
-    )
     # Built once, outside the loop: the ten values below are the same on every one of the
     # ``n_a + n_b`` launches, and a wp.launch argument costs host time linearly on both devices, so
     # bundling them once here rather than passing all ten on every launch is a real saving.
@@ -3497,7 +3498,8 @@ def stitch_loops_min_weight(
     tables.metric_id = wp.int32(metric_id)
     tables.n_a = wp.int32(n_a)
     tables.n_b = wp.int32(n_b)
-    _run_stitch_dp(tables, n_a, n_b, dp, came, device)
+    dp_slots = scratch + 4 * n_ab
+    _run_stitch_dp(tables, n_a, n_b, dp, came, _launch.view(ints, dp_slots, dp_slots + n_dp_slots))
 
     # Every path from the far corner to the seed is ``n_a + n_b`` steps, so the band is written at
     # that size straight into the tail of the combined buffer, and the count read back is short
@@ -3548,30 +3550,50 @@ def _run_stitch_dp(
     n_b: int,
     dp: odt.Array2dFloat32,
     came: odt.Array2dInt32,
-    device: wp.DeviceLike,
+    slots: wp.array[wp.int32],
     tiled: bool | None = None,
 ) -> None:
     """
-    Fill the ``(n_a + 1) x (n_b + 1)`` band tables in place, seeded at cell ``(0, 0)``.
+    Fill the ``(n_a + 1) x (n_b + 1)`` band tables in place, from cell ``(0, 0)``.
 
     A cell reads only the cells above and to the left of it, so the grid needs ``n_a + n_b``
-    sequential steps whichever way it is cut. ``tiled`` chooses where those steps' barriers come
-    from, and it is a pure cost knob -- both schedules compute the same cells with the same
-    ``stitch_dp_cell``, so ``dp`` and ``came`` come out byte-identical and ``None`` simply picks
-    whichever is faster on the device at hand.
+    sequential steps whichever way it is cut. The schedule chooses where those steps' barriers come
+    from, and it is a pure cost knob -- every schedule computes the same cells with the same
+    ``kernels/holes.stitch_cell_cost``, so ``dp`` and ``came`` come out byte-identical.
 
-    * ``False`` walks one anti-diagonal per launch: ``n_a + n_b`` of them, each a barrier. This is
-      the reference schedule, kept because it is the one the tiled kernel has to agree with.
+    * ``None`` (the default) takes the fastest on the device at hand. On CUDA that is one launch of
+      row stripes (``kernels/holes.stitch_dp_stripes``), each warp following the stripe above as
+      it posts its progress; ``slots`` is its ``(1 + _stitch_stripe_count(n_a),)`` ``-1``-filled
+      ticket and progress. The CPU device runs a launch's threads in turn, so it takes one thread
+      walking the grid in row-major order (``kernels/holes.stitch_dp_sweep``).
+    * ``False`` walks one anti-diagonal per launch on CUDA: ``n_a + n_b`` of them, each a barrier.
+      This is the reference schedule the others have to agree with. On the CPU device it is the
+      row-major walk.
     * ``True`` gives one **block** a ``tile x tile`` square and launches one tile-diagonal at a
-      time, so all but ``2 * ceil(n / tile)`` of the barriers become block-local. That is the whole
-      cost of this DP -- the per-cell work is small and the sweep was launch-bound -- and it is the
-      default on CUDA.
-
-    The CPU device runs a launch's threads in turn, so its untiled schedule is one launch with one
-    thread walking the grid in row-major order (``kernels/holes.stitch_dp_sweep``), and that is its
-    default.
+      time, so all but ``2 * ceil(n / tile)`` of the barriers become block-local.
     """
-    is_cpu = wp.get_device(device).is_cpu
+    device = wp.get_device(dp.device)
+    is_cpu = device.is_cpu
+    if tiled is None and not is_cpu and kernel_holes.STITCH_DP_TILE == kernel_holes.WARP_LANES:
+        n_stripes = _stitch_stripe_count(n_a)
+        _launch.launch_tiled(
+            kernel_holes.stitch_dp_stripes,
+            dim=n_stripes,
+            inputs=[
+                tables,
+                _launch.view(slots, 0, 1),
+                _launch.view(slots, 1, 1 + n_stripes),
+                dp,
+                came,
+            ],
+            block_dim=kernel_holes.WARP_LANES,
+            device=device,
+        )
+        return
+    # The other schedules start from every cell unreached and the seed.
+    _launch.launch(
+        kernel_holes.seed_stitch_tables, dim=(n_a + 1, n_b + 1), inputs=[dp, came], device=device
+    )
     if tiled is None:
         tiled = not is_cpu
     if not tiled and is_cpu:
@@ -3601,6 +3623,11 @@ def _run_stitch_dp(
             block_dim=tile,
             device=device,
         )
+
+
+def _stitch_stripe_count(n_a: int) -> int:
+    """Return how many ``WARP_LANES``-row stripes cover the band grid's ``n_a + 1`` rows."""
+    return -(-(n_a + 1) // kernel_holes.WARP_LANES)
 
 
 def _closest_loop_pair(

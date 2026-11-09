@@ -2607,8 +2607,9 @@ def test_stitch_dp_tile_matches_diagonal(
     **``tile`` is parametrized because the shipped value cannot fail.** At 32 the block is a single
     warp and needs no barrier at all: deleting the ``wp.tile_sum`` leaves this green at 32 and
     fails it on every run at 64. So the 64 arm is the one that pins the barrier, and the 32 arm
-    pins the value actually shipped. The three ``(n_a, n_b)`` pairs cover a grid inside one tile, a
-    grid of several whole-and-partial tiles, and one that is partial on one axis only.
+    pins the one-warp square, which keeps its wavefront in registers on CUDA. The three
+    ``(n_a, n_b)`` pairs cover a grid inside one tile, a grid of several whole-and-partial tiles,
+    and one that is partial on one axis only.
     """
     monkeypatch.setattr(kernel_holes, "STITCH_DP_TILE", tile)
     (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, n_a, n_b, phase=0.3)
@@ -2626,6 +2627,41 @@ def test_stitch_dp_tile_matches_diagonal(
 
     assert bands[True].size == 3 * (n_a + n_b), "fixture produced no band to compare"
     assert np.array_equal(bands[True], bands[False])
+
+
+@pytest.mark.parametrize(("n_a", "n_b"), [(30, 40), (70, 33), (97, 101)])
+@pytest.mark.parametrize("metric", STITCH_METRICS)
+def test_stitch_dp_stripes_match_diagonal(
+    monkeypatch: pytest.MonkeyPatch, device: str, n_a: int, n_b: int, metric: str
+) -> None:
+    """
+    Ordito against ordito: the striped band DP must emit the **identical band** as the diagonal one.
+
+    ``stitch_dp_stripes`` is the CUDA default: one launch, a warp a 32-row stripe, each stripe
+    reading the row above it as the stripe above posts it. A post read too early, a stale cached
+    read of a posted cell or a stripe taken out of order would hand a cell a predecessor that was
+    not yet its final value, and the band would still be watertight and ``n_a + n_b`` triangles. The
+    diagonal schedule carries the oracle, as in ``test_stitch_dp_tile_matches_diagonal``. The pairs
+    give one stripe, three with a partial last one, and four, each with a post that lands mid-row.
+    Skipped on the CPU device, which walks the grid in one thread.
+    """
+    if not wp.get_device(device).is_cuda:
+        pytest.skip("the striped schedule is CUDA's; the CPU device walks the grid in one thread")
+    (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, n_a, n_b, phase=0.3)
+
+    original = od.holes._run_stitch_dp  # pyright: ignore[reportPrivateUsage]
+    bands = {}
+    for tiled in (None, False):
+        monkeypatch.setattr(
+            od.holes,
+            "_run_stitch_dp",
+            lambda *args, _tiled=tiled, **kwargs: original(*args, **kwargs, tiled=_tiled),
+        )
+        _, faces = od.holes.stitch_min_weight(va, fa, vb, fb, metric=metric)
+        bands[tiled] = faces.numpy()[fa.size + fb.size :]
+
+    assert bands[None].size == 3 * (n_a + n_b), "fixture produced no band to compare"
+    assert np.array_equal(bands[None], bands[False])
 
 
 @pytest.mark.parity("stitch_min_weight", "meshlib")

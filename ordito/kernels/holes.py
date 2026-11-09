@@ -29,8 +29,12 @@ from ordito.kernels.reduce import (
     block_max,
     block_min,
     last_ticket,
+    load_coherent_float_2d,
+    load_coherent_int_2d,
+    load_volatile_int,
     take_ticket,
     thread_fence,
+    warp_broadcast,
     warp_shuffle_up_float,
     warp_shuffle_up_int,
 )
@@ -1785,31 +1789,46 @@ def stitch_dp_sweep(
 # it fails every run.
 STITCH_DP_TILE = 32
 
-# Lanes of one CUDA warp: the tile width at which ``stitch_dp_tile`` keeps its wavefront in
-# registers (``stitch_dp_warp_tile``).
+# Lanes of one CUDA warp: the width at which a stitch schedule keeps its wavefront in registers
+# (``stitch_dp_warp_rows``).
 WARP_LANES = 32
+
+# Columns between a stripe's progress posts in ``stitch_dp_stripes``: each post is a fence and an
+# atomic by the stripe's last lane, and the stripe below lags by up to this many steps more. Swept
+# 2/4/8/16 at rims of 512 and 1 024 (2026-11-09): 2-4 best and within 2 % of each other, 8 1.02x,
+# 16 1.07-1.08x.
+STITCH_STRIPE_POST = 4
 
 
 @wp.func
-def stitch_dp_warp_tile(
+def stitch_dp_warp_rows(
     tables: StitchTables,
     i0: wp.int32,
     j0: wp.int32,
+    n_cols: wp.int32,
     t: wp.int32,
+    stripe: wp.int32,
+    progress: wp.array[wp.int32],
     out_dp: wp.array2d[wp.float32],
     out_came: wp.array2d[wp.int32],
 ):
-    # ``stitch_dp_tile``'s ``WARP_LANES``-square at ``(i0, j0)`` by one warp, lane ``t`` owning its
-    # row ``i0 + t`` and computing column ``j0 + d - t`` at step ``d``. A cell's left predecessor is
-    # then the lane's own cell of the step before and its upper one lane ``t - 1``'s, passed by a
-    # shuffle: only the square's top row and left column read the grid, which earlier launches
-    # wrote. The memory form chained the predecessor loads of every step through L2 behind a
-    # barrier; the cells are ``stitch_cell_cost``'s, so the two agree bit for bit.
+    # Rows ``i0 .. i0 + WARP_LANES - 1``, columns ``j0 .. j0 + n_cols - 1`` of the stitch grid by
+    # one warp, lane ``t`` owning row ``i0 + t`` and computing column ``j0 + d - t`` at step
+    # ``d``. A cell's left predecessor is then the lane's own cell of the step before and its upper
+    # one lane ``t - 1``'s, passed by a shuffle: only lane 0's upper cells and the first column's
+    # left ones read the grid. The cells are ``stitch_cell_cost``'s, so every schedule agrees bit
+    # for bit.
+    #
+    # ``stripe < 0`` is a square of ``stitch_dp_tile``, whose borders earlier launches wrote
+    # (``progress`` unread). ``stripe >= 0`` is a stripe of ``stitch_dp_stripes`` (``j0 == 0``,
+    # every column): lane 0 waits until ``progress[stripe - 1]``, the columns the stripe above has
+    # finished, passes the one it reads, and reads it from L2; the last lane posts this stripe's
+    # every ``STITCH_STRIPE_POST`` columns behind a fence.
     i = i0 + t
     n_a = tables.n_a
     n_b = tables.n_b
-    # The lane's A side, the same at every step of its row.
-    # A lane past the grid's last row reads row ``n_a``'s, unused.
+    # The lane's A side, the same at every step of its row. A lane past the grid's last row reads
+    # row ``n_a``'s, unused.
     i_read = wp.min(i, n_a)
     a_slot = stitch_rim_index(i_read - 1, n_a)
     a_back = tables.a_pos[stitch_rim_index(i_read - 2, n_a)]
@@ -1820,7 +1839,9 @@ def stitch_dp_warp_tile(
     # The lane's last cell: ``(i, j - 1)`` at the next step, and lane ``t + 1``'s upper predecessor.
     mine_dp = wp.float32(BAD_METRIC)
     mine_came = wp.int32(CAME_NONE)
-    for d in range(2 * WARP_LANES - 1):
+    # The columns the stripe above has posted, as last read (warp-uniform).
+    posted = wp.int32(-1)
+    for d in range(n_cols + WARP_LANES - 1):
         # The step's B side first, by every lane at a column clamped into the grid (an idle lane's
         # values are unused): no load waits on a cell.
         j = j0 + d - t
@@ -1831,14 +1852,25 @@ def stitch_dp_warp_tile(
         b_cur = tables.b_pos[stitch_rim_index(j_read, n_b)]
         b_opp_ok = tables.b_opp_valid[b_slot]
         b_opp = tables.b_opp[b_slot]
-        # Every lane shuffles, the idle ones included: a shuffle needs the whole warp.
+        # Every lane shuffles and waits, the idle ones included: both need the whole warp.
         up_dp = warp_shuffle_up_float(mine_dp)
         up_came = warp_shuffle_up_int(mine_came)
+        if stripe > 0 and d < n_cols and posted <= d:
+            while posted <= d:
+                posted = warp_broadcast(-1, load_volatile_int(progress, stripe - 1), 0)
+            # Every cell the stripe above posted is visible past the fence it posted behind.
+            thread_fence()
         dj = d - t
-        if dj >= 0 and dj < WARP_LANES:
+        if dj >= 0 and dj < n_cols:
             if t == 0 and i >= 1:
-                up_dp = out_dp[i - 1, j]
-                up_came = out_came[i - 1, j]
+                if stripe > 0:
+                    # Declined (2026-11-09): reading the next column a step ahead, before the cell
+                    # it does not feed. Flat at rims of 512 and 1 024: this read is not the step.
+                    up_dp = load_coherent_float_2d(out_dp, i - 1, j)
+                    up_came = load_coherent_int_2d(out_came, i - 1, j)
+                else:
+                    up_dp = out_dp[i - 1, j]
+                    up_came = out_came[i - 1, j]
             left_dp = mine_dp
             left_came = mine_came
             if dj == 0 and j >= 1:
@@ -1865,14 +1897,18 @@ def stitch_dp_warp_tile(
                         left_dp,
                         left_came,
                     )
-                    out_dp[i, j] = best
-                    out_came[i, j] = best_came
                     mine_dp = best
                     mine_came = best_came
                 else:
-                    # The seed the driver wrote.
-                    mine_dp = out_dp[i, j]
-                    mine_came = out_came[i, j]
+                    # The seed: the empty band, which costs nothing.
+                    mine_dp = wp.float32(0.0)
+                    mine_came = wp.int32(CAME_NONE)
+                out_dp[i, j] = mine_dp
+                out_came[i, j] = mine_came
+                if stripe >= 0 and t == WARP_LANES - 1:
+                    if (dj + 1) % STITCH_STRIPE_POST == 0 or j == n_b:
+                        thread_fence()
+                        wp.atomic_max(progress, stripe, j + 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -1904,14 +1940,14 @@ def stitch_dp_tile(
     # of each other. With the constant it would compute one cell in ``tile`` and leave the rest of
     # the square at its fill value.
     #
-    # **A square of one warp keeps its wavefront in registers** (``stitch_dp_warp_tile``), the
-    # shipped CUDA width: the memory form's step was a chain of L2 loads -- the predecessors, then
-    # the positions behind their branches -- and its cells' arithmetic ran a branch at a time.
-    # With the predecessors shuffled, every position load issued ahead of the cell and both of a
-    # cell's step costs formed before the choice (``stitch_cell_cost``), the kernel took 0.67x at
-    # rims of 512 and 1 024 (2026-11-09), byte-identical. What is left is the complex metric's
-    # arithmetic latency, one warp to an SM. The memory form below is the CPU device's (one lane a
-    # block) and any wider tile's.
+    # **A square of one warp keeps its wavefront in registers** (``stitch_dp_warp_rows``): the
+    # memory form's step was a chain of L2 loads -- the predecessors, then the positions behind
+    # their branches -- and its cells' arithmetic ran a branch at a time. With the predecessors
+    # shuffled, every position load issued ahead of the cell and both of a cell's step costs formed
+    # before the choice (``stitch_cell_cost``), the kernel took 0.67x at rims of 512 and 1 024
+    # (2026-11-09), byte-identical. CUDA's default is now ``stitch_dp_stripes``, the same warp
+    # wavefront without the tile-diagonal barriers; the memory form below is the CPU device's (one
+    # lane a block) and any wider tile's.
     blk, t = wp.tid()
     bi = bi_lo + blk
     i0 = bi * tile
@@ -1919,7 +1955,10 @@ def stitch_dp_tile(
     n_a = tables.n_a
     n_b = tables.n_b
     if wp.block_dim() == WARP_LANES and tile == WARP_LANES and kernel_array.device_is_cpu() == 0:
-        stitch_dp_warp_tile(tables, i0, j0, t, out_dp, out_came)
+        # ``progress`` is unread for a square (``stripe < 0``): any ``int32`` array will do.
+        stitch_dp_warp_rows(
+            tables, i0, j0, WARP_LANES, t, wp.int32(-1), tables.a_opp_valid, out_dp, out_came
+        )
         return
     for d in range(2 * tile - 1):
         di = t
@@ -1938,6 +1977,39 @@ def stitch_dp_tile(
         # Every lane must see this anti-diagonal's writes before reading them as the next one's
         # predecessors.
         block_barrier()
+
+
+@wp.kernel(enable_backward=False)
+def stitch_dp_stripes(
+    tables: StitchTables,
+    ticket: wp.array[wp.int32],
+    progress: wp.array[wp.int32],
+    out_dp: wp.array2d[wp.float32],
+    out_came: wp.array2d[wp.int32],
+) -> None:
+    # The whole grid in one launch, a warp a ``WARP_LANES``-row stripe sweeping every column
+    # (``stitch_dp_warp_rows``), each stripe following the one above as it posts its progress.
+    # The tile-diagonal schedule (``stitch_dp_tile``) runs ``2 * tile - 1`` steps a square and
+    # finishes a tile-diagonal before starting the next, about ``4 n`` cell steps for a grid whose
+    # dependency depth is ``2 n``; here a stripe trails the one above by a stripe's height and a
+    # post, ``n_b + (1 + STITCH_STRIPE_POST / WARP_LANES) n_a`` steps in all, and no launch between:
+    # ``stitch_min_weight`` 0.71-0.73x the one-warp squares at rims of 512 and 1 024 (2026-11-09),
+    # byte-identical. A step is ~2.7 us there against the squares' ~2.2 (lane 0 reads its upper
+    # cell from L2 and the stripe waits), and it is the complex metric's arithmetic either way.
+    #
+    # A stripe waits only on the stripe above, so a block takes its stripe from ``ticket`` (one
+    # slot, arriving ``-1``) rather than its index: a stripe is handed out only after every stripe
+    # above it went to a block already running, so the wait always ends whatever order the blocks
+    # are scheduled in. ``progress`` (one slot a stripe) arrives ``-1``. CUDA only, at
+    # ``WARP_LANES`` lanes a block.
+    _blk, t = wp.tid()
+    taken = wp.int32(0)
+    if t == 0:
+        taken = wp.atomic_add(ticket, 0, 1) + 1
+    stripe = warp_broadcast(-1, taken, 0)
+    stitch_dp_warp_rows(
+        tables, stripe * WARP_LANES, 0, tables.n_b + 1, t, stripe, progress, out_dp, out_came
+    )
 
 
 @wp.kernel(enable_backward=False)
