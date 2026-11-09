@@ -3351,22 +3351,21 @@
  },
  "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cuda-False]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
    "memset": 1,
-   "d2h": 1,
-   "scan": 1
+   "d2h": 1
   }
  },
  "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cuda-True]": {
   "counts": {
-   "launch": 20,
-   "alloc": 28,
+   "launch": 22,
+   "alloc": 29,
    "memset": 8,
    "d2d": 3,
    "h2d": 1,
    "d2h": 9,
-   "scan": 7,
+   "scan": 6,
    "sort": 1
   }
  },
@@ -3539,19 +3538,18 @@
  },
  "benchmarks/test_intersection.py::test_slice_mesh_with_plane[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
    "memset": 1,
-   "d2h": 1,
-   "scan": 1
+   "d2h": 1
   }
  },
  "benchmarks/test_intersection.py::test_split_faces_along_field[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 5,
-   "alloc": 5,
+   "launch": 7,
+   "alloc": 6,
    "d2h": 2,
-   "scan": 2,
+   "scan": 1,
    "sort": 1
   }
  },
@@ -3568,8 +3566,8 @@
  "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 11,
-   "alloc": 13,
-   "memset": 4,
+   "alloc": 12,
+   "memset": 3,
    "d2h": 1,
    "scan": 3,
    "sort": 1
@@ -3731,10 +3729,9 @@
  },
  "benchmarks/test_levelset.py::test_marching_cubes_lewiner[ordito-cuda-64]": {
   "counts": {
-   "launch": 2,
-   "alloc": 4,
-   "d2h": 1,
-   "scan": 1
+   "launch": 4,
+   "alloc": 5,
+   "d2h": 1
   }
  },
  "benchmarks/test_levelset.py::test_offset_mesh[sphere_small-ordito-cuda-128]": {
@@ -5915,20 +5912,20 @@
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cuda-0.01]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
+   "launch": 10,
+   "alloc": 10,
    "memset": 2,
    "d2h": 2,
-   "scan": 2
+   "scan": 1
   }
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cuda-0.02]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
+   "launch": 10,
+   "alloc": 10,
    "memset": 2,
    "d2h": 2,
-   "scan": 2
+   "scan": 1
   }
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-adaptive-7]": {
@@ -7113,11 +7110,11 @@
  },
  "benchmarks/test_selection.py::test_delete_region_keep_boundary_with_offsets[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 12,
+   "launch": 13,
    "alloc": 14,
    "memset": 4,
    "d2h": 4,
-   "scan": 4,
+   "scan": 3,
    "sort": 2
   }
  },

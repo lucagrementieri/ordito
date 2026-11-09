@@ -876,6 +876,10 @@ def array_scan(in_array: Any, out_array: Any, inclusive: bool = True) -> None:
     launches and a small allocation over CUB's one call once the input spans more than one
     ``FLOAT_SCAN_CHUNK`` (and is cheaper below that). Every other scan is exact (integers) or
     already sequential (the CPU device), and ignores the setting.
+
+    An inclusive CUDA scan of ``int32`` vectors with ``INT_VECTOR_SCAN_MIN_COMPONENTS`` or more
+    components takes a tile scan at the sizes where it beats Warp's component-by-component one
+    (``_int_vector_scan``).
     """
     runtime = _ctx.runtime
     size = in_array.size
@@ -892,6 +896,14 @@ def array_scan(in_array: Any, out_array: Any, inclusive: bool = True) -> None:
         native = _scan_native(dtype)
         if native is not None:
             function, components, itemsize = native
+            if (
+                inclusive
+                and components >= INT_VECTOR_SCAN_MIN_COMPONENTS
+                and _types.type_scalar_type(dtype) is _types.int32
+                and (size <= INT_VECTOR_SCAN_UP_TO or size * itemsize >= INT_VECTOR_SCAN_FROM_BYTES)
+            ):
+                _int_vector_scan(in_array, out_array, size)
+                return
             # The CUDA scan returns ``False`` when it fails (an out-of-memory scratch allocation
             # used to launch the scan on a null buffer and leave ``out_array`` partly unwritten);
             # ``wp.utils.array_scan`` raises on it, and so does this path.
@@ -1091,6 +1103,41 @@ def finish_group_sums(sums: GroupSums, *, clear: bool = False) -> Any:
             device=out.device,
         )
     return sums.out
+
+
+# An inclusive scan of ``int32`` vectors of at least this many components takes the tile scan
+# (``kernels/array.int_vector_scan_kernels``) on CUDA up to ``INT_VECTOR_SCAN_UP_TO`` entries and
+# again from ``INT_VECTOR_SCAN_FROM_BYTES``, and Warp's component-by-component scan in between,
+# where the array stays in L2 and its ``K`` strided passes cost less than the tile scan's lane runs
+# (RTX 5090, device time new/Warp: 3, 4, 5 and 10 components 0.69-0.76x, 0.57-0.62x, 0.45-0.53x
+# and 0.30-0.34x at 16 k-262 k entries; 0.60-0.99x at 524 k; 0.88-1.86x at 1-2 M below 56 MiB;
+# 4 components at 4 M 0.50x, 5 at 4 M 0.42x, 10 at 2-4 M 0.27-0.28x, 5 at 28 M 0.63x). Two
+# components lose at every size (1.2-2.4x): Warp's two passes are cheap. Re-probe on another L2.
+INT_VECTOR_SCAN_MIN_COMPONENTS = 3
+INT_VECTOR_SCAN_UP_TO = 1 << 19
+INT_VECTOR_SCAN_FROM_BYTES = 56 << 20
+
+
+def _int_vector_scan(in_array: Any, out_array: Any, size: int) -> None:
+    """Scan a contiguous CUDA ``int32`` vector array inclusively, in place or not, in tiles."""
+    global _kernel_array
+    kernel_array = _kernel_array
+    if kernel_array is None:
+        from ordito.kernels import array as kernel_array
+
+        _kernel_array = kernel_array
+    totals_kernel, scan_kernel = kernel_array.int_vector_scan_kernels(in_array.dtype)
+    chunk = kernel_array.INT_VECTOR_SCAN_CHUNK
+    n_chunks = (size + chunk - 1) // chunk
+    device = in_array.device
+    block_dim = kernel_array.INT_VECTOR_SCAN_BLOCK_DIM
+    totals = None
+    if n_chunks > 1:
+        totals = empty(n_chunks, dtype=in_array.dtype, device=device)
+        launch_tiled(totals_kernel, dim=n_chunks, inputs=[in_array, totals],
+                     block_dim=block_dim, device=device)  # fmt: skip
+    launch_tiled(scan_kernel, dim=n_chunks, inputs=[in_array, totals, out_array],
+                 block_dim=block_dim, device=device)  # fmt: skip
 
 
 def _float_scan_fixed_order(in_array: Any, out_array: Any, size: int) -> None:

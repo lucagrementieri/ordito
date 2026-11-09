@@ -2972,6 +2972,83 @@ def float_scan_chunks(
     )
 
 
+# The integer vector inclusive scan behind ``_launch.array_scan`` on CUDA, where it beats Warp's.
+#
+# Warp scans a vector array as one CUB scan per component through a strided iterator, so a
+# ``K``-vector reads the whole array ``K`` times with uncoalesced loads: ``K`` times an ``int32``
+# scan while the array sits in L2 and far worse once it does not (a 5-vector over 28 M entries took
+# 5.8 ms, 39x the ``int32`` scan of the same count). ``wp.tile_scan_*`` takes no vector tile, so
+# each block loads its ``INT_VECTOR_SCAN_CHUNK`` entries as one shared tile (coalesced), every lane
+# sums a run of them, one ``int32`` tile scan a component offsets the runs, and each lane walks its
+# run again writing the prefix. The chunk's offset is the sum of the earlier chunks' totals
+# (``int_vector_scan_kernels``' first kernel), which every block recomputes from the totals table
+# as ``float_scan_chunks`` does, so there is no third launch. Integer sums are exact, so the order
+# changes nothing. Where it pays is in ``_launch.INT_VECTOR_SCAN_*``.
+INT_VECTOR_SCAN_CHUNK = 2048
+INT_VECTOR_SCAN_BLOCK_DIM = 256
+
+_int_vector_scans: dict[Any, tuple[wp.Kernel, wp.Kernel]] = {}
+
+
+def int_vector_scan_kernels(dtype: Any) -> tuple[wp.Kernel, wp.Kernel]:
+    """
+    Return the ``(chunk totals, chunk scan)`` kernels of an ``int32`` vector ``dtype``'s scan.
+
+    Built on first use for each dtype, each in a module of its own, so that a new vector type
+    compiles two kernels and rebuilds nothing else. A single-chunk input launches the scan alone,
+    with ``None`` for its totals.
+    """
+    kernels = _int_vector_scans.get(dtype)
+    if kernels is not None:
+        return kernels
+    length = dtype._length_
+    chunk_size = INT_VECTOR_SCAN_CHUNK
+
+    def _totals(values: wp.array[Any], out_totals: wp.array[Any]) -> None:
+        chunk, lane = wp.tid()
+        total = wp.tile_sum(wp.tile_load(values, shape=chunk_size, offset=chunk * chunk_size))
+        if lane == 0:
+            out_totals[chunk] = total[0]
+
+    def _scan(values: wp.array[Any], totals: wp.array[Any], out_scan: wp.array[Any]) -> None:
+        chunk, lane = wp.tid()
+        lanes = wp.block_dim()
+        # The earlier chunks' totals, a contiguous run a lane, summed over the block.
+        per_lane = (chunk + lanes - 1) // lanes
+        first = wp.min(lane * per_lane, chunk)
+        stop = wp.min(first + per_lane, chunk)
+        before = dtype()
+        for c in range(first, stop):
+            before += totals[c]
+        running = wp.tile_sum(wp.tile(before, preserve_type=True))[0]
+        tile = wp.tile_load(values, shape=chunk_size, offset=chunk * chunk_size, storage="shared")
+        count = wp.min(values.shape[0] - chunk * chunk_size, chunk_size)
+        per_lane = chunk_size // lanes
+        first = wp.min(lane * per_lane, count)
+        stop = wp.min(first + per_lane, count)
+        run = dtype()
+        for i in range(first, stop):
+            run += tile[i]
+        for k in range(length):
+            running[k] += wp.tile_extract(wp.tile_scan_exclusive(wp.tile(run[k])), lane)
+        for i in range(first, stop):
+            running += tile[i]
+            out_scan[chunk * chunk_size + i] = running
+
+    _totals.__annotations__["values"] = wp.array[dtype]
+    _totals.__annotations__["out_totals"] = wp.array[dtype]
+    for name in ("values", "totals", "out_scan"):
+        _scan.__annotations__[name] = wp.array[dtype]
+    kernels = (
+        wp.kernel(
+            _totals, name=f"int_vector_scan_totals_{length}", enable_backward=False, module="unique"
+        ),
+        wp.kernel(_scan, name=f"int_vector_scan_{length}", enable_backward=False, module="unique"),
+    )
+    _int_vector_scans[dtype] = kernels
+    return kernels
+
+
 @wp.func
 def unique_edge_row(
     unique_edges: wp.array2d[wp.int32], n_edges: wp.int32, u: wp.int32, v: wp.int32, base: wp.uint64
