@@ -195,6 +195,27 @@ def face_normal(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_ind
 
 
 @wp.func
+def store_face_edge_lengths(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    out_lengths: wp.array2d[wp.float32],
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    """
+    Write face ``f``'s three side lengths into row ``f`` of ``out_lengths``, and return them.
+
+    Column ``e`` is the edge *opposite* corner ``e``, the igl intrinsic convention that
+    ``laplacian.cotmatrix_entries_intrinsic`` reads.
+    """
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    l0, l1, l2 = side_lengths(v0, v1, v2)
+    out_lengths[f, 0] = l0
+    out_lengths[f, 1] = l1
+    out_lengths[f, 2] = l2
+    return l0, l1, l2
+
+
+@wp.func
 def face_vertices_vec3d(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
 ) -> tuple[wp.vec3d, wp.vec3d, wp.vec3d]:

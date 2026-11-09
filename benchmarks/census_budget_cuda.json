@@ -3686,7 +3686,7 @@
  },
  "benchmarks/test_laplacian.py::test_mollify_intrinsic[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
+   "launch": 2,
    "alloc": 2,
    "memset": 1,
    "d2h": 1
@@ -3694,7 +3694,7 @@
  },
  "benchmarks/test_laplacian.py::test_robust_laplacian[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 14,
+   "launch": 13,
    "alloc": 16,
    "memset": 5,
    "d2h": 3,
@@ -6293,7 +6293,7 @@
  },
  "benchmarks/test_remesh.py::test_intrinsic_delaunay[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 9,
+   "launch": 8,
    "alloc": 9,
    "memset": 2,
    "d2h": 2,

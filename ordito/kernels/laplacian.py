@@ -27,7 +27,12 @@ from ordito.kernels.scatter import (
     group_sum_vector_term,
     peer_summed_add_corner_triple,
 )
-from ordito.kernels.triangles import face_normals_and_area, face_vertices, row_triple
+from ordito.kernels.triangles import (
+    face_normals_and_area,
+    face_vertices,
+    row_triple,
+    store_face_edge_lengths,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1098,11 +1103,16 @@ def connection_laplacian_rows(
 
 
 @wp.kernel
-def smallest_triangle_margin(
-    edge_lengths: wp.array2d[wp.float32], out_bounds: wp.array[wp.float32]
+def face_edge_lengths_and_margin(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_lengths: wp.array2d[wp.float32],
+    out_bounds: wp.array[wp.float32],
 ) -> None:
-    # The smallest triangle-inequality margin ``a + b - c`` over every face and side, into
-    # ``out_bounds[1]`` (seeded ``+inf``); ``laplacian.mollify_intrinsic`` turns it into the
+    # ``edges.face_edge_lengths``' table (``store_face_edge_lengths``), and the smallest
+    # triangle-inequality margin ``a + b - c`` over every face and side into
+    # ``out_bounds[1]`` (seeded ``+inf``): the two passes ran over the same faces, the margin
+    # reading the lengths at its own row. ``laplacian.mollify_intrinsic`` turns the margin into the
     # constant ``delta = max(epsilon - margin, 0)`` that would have to be added to all three edges
     # of the worst face. Adding ``delta`` to all three grows each margin ``a + b - c`` by exactly
     # ``delta`` -- the two short sides gain ``2 * delta`` and the long side gives ``delta`` of it
@@ -1127,10 +1137,10 @@ def smallest_triangle_margin(
     # Lane-strided by ``wp.block_dim()`` over the block's ``ITEMS_PER_BLOCK_1D`` faces; a minimum
     # is exact in any order, so one ``atomic_min`` per block commits it.
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(edge_lengths.shape[0], block)
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
     low = wp.float32(wp.inf)
     for k in range(lane, count, wp.block_dim()):
-        a, b, c = row_triple(edge_lengths, offset + k)
+        a, b, c = store_face_edge_lengths(vertices, faces, offset + k, out_lengths)
         low = wp.min(low, wp.min(wp.min(a + b - c, b + c - a), c + a - b))
     low = block_min(low)
     if lane == 0 and count > 0:

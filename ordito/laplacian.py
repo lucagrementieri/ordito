@@ -45,7 +45,7 @@ from ordito import _launch
 from ordito._common import read_scalar, read_values, require_indices_below, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
-from ordito.edges import edges_unique, face_edge_lengths, faces_to_edges
+from ordito.edges import edges_unique, faces_to_edges
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
@@ -759,24 +759,24 @@ def mollify_intrinsic(
     if n_faces == 0:
         return odt.empty_2d((0, 3), wp.float32, device=device), 0.0
 
-    edge_lengths = face_edge_lengths(vertices, faces)
-
     # The margin scales with the *mean* edge length (matching intrinsic_delaunay's docstring and
     # this function's own), not the max: a single long edge on a graded mesh would otherwise inflate
     # delta far past what any degenerate face on the rest of the mesh actually needs. The length
-    # sum (``reduce.mean``'s, in either determinism setting) and the smallest triangle margin share
-    # one buffer, seeded ``(0, +inf)``, and cross in one read.
-    flat = edge_lengths.flatten()
+    # sum (``reduce.mean``'s, in either determinism setting) and the smallest triangle margin, which
+    # the length pass takes, share one buffer, seeded ``(0, +inf)``, and cross in one read.
+    edge_lengths = odt.empty_2d((n_faces, 3), wp.float32, device=device)
     bounds = _launch.pattern([0.0, math.inf], dtype=wp.float32, device=device)
-    od.reduce.sum_of_terms(
-        kernel_reduce.ARRAY_SUM, [flat], flat.size, out=_launch.view(bounds, 0, 1)
-    )
     _launch.launch_tiled(
-        kernel_laplacian.smallest_triangle_margin,
+        kernel_laplacian.face_edge_lengths_and_margin,
         dim=[kernel_reduce.blocks_1d(n_faces)],
-        inputs=[edge_lengths, bounds],
+        inputs=[vertices, faces],
+        outputs=[edge_lengths, bounds],
         block_dim=TILE_1D,
         device=device,
+    )
+    flat = edge_lengths.flatten()
+    od.reduce.sum_of_terms(
+        kernel_reduce.ARRAY_SUM, [flat], flat.size, out=_launch.view(bounds, 0, 1)
     )
     # Readback: the margin decides whether anything is added, and the mean scales it.
     total, margin = read_values(bounds, 0, 2)

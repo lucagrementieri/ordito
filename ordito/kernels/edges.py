@@ -9,9 +9,9 @@ from ordito.kernels.adjacency import (
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.grouping import store_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.predicates import segment_aabb, side_lengths
+from ordito.kernels.predicates import segment_aabb
 from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_total, term_sum_1d
-from ordito.kernels.triangles import corner_triple, face_vertices
+from ordito.kernels.triangles import corner_triple, store_face_edge_lengths
 
 wp.set_module_options({"enable_backward": False})
 
@@ -358,11 +358,6 @@ def edge_aabb_bounds(
 def face_edge_lengths(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_lengths: wp.array2d[wp.float32]
 ) -> None:
-    # Column ``e`` is the edge *opposite* corner ``e``, the igl intrinsic convention that
-    # ``laplacian.cotmatrix_entries_intrinsic`` reads.
+    # One thread a face: ``store_face_edge_lengths``.
     f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    l0, l1, l2 = side_lengths(v0, v1, v2)
-    out_lengths[f, 0] = l0
-    out_lengths[f, 1] = l1
-    out_lengths[f, 2] = l2
+    store_face_edge_lengths(vertices, faces, f, out_lengths)
