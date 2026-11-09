@@ -5261,10 +5261,10 @@
  },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 94,
+   "launch": 98,
    "alloc": 8,
    "memset": 7,
-   "d2h": 10,
+   "d2h": 11,
    "scan": 10
   }
  },

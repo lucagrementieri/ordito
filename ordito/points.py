@@ -60,6 +60,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     ball_grid_cell_width,
+    read_scalar,
     read_values,
     require_same_device,
     run_device_loop,
@@ -124,6 +125,12 @@ _HULL_PREFILTER_SUBDIVISIONS = 0
 # the volume or lowers the degree of a non-extreme vertex), and the cap only turns a defect into the
 # reflex-edge error instead of a hang.
 _FLIP_ROUND_CAP = 1 << 20
+# Flip-Flop rounds the CUDA loop issues between reads of its condition: the loop takes 1-14 rounds
+# on the benchmark clouds, where recording it paid the recording and its first launch. Whole
+# ``convex_hull`` calls (2026-11-09, byte-identical) at 2 / 4 / 8 rounds a read against the
+# recorded loop: ``sphere_small`` 0.92 / 0.96 / 1.04x, ``bunny_decimated`` 0.91 / 0.93 / 1.04x,
+# bunny 0.99 / 0.99 / 0.99x, dragon 1.00 / 0.99 / 1.04x (medians).
+_FLIP_ROUNDS_PER_READ = 2
 
 # Bytes in one ``wp.mat33``: where a fit's ticket sits in its two-matrix atomic buffer.
 _MAT33_BYTES = 9 * 4
@@ -2365,8 +2372,9 @@ def _flip_to_convex(points: wp.array[wp.vec3], surface: _HullSurface) -> None:
     it).
 
     The face count never grows (a 3-1 flip leaves dead slots), so every round launches the same
-    three kernels over the same buffers and the loop runs as one recorded device loop on CUDA.
-    Every face starts dirty: the growth rounds decided their edges without the D-criterion.
+    three kernels over the same buffers; on CUDA the rounds are issued a few at a time between
+    reads of the loop's condition. Every face starts dirty: the growth rounds decided their edges
+    without the D-criterion.
     """
     device = points.device
     _launch.fill_(_launch.view(surface.dirty, 0, surface.n_faces), 1)
@@ -2379,7 +2387,16 @@ def _flip_to_convex(points: wp.array[wp.vec3], surface: _HullSurface) -> None:
         _flip_round(points, surface, surface.label, state, 1)
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
-    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), flip_round)
+    condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
+    if not wp.get_device(device).is_cuda:
+        run_device_loop(device, condition, flip_round)
+        return
+    # A round past the fixpoint flips nothing, so the rounds go a few at a time between reads.
+    while True:
+        for _ in range(_FLIP_ROUNDS_PER_READ):
+            flip_round()
+        if read_scalar(condition) == 0:
+            return
 
 
 def convex_subset_mask(
