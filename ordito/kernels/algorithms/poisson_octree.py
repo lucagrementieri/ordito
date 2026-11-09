@@ -724,6 +724,13 @@ def samples_per_node(
 ) -> wp.float32:
     # The depth ``d`` density at ``p``: the 27 B-splines around ``p``'s cell, read through
     # ``splat_target`` as the splat wrote them.
+    #
+    # Declined (2026-11-09): reading the density's group sums here through
+    # ``reduce.read_group_sum`` (``group_sums(fused=True)``), which would spare the setting-on
+    # finish launch and its buffer: every tap would decode its cell's fixed-point words, and the
+    # taps outnumber the cells the finish decodes once (``bunny`` at depth 8: 34 773 samples x 27
+    # taps x each level climbed against 540 736 cells, 1.7-10x; ``dragon`` 104 749 against
+    # 356 352, 8x and up).
     cell = octree_cell_of_point(p, d)
     scale = wp.float32(1 << d)
     vx = quadratic_bspline_values(p[0] * scale - wp.float32(cell[0]))
