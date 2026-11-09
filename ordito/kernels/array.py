@@ -988,6 +988,20 @@ def outer_product_slot(
 
 
 @wp.func
+def lower_triangle_pair(t: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Row ``i`` and column ``j <= i`` of entry ``t`` of a lower triangle enumerated row after row
+    # (``t = i (i + 1) / 2 + j``), so a launch over a triangle's entries spends no thread above
+    # it. The ``float32`` root is corrected by one step either way: exact for ``t`` below
+    # ``2**29`` (past it the correction's ``int32`` products wrap).
+    i = wp.int32((wp.sqrt(wp.float32(8) * wp.float32(t) + wp.float32(1)) - wp.float32(1)) * 0.5)
+    if (i + 1) * (i + 2) // 2 <= t:
+        i += 1
+    if i * (i + 1) // 2 > t:
+        i -= 1
+    return i, t - i * (i + 1) // 2
+
+
+@wp.func
 def binary_search_index_left(values: wp.array[wp.Scalar], value: wp.Scalar) -> wp.int32:
     """First index i with values[i] >= value, or len(values) (numpy searchsorted side='left')."""
     # ``wp.lower_bound`` is the same search, but it clamps its result to ``n - 1``

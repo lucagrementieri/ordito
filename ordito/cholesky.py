@@ -789,6 +789,7 @@ class _Plan:
         header = kernel_cholesky.SCHEDULE_HEADER
         fields = kernel_cholesky.LEVEL_FIELDS
         work_base = header + (n_levels + 1) * fields
+        work_fields = kernel_cholesky.PANEL_WORK_FIELDS
         # Kept: each supernode's front size and clamped parent, the level order and the extend-add
         # members (both at their sorts' width), and the front and solve-block offsets. Scratch: the
         # children's values, the level statistics, the terms' split, the extend-add groups and the
@@ -797,8 +798,9 @@ class _Plan:
             wp.int32, [n_sn, n_sn, 2 * n_sn, 2 * n_sn], device, zeroed=False
         )
         front_offset, block_offset = _carve(wp.int64, [n_sn + 1, n_sn + 1], device, zeroed=False)
+        schedule_size = work_base + n_levels + work_fields * (n // panel + 1) + 4 * n_sn
         scratch_sizes = [2 * n_sn, 3 * n_levels, n_sn + 1, n_sn + 1, 4 * (n_sn + 1), n_sn, n_sn,
-                         4 * n_sn, work_base + n_levels + n // panel + 1 + 4 * n_sn]  # fmt: skip
+                         4 * n_sn, schedule_size]  # fmt: skip
         (child_values, level_stats_flat, f_base_d, b_base_d, level_offsets_flat, column_base_d,
          group_ends, groups_flat, schedule) = _carve(wp.int32, scratch_sizes, device)  # fmt: skip
         level_keys, child_keys, sibling_sorted = _carve(
@@ -882,10 +884,14 @@ class _Plan:
         front_entries, block_entries, f_parts, b_parts, f_tasks, b_tasks = (
             (head[terms_at + 2 * k] << 31) + head[terms_at + 2 * k + 1] for k in range(6)
         )
-        table = table[: work_base + n_panels + 4 * n_groups]
+        groups_base = work_base + work_fields * n_panels
+        table = table[: groups_base + 4 * n_groups]
         levels = table[header:work_base].reshape(n_levels + 1, fields)
-        work = table[work_base : work_base + n_panels].tolist()
-        group_table = table[work_base + n_panels :].reshape(n_groups, 4)
+        work = [
+            (int(entries), int(tiles))
+            for entries, tiles in table[work_base:groups_base].reshape(n_panels, work_fields)
+        ]
+        group_table = table[groups_base:].reshape(n_groups, 4)
         self.front_entries = front_entries
         self.block_entries = block_entries
         last_terms = levels[n_levels]
@@ -991,7 +997,7 @@ class _Plan:
             _launch.array_scan(contribution_counts, contribution_offsets[1:], inclusive=True)
         self.extend: list[list[tuple[wp.array[wp.int32], int]]] = [[] for _ in range(n_levels)]
         for level, start, end, width in group_table.tolist():
-            self.extend[level].append((_launch.view(members, start, end), width * width))
+            self.extend[level].append((_launch.view(members, start, end), width * (width + 1) // 2))
         self.serial: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]] | None = (
             (level_nodes, schedule, members) if cpu else None
         )
@@ -1014,7 +1020,7 @@ class _Plan:
         # Each level's launches, from its schedule row: its fronts (a view of the level order),
         # the panels' work, the most rows below a first panel and the widest front; and its solve
         # maps as the ``[start, start + count)`` entries of the level-major arrays.
-        self.big: list[tuple[wp.array[wp.int32], list[int], int, int] | None] = []
+        self.big: list[tuple[wp.array[wp.int32], list[tuple[int, int]], int, int] | None] = []
         self.forward: list[tuple[int, int, int, int, int, int]] = []
         self.backward: list[tuple[int, int, int, int]] = []
         for h in range(n_levels):
@@ -1238,7 +1244,7 @@ class _Plan:
                 )  # fmt: skip
             elif big is not None:
                 nodes, work, rows_below, max_ncol = big
-                for p, width in enumerate(work):
+                for p, (entries, tiles) in enumerate(work):
                     row_dim = (nodes.size, rows_below + min((p + 1) * panel, max_ncol))
                     # The diagonal block as a tile, and the rows by its inverse. Three launches a
                     # panel: the factor is device-bound, and every fusion measured (the next block
@@ -1268,9 +1274,15 @@ class _Plan:
                         block_dim=panel * panel,
                         device=device,
                     )  # fmt: skip
+                    tiled = (
+                        tiles >= kernel_cholesky.UPDATE_TILES_MIN_FRONT
+                        and nodes.size * tiles >= kernel_cholesky.UPDATE_TILES_MIN_THREADS
+                    )
                     _launch.launch(
-                        kernel_cholesky.update_panel,
-                        dim=(nodes.size, width),
+                        kernel_cholesky.update_panel_tiles
+                        if tiled
+                        else kernel_cholesky.update_panel_entries,
+                        dim=(nodes.size, tiles if tiled else entries),
                         inputs=[
                             nodes,
                             *tables,

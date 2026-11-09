@@ -4,10 +4,11 @@ Kernels for ``ordito/cholesky.py``: a multifrontal sparse Cholesky and its trian
 **Numeric factorization.** The fronts are dense ``float64`` matrices, one per supernode of the
 nested-dissection tree, stored row-major in one arena and factored level by level from the leaves:
 ``scatter_entries`` writes the operator's lower entries into their fronts, ``factor_panel_tiled``,
-``panel_rows_inverse`` and ``update_panel`` (three launches per ``PANEL`` columns, every front of
-the level at once, the rows and the update spread over the device; on the CPU device
-``factor_level_panels``, one launch a level) factor each front's own columns, and ``extend_add``
-folds the Schur complement left in the front's trailing block into its parent. Alongside the factor
+``panel_rows_inverse`` and ``update_panel_entries`` or ``update_panel_tiles`` (three launches per
+``PANEL`` columns, every front of the level at once, the rows and the update spread over the
+device; on the CPU device ``factor_level_panels``, one launch a level) factor each front's own
+columns, and ``extend_add`` folds the Schur complement left in the front's trailing block into its
+parent. Alongside the factor
 each front writes its **solve block** ``[L11^-1; -L21 L11^-1]`` (column-major, leading dimension
 the front's size), so the triangular solves are matrix-vector products rather than substitutions:
 the *partitioned inverse* of Alvarado, Pothen and Schreiber (1993).
@@ -34,6 +35,7 @@ import warp as wp
 from ordito.kernels.array import (
     binary_search_index,
     binary_search_index_left,
+    lower_triangle_pair,
     ordered_float_bits,
     scanned_count,
 )
@@ -278,14 +280,13 @@ def extend_add(
     parent_local: wp.array[wp.int32],
     fronts: wp.array[wp.float64],
 ) -> None:
-    # A child's lower Schur complement (its front's trailing block) into its parent's front. The
-    # launch holds at most one child per parent, so no two threads add into one entry.
+    # A child's lower Schur complement (its front's trailing block) into its parent's front, a
+    # thread an entry of its lower triangle. The launch holds at most one child per parent, so no
+    # two threads add into one entry.
     c, t = wp.tid()
     k = children[c]
-    nrow = front_size[k] - ncol[k]
-    a = t // wp.max(nrow, 1)
-    b = t % wp.max(nrow, 1)
-    if a >= nrow or b > a:
+    a, b = lower_triangle_pair(t)
+    if a >= front_size[k] - ncol[k]:
         return
     extend_add_entry(k, a, b, parent, front_offset, ncol, front_size, row_offsets, parent_local,
                      fronts)  # fmt: skip
@@ -566,7 +567,7 @@ def panel_block_product(
 
 
 @wp.kernel
-def update_panel(
+def update_panel_entries(
     level: wp.array[wp.int32],
     front_offset: wp.array[wp.int64],
     ncol: wp.array[wp.int32],
@@ -578,7 +579,9 @@ def update_panel(
 ) -> None:
     # The rank-sixteen update after ``factor_panel_tiled``: one thread per updated entry, of the
     # front's trailing lower triangle and of the solve block's rows below the panel. No entry
-    # reads what another writes: each reads only the panel's columns.
+    # reads what another writes: each reads only the panel's columns. ``update_panel_tiles``
+    # forms the same entries a tile a thread, for a launch wide enough to fill the device with
+    # tiles; this form keeps narrow launches (small fronts, the root's last panels) spread.
     b, t = wp.tid()
     k = level[b]
     first, last = panel_span(ncol[k], panel)
@@ -606,6 +609,137 @@ def update_panel(
         blocks[target] = blocks[target] - panel_block_product(
             base, m64, block, first, last, row, column, fronts, blocks
         )
+
+
+# Rows and columns of the update one ``update_panel_tiles`` thread forms: a ``UPDATE_TILE``-square
+# tile, its sixteen sums held in registers.
+UPDATE_TILE = 4
+# ``update_panel_tiles`` takes a panel's update when the level's widest front updates at least
+# ``UPDATE_TILES_MIN_FRONT`` tiles and the launch holds at least ``UPDATE_TILES_MIN_THREADS``;
+# ``update_panel_entries`` takes the rest. A tile thread's sixteen sums cost a narrow launch 3-8x
+# what a thread an entry costs, so the tiles pay only on wide launches, and a level of many small
+# fronts (the leaves, launched at their widest) stays a thread an entry; narrower blocks (32 to
+# 128 lanes) did not lower that floor.
+# Fitted per launch on icospheres of 4-7 subdivisions, scalar and 2 x 2 expanded: the update
+# 0.68x at 164 k rows and 0.47-0.72x expanded, every smaller case at par (2026-11-09).
+UPDATE_TILES_MIN_FRONT = 256
+UPDATE_TILES_MIN_THREADS = 65536
+
+
+@wp.func
+def update_tiles(span: wp.int32, last: wp.int32) -> wp.int32:
+    # ``update_panel_tiles``' threads for a front with ``span`` rows below a panel ending at column
+    # ``last``: the tiles of the trailing lower triangle, then the solve block's rows below the
+    # panel by its ``last`` columns (``schedule_work`` sizes a level's launch with it).
+    rows = (span + UPDATE_TILE - 1) // UPDATE_TILE
+    return rows * (rows + 1) // 2 + rows * ((last + UPDATE_TILE - 1) // UPDATE_TILE)
+
+
+@wp.func
+def panel_tile_product(
+    a_source: wp.array[wp.float64],
+    a_start: wp.int64,
+    a_count: wp.int32,
+    b_source: wp.array[wp.float64],
+    b_start: wp.int64,
+    b_count: wp.int32,
+    stride: wp.int64,
+    width: wp.int32,
+) -> wp.mat44d:
+    # Entry ``(i, j)``: the dot over a panel's ``width`` columns of vector ``i`` of ``a_source``
+    # (at ``a_start + i * stride``) and vector ``j`` of ``b_source``, each summed in column order
+    # (``panel_front_product``'s and ``panel_block_product``'s sums, four by four). A vector past
+    # ``a_count`` (``b_count``) reads the last one instead, so every load issues unconditionally;
+    # its entries are not to be written. A full-width panel takes its own unguarded loop, whose
+    # loads the compiler hoists (the guarded one cost the update 1.06-1.3x on wide launches).
+    a0 = a_start
+    a1 = a_start + stride * wp.int64(wp.min(1, a_count - 1))
+    a2 = a_start + stride * wp.int64(wp.min(2, a_count - 1))
+    a3 = a_start + stride * wp.int64(wp.min(3, a_count - 1))
+    b0 = b_start
+    b1 = b_start + stride * wp.int64(wp.min(1, b_count - 1))
+    b2 = b_start + stride * wp.int64(wp.min(2, b_count - 1))
+    b3 = b_start + stride * wp.int64(wp.min(3, b_count - 1))
+    total = wp.mat44d()
+    if width == PANEL:
+        for q1 in range(PANEL):
+            q = wp.int64(q1)
+            a = wp.vec4d(a_source[a0 + q], a_source[a1 + q], a_source[a2 + q], a_source[a3 + q])
+            b = wp.vec4d(b_source[b0 + q], b_source[b1 + q], b_source[b2 + q], b_source[b3 + q])
+            for i in range(4):
+                for j in range(4):
+                    total[i, j] = total[i, j] + a[i] * b[j]
+        return total
+    for q1 in range(PANEL):
+        q = wp.int64(q1)
+        if wp.int32(q1) < width:
+            a = wp.vec4d(a_source[a0 + q], a_source[a1 + q], a_source[a2 + q], a_source[a3 + q])
+            b = wp.vec4d(b_source[b0 + q], b_source[b1 + q], b_source[b2 + q], b_source[b3 + q])
+            for i in range(4):
+                for j in range(4):
+                    total[i, j] = total[i, j] + a[i] * b[j]
+    return total
+
+
+@wp.kernel
+def update_panel_tiles(
+    level: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    panel: wp.int32,
+    fronts: wp.array[wp.float64],
+    blocks: wp.array[wp.float64],
+) -> None:
+    # ``update_panel_entries``' update, one thread per ``UPDATE_TILE``-square tile of the front's
+    # trailing lower triangle (tiles above it are not launched; a diagonal tile skips its upper
+    # entries) and of the solve block's rows below the panel: four times the multiply-adds a
+    # load, which pays once the launch fills the device with tiles. Every entry subtracts the
+    # sum ``update_panel_entries`` subtracts, summed in the same order, so the two are
+    # interchangeable launch by launch.
+    b, t = wp.tid()
+    k = level[b]
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
+        return
+    base = front_offset[k]
+    size = front_size[k]
+    m64 = wp.int64(size)
+    span = size - last
+    width = last - first
+    rows = (span + UPDATE_TILE - 1) // UPDATE_TILE
+    triangle = rows * (rows + 1) // 2
+    if t < triangle:
+        tile_row, tile_column = lower_triangle_pair(t)
+        row = last + tile_row * UPDATE_TILE
+        column = last + tile_column * UPDATE_TILE
+        total = panel_tile_product(fronts, front_index(base, m64, row, first), size - row,
+                                   fronts, front_index(base, m64, column, first), size - column,
+                                   m64, width)  # fmt: skip
+        for i in range(UPDATE_TILE):
+            for j in range(UPDATE_TILE):
+                r = row + i
+                c = column + j
+                if r < size and c <= r:
+                    target = front_index(base, m64, r, c)
+                    fronts[target] = fronts[target] - total[i, j]
+        return
+    t2 = t - triangle
+    if t2 < rows * ((last + UPDATE_TILE - 1) // UPDATE_TILE):
+        block = block_offset[k]
+        row = last + (t2 % rows) * UPDATE_TILE
+        column = (t2 // rows) * UPDATE_TILE
+        total = panel_tile_product(fronts, front_index(base, m64, row, first), size - row,
+                                   blocks, block + wp.int64(column) * m64 + wp.int64(first),
+                                   last - column, m64, width)  # fmt: skip
+        for i in range(UPDATE_TILE):
+            for j in range(UPDATE_TILE):
+                r = row + i
+                c = column + j
+                if r < size and c < last:
+                    target = block + wp.int64(c) * m64 + wp.int64(r)
+                    blocks[target] = blocks[target] - total[i, j]
 
 
 @wp.func
@@ -665,10 +799,10 @@ def factor_level_panels(
 ) -> None:
     # A level's every panel on the CPU device, one block (of one lane there) a front: each panel's
     # diagonal block (``factor_columns``), its rows (``panel_row``) and its update (the products
-    # ``update_panel`` subtracts, over the trailing lower triangle alone) in turn. A front's
+    # ``update_panel_entries`` subtracts, over the trailing lower triangle alone) in turn. A front's
     # entries of one step neither read nor write another front's, nor read what another entry of
     # the step writes, so walking them in turn is the CUDA path's step launches
-    # (``factor_panel_tiled``, ``panel_rows_inverse``, ``update_panel``) at one launch a level.
+    # (``factor_panel_tiled``, ``panel_rows_inverse``, ``update_panel_*``) at one launch a level.
     # ``out_fronts`` and ``out_blocks`` are factored in place.
     b, lane = wp.tid()
     factor_front_panels(level[b], n_panels, rows_below, lane, front_offset, ncol, front_size,
@@ -741,7 +875,11 @@ def factor_serial(
     for e in range(entry_source.shape[0]):
         scatter_entry(e, values, entry_source, entry_target, entry_row, entry_column,
                       out_pinned, sign, out_fronts)  # fmt: skip
-    groups = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + schedule[SCHEDULE_PANELS]
+    groups = (
+        SCHEDULE_HEADER
+        + (n_levels + 1) * LEVEL_FIELDS
+        + PANEL_WORK_FIELDS * schedule[SCHEDULE_PANELS]
+    )
     n_groups = schedule[SCHEDULE_GROUPS]
     g = wp.int32(0)
     for h in range(n_levels):
@@ -2171,7 +2309,8 @@ front_terms = wp.types.vector(length=10, dtype=wp.int64)
 LEVEL_TERMS = wp.int32(6)
 # ``analysis_schedule`` layout: a header (``SCHEDULE_ROWS``, ``SCHEDULE_GROUPS``,
 # ``SCHEDULE_PANELS``, the terms' totals from ``SCHEDULE_TERMS``), one row of ``LEVEL_FIELDS`` per
-# level and a closing row, every level's panel work, then four entries per extend-add group.
+# level and a closing row, every level's panel work (``PANEL_WORK_FIELDS`` a panel), then four
+# entries per extend-add group.
 SCHEDULE_ROWS = wp.int32(0)
 SCHEDULE_GROUPS = wp.int32(1)
 SCHEDULE_PANELS = wp.int32(2)
@@ -2182,6 +2321,8 @@ SCHEDULE_TERMS = wp.int32(3)
 SCHEDULE_LEADING_NEGATIVE = wp.int32(15)
 SCHEDULE_HEADER = 16
 LEVEL_FIELDS = 10
+# A panel's work slots: ``update_panel_entries``' entries, then ``update_panel_tiles``' tiles.
+PANEL_WORK_FIELDS = 2
 
 
 @wp.func
@@ -2457,7 +2598,7 @@ def schedule_levels(
     out_schedule[SCHEDULE_GROUPS] = group_ends[group_ends.shape[0] - 1]
     out_schedule[SCHEDULE_PANELS] = panels
     work = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS
-    for p in range(panels):
+    for p in range(PANEL_WORK_FIELDS * panels):
         out_schedule[work + p] = 1
 
 
@@ -2471,26 +2612,29 @@ def schedule_work(
     n_levels: wp.int32,
     out_schedule: wp.array[wp.int32],
 ) -> None:
-    # Every panel's update work: the largest trailing triangle and solve-block rows any front of
-    # the level updates after it, a panel past a narrower front's columns counting that front's
-    # last. Thread ``r`` also copies extend-add group ``r`` after the panel work, four entries
-    # each: both read only the header ``schedule_levels`` wrote and write disjoint ranges, over
-    # the same supernode-count grid, so they share one launch.
+    # Every panel's update work, as ``update_panel_entries``' entries and ``update_panel_tiles``'
+    # tiles: the most of either any front of the level updates after it, a panel past a narrower
+    # front's columns counting that front's last. Thread ``r`` also copies extend-add group ``r``
+    # after the panel work, four entries each: both read only the header ``schedule_levels``
+    # wrote and write disjoint ranges, over the same supernode-count grid, so they share one
+    # launch.
     r = wp.int32(wp.tid())
     tail = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS
     if r < out_schedule[SCHEDULE_GROUPS]:
-        base = tail + out_schedule[SCHEDULE_PANELS] + 4 * r
+        base = tail + PANEL_WORK_FIELDS * out_schedule[SCHEDULE_PANELS] + 4 * r
         for k in range(4):
             out_schedule[base + k] = groups[r, k]
     sn = level_nodes[r]
     row = SCHEDULE_HEADER + height[sn] * LEVEL_FIELDS
-    work = tail + out_schedule[row + 9]
+    work = tail + PANEL_WORK_FIELDS * out_schedule[row + 9]
     c = ncol[sn]
     size = front_size[sn]
     for p in range(out_schedule[row + 2]):
         last = wp.min((p + 1) * PANEL, c)
         span = size - last
-        wp.atomic_max(out_schedule, work + p, span * span + span * last)
+        slot = work + PANEL_WORK_FIELDS * p
+        wp.atomic_max(out_schedule, slot, span * span + span * last)
+        wp.atomic_max(out_schedule, slot + 1, update_tiles(span, last))
 
 
 @wp.kernel

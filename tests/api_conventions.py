@@ -581,7 +581,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # between the passes of one round.
     ("registration", "landmark_icp"): frozenset({"closest", "total"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
-    ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
+    ("cholesky", "update_panel_entries"): frozenset({"fronts", "blocks"}),
+    ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
     ("cholesky", "residual_test"): frozenset({"state"}),
     ("cholesky", "backward_finalize"): frozenset({"refined"}),
