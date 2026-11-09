@@ -1185,6 +1185,54 @@ def test_fill_dp_captured_matches_plain(
     assert np.array_equal(fills[True], fills[False])
 
 
+@pytest.mark.parametrize("metric", FILL_METRICS)
+def test_fill_dp_span_widths_match_serial(
+    monkeypatch: pytest.MonkeyPatch, device: str, metric: str
+) -> None:
+    """
+    Ordito against ordito: an issued sweep switching block width by span emits identical faces.
+
+    An issued sweep launches each span at the width its interval count picks
+    (``kernels/holes.hole_dp_span_block``), so one sweep mixes narrow and wide blocks. The serial
+    engine carries the oracle, as in ``test_fill_dp_span_tiled_matches_serial``. The threshold is
+    lowered so the star tube's one 64-vertex rim switches at span 24 (40 intervals), and the sweep
+    is issued rather than recorded; the launches are asserted to have taken both widths. Skipped on
+    the CPU device, whose blocks run one lane whatever their width.
+    """
+    if not wp.get_device(device).is_cuda:
+        pytest.skip("the CPU device runs one lane a block, so the width changes nothing there")
+    monkeypatch.setattr(kernel_holes, "HOLE_DP_WIDE_INTERVALS", 40)
+    vertices_np, faces_np = _star_tube()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    n_orig = faces_wp.size
+
+    widths: set[int] = set()
+    launch_tiled = od.holes._launch.launch_tiled  # pyright: ignore[reportPrivateUsage]
+
+    def spy(kernel: wp.Kernel, *args: Any, block_dim: int, **kwargs: Any) -> None:
+        if kernel is kernel_holes.fill_dp_span_tiled:
+            widths.add(block_dim)
+        launch_tiled(kernel, *args, block_dim=block_dim, **kwargs)
+
+    original = od.holes._run_hole_dp  # pyright: ignore[reportPrivateUsage]
+    fills = {}
+    for tiled in (True, False):
+        monkeypatch.setattr(
+            od.holes,
+            "_run_hole_dp",
+            lambda *args, _t=tiled, **kwargs: original(*args, **kwargs, tiled=_t, captured=False),
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(od.holes._launch, "launch_tiled", spy)  # pyright: ignore[reportPrivateUsage]
+            fills[tiled] = od.holes.fill_min_weight(vertices_wp, faces_wp, metric=metric).numpy()[
+                n_orig:
+            ]
+
+    assert widths == {kernel_holes.HOLE_DP_BLOCK, kernel_holes.HOLE_DP_BLOCK_LONG}
+    assert fills[False].size > 3 * 3, "fixture produced no fill to compare"
+    assert np.array_equal(fills[True], fills[False])
+
+
 @pytest.mark.parametrize("tiled", [True, False], ids=["tiled", "serial"])
 def test_fill_dp_ordered_matches_unordered(
     monkeypatch: pytest.MonkeyPatch, device: str, tiled: bool

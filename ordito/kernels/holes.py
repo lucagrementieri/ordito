@@ -501,6 +501,33 @@ def hole_dp_block(max_size: int, n_loops: int) -> int:
     return HOLE_DP_BLOCK
 
 
+# The intervals below which an issued span launch takes the wide block (``hole_dp_span_block``).
+#
+# ``hole_dp_block`` fixes one width for a whole sweep, but a sweep's grid shrinks span by span: the
+# early spans have many intervals of few apexes each, the late ones few intervals of many. Timed a
+# launch at a time at both widths (2026-11-09), the wide block won every span below 500
+# intervals and lost every span above 2 000; between, the crossover moved with the mesh and the
+# metric (dragon's ~800, lucy's ~1 400 under ``plane_normalized``, higher in the ``min_area``
+# retry, whose branch and bound prunes less). Whole sweeps against the one-width rule, by
+# threshold:
+#
+#     threshold                      1 000   1 250   1 500   2 000
+#     refill_region dragon           0.72x   0.74x   0.75x   0.78x
+#     refill_region happy_buddha     0.62x   0.61x   0.61x   0.63x
+#     refill_region lucy             1.01x   0.97x   0.94x   0.92x
+#     two rims of 1 024              0.77x   0.82x   0.87x   0.99x
+#     two rims of 2 048              0.67x   0.67x   0.67x   0.70x
+#
+# 1 250 is the lowest that loses nowhere. The first three were the one-width rule's narrow,
+# narrow and wide choices: no single width matches a per-span one on any of them.
+HOLE_DP_WIDE_INTERVALS = 1250
+
+
+def hole_dp_span_block(intervals: int) -> int:
+    """Lanes per block for one span launch of an issued DP sweep over ``intervals`` intervals."""
+    return HOLE_DP_BLOCK_LONG if intervals < HOLE_DP_WIDE_INTERVALS else HOLE_DP_BLOCK
+
+
 @wp.struct
 class HoleFillTables:
     """

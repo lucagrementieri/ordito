@@ -1234,8 +1234,8 @@ def _run_hole_dp(
         # Only CUDA has a graph to record; the rest of the decision is the kernel module's.
         captured = resolved.is_cuda and kernel_holes.hole_dp_captures(loops.max_size, loops.n_loops)
     # One of two lane counts, picked from the rim count *and* the longest rim -- see
-    # ``kernels/holes.hole_dp_block``, whose table shows why both matter. Read once here rather
-    # than per span so the whole sweep shares one module hash.
+    # ``kernels/holes.hole_dp_block``, whose table shows why both matter. The recorded sweep's
+    # width; an issued one picks per span below.
     block = kernel_holes.hole_dp_block(loops.max_size, loops.n_loops)
     # The CPU device runs a launch's threads in turn, so one thread per loop writing its base table
     # and walking its spans does the per-span loop's work with one launch.
@@ -1291,6 +1291,17 @@ def _run_hole_dp(
     tables.combine_id = wp.int32(combine_id)
     tables.smooth_bd = wp.int32(1 if smooth_boundary else 0)
 
+    # An issued sweep picks each span's lanes from that span's own interval count
+    # (``kernels/holes.hole_dp_span_block``), which only differs from ``block`` once some span has
+    # more apexes than a narrow block has lanes. A recorded group is replayed at shifted spans, so
+    # it keeps the one width.
+    span_blocks = None
+    if tiled and not captured and loops.max_size - 2 > kernel_holes.HOLE_DP_BLOCK:
+        span_blocks = [
+            kernel_holes.hole_dp_span_block(intervals)
+            for intervals in _span_interval_counts(loops.sizes_np, loops.max_size)
+        ]
+
     def issue(offset: int, width: int) -> None:
         inputs = [tables, wp.int32(offset)]
         # The loops longer than the span ``offset`` names, which a later replay's spans only cut.
@@ -1300,7 +1311,7 @@ def _run_hole_dp(
                 kernel_holes.fill_dp_span_tiled,
                 dim=dim,
                 inputs=inputs,
-                block_dim=block,
+                block_dim=block if span_blocks is None else span_blocks[offset],
                 device=device,
             )
         else:
@@ -1330,6 +1341,20 @@ def _run_hole_dp(
     assert graph is not None
     for _ in range((n_spans + group - 1) // group):
         wp.capture_launch(graph)
+
+
+def _span_interval_counts(sizes_np: np.ndarray, max_size: int) -> np.ndarray:
+    """
+    ``(max_size + 1,)`` the intervals of each span over all loops, ``sum(max(B - span, 0))``.
+
+    Entry ``span`` is how many blocks a span launch of ``fill_dp_span_tiled`` has work for.
+    """
+    spans = np.arange(max_size + 1)
+    sorted_np = np.sort(sizes_np)
+    # The loops longer than each span, and the sum of their lengths.
+    first_longer = np.searchsorted(sorted_np, spans, "right")
+    longer_sums = np.append(np.cumsum(sorted_np[::-1])[::-1], 0)[first_longer]
+    return longer_sums - spans * (sorted_np.size - first_longer)
 
 
 def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
