@@ -617,6 +617,9 @@ def robust_laplacian(
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     if intrinsic_faces.size == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
+    # The rounding pass is queued ahead of the pattern build: the device runs this long ``float64``
+    # pass while the host issues the sorts (built first, ``dragon`` paid 1.02-1.03x the call).
+    rows = _intrinsic_rounding_rows(n_vertices, intrinsic_faces, lengths)
     if pattern is None:
         # The half-cotangents are written by the pattern's key pass.
         entries, pattern = _cotmatrix_entries_and_pattern(
@@ -624,7 +627,6 @@ def robust_laplacian(
         )
     else:
         entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
-    rows = _intrinsic_rounding_rows(n_vertices, intrinsic_faces, lengths)
     # ``cotmatrix``'s assembly, whose row pass also takes each row's rounding ratio into ``worst``.
     _, _, offsets, columns, run_start, keys, count, order = pattern
     values = _launch.empty(columns.size, dtype=dtype, device=device)
