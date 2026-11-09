@@ -1028,6 +1028,8 @@ def polyline_simplify(
                 device=device,
             )
 
+        # Declined (2026-11-09): two or four rounds a replayed body (a round past the last split
+        # keeps nothing): 0.97-1.01x and 1.02-1.07x on noisy helices of 20 k-2 M points.
         condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
         run_device_loop(device, condition, split_round)
 

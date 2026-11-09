@@ -1165,14 +1165,19 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
   `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
   ~0.4 ms a hub (32 lanes over 41 k dependent loads).
-- **Captured round loops outside `homology` (2026-11-09 homology sweep):** a replayed body of
-  several rounds closed by `kernels/array.loop_advance_by` took the BFS 0.69-0.75x (a
-  conditional-graph iteration costs about a launch), and issuing a loop of a handful of rounds a
-  few a read instead of recording it took the dual forest 0.90-0.97x. Unpriced candidates for the
-  first: `geodesic_walk._flip_shortest_edge_tree`'s relaxation passes,
-  `graph.shortest_path_envelope`, `points._flip_to_convex`, `reconstruction`'s round loops (an
-  idle round must be cheap: a pass sweeping every node is not); for the second, any
-  `run_device_loop` site whose rounds are few on every benchmark mesh.
+- **`triangulate_polygon` on a 65 536-vertex star takes 14 419 ear rounds** (979 ms), where
+  16 384 takes 52 (3.1 ms): after the first few dozen rounds it clips about one ear a round. Not
+  diagnosed; suspects are the thin-ear fallback (`EAR_CHECK_THIN`) on the near-collinear inner
+  ring and the independent-set rule. Found pricing the ear loop's batching (2026-11-09).
+- **`icp_mesh_pyvista` on `sphere_small` is 120 ms**, against 4.1 ms on `sphere_med` and 7.2 ms
+  on `sphere_large` (CUDA, 2026-11-09, both the recorded and the host-issued round loop): not a
+  loop-shape cost; unexamined.
+- **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
+  (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
+  0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the
+  CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
+  with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
+  idle body `loop_advance_by` would run.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
