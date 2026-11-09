@@ -1205,11 +1205,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **`sparse_cholesky`'s analysis** (2026-11-09): ~2 ms host-bound at every benchmark size
-  (~10 dissection depths of nine operations, a sort and a scan each, then the structure and
-  schedule passes with two readbacks); the factor below ~40 k rows is at par after the tiled
-  update (its launches are narrow; a tile thread's floor is its `float64` issue). The analysis'
-  replay is a recorded decline.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
