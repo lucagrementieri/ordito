@@ -1340,10 +1340,12 @@ def shortest_path_envelope(
     # (``kernels/graph.shortest_path_envelope_patch_pass``); the first pass stays a plain pull, so a
     # field it all but settles pays for no patch rounds.
     patches = [False]
+    passes_per_body = [1]
 
     def envelope_pass_body() -> None:
-        # One pass, then (Jacobi) a copy of its result back over ``labels``, then the shared
-        # round-closing kernel, which turns the pass's progress and the cap into the condition.
+        # ``passes_per_body`` passes, each followed (Jacobi) by a copy of its result back over
+        # ``labels``, then the shared round-closing kernel, which turns the passes' progress and the
+        # cap into the condition.
         # **Two Jacobi passes per round, written into each other's buffer, would remove the copy**
         # and are **not portable**: measured with that body, the CPU device relaxed strictly fewer
         # nodes per round than CUDA at every cap, because the recorded body did not replay as two
@@ -1351,26 +1353,30 @@ def shortest_path_envelope(
         # indivisible unit across devices, so a loop whose *result buffer* depends on the body
         # running whole cannot rely on it. A Python-level ping-pong cannot help either: the body is
         # recorded once and replayed, so rebinding the names would only take effect at record time.
-        if patches[0]:
-            _launch.launch_tiled(
-                kernel_graph.shortest_path_envelope_patch_pass,
-                dim=[-(-node_count // _ENVELOPE_PATCH_LANES)],
-                inputs=[offsets, columns, weights, order, kernel_graph.ENVELOPE_PATCH_ROUNDS],
-                outputs=[labels, state],
-                block_dim=_ENVELOPE_PATCH_LANES,
-                device=device,
-            )
-        else:
-            _launch.launch(
-                kernel_graph.shortest_path_envelope_pass,
-                dim=node_count,
-                inputs=[offsets, columns, weights, labels, relaxed, state],
-                device=device,
-            )
-        if relaxed is not labels:
-            _launch.copy(labels, relaxed)
+        for _ in range(passes_per_body[0]):
+            if patches[0]:
+                _launch.launch_tiled(
+                    kernel_graph.shortest_path_envelope_patch_pass,
+                    dim=[-(-node_count // _ENVELOPE_PATCH_LANES)],
+                    inputs=[offsets, columns, weights, order, kernel_graph.ENVELOPE_PATCH_ROUNDS],
+                    outputs=[labels, state],
+                    block_dim=_ENVELOPE_PATCH_LANES,
+                    device=device,
+                )
+            else:
+                _launch.launch(
+                    kernel_graph.shortest_path_envelope_pass,
+                    dim=node_count,
+                    inputs=[offsets, columns, weights, labels, relaxed, state],
+                    device=device,
+                )
+            if relaxed is not labels:
+                _launch.copy(labels, relaxed)
         _launch.launch(
-            kernel_array.loop_advance, dim=1, inputs=[max_pass_count_i32, state], device=device
+            kernel_array.loop_advance_by,
+            dim=1,
+            inputs=[passes_per_body[0], max_pass_count_i32, state],
+            device=device,
         )
 
     # The first pass runs uncaptured and its read is the call's one readback: it carries the
@@ -1383,12 +1389,27 @@ def shortest_path_envelope(
     # The rest of the passes run on-device via ``wp.capture_while``, so their convergence checks
     # and the cap cost no host readback.
     patches[0] = order is not None and relaxed is labels
+    if relaxed is labels:
+        # In place, a pass past the fixpoint moves nothing, so a replayed body runs several and
+        # the loop's conditional node and closing launch come once a body. A capped call keeps one
+        # pass a body: its answer is exactly that many passes.
+        passes_per_body[0] = (
+            _ENVELOPE_PATCH_PASSES_PER_BODY if patches[0] else _ENVELOPE_PASSES_PER_BODY
+        )
     if condition != 0:
         run_device_loop(
             device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), envelope_pass_body
         )
     return labels
 
+
+# Uncapped passes a replayed body of ``shortest_path_envelope``'s CUDA loop runs, plain and patch.
+# Whole calls (2026-11-09, byte-identical) at 2 / 4 / 8 plain passes a body against one:
+# ``sphere_small`` 0.79 / 0.72 / 0.75x, ``bunny_decimated`` 0.81 / 0.75 / 0.80x, ``sphere_med``
+# 0.74 / 0.63 / 0.58x, bunny 0.77 / 0.67 / 0.64x, dragon 0.95 / 0.83x at 2 / 4. Patch passes,
+# heavier, at 2 / 4 / 8: 0.93-0.99x / 0.91-1.04x / 0.95-1.20x over the same meshes.
+_ENVELOPE_PASSES_PER_BODY = 4
+_ENVELOPE_PATCH_PASSES_PER_BODY = 2
 
 # Lanes of a ``shortest_path_envelope_patch_pass`` block, a patch: ``_launch.launch``'s width,
 # which a tiled launch of the module must share or build it again.

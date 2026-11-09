@@ -1084,7 +1084,9 @@ def _flip_shortest_edge_tree(
         # block relaxes a patch of the vertices in Hilbert order for up to ``BLOCK_RELAX_ROUNDS``
         # rounds a pass; in the mesh's own order a block is no patch (the icosphere numbers its
         # midpoints by edge) and the rounds lost: 2.4 ms at 1, 3.2 at 4, 7.0 at 64 on
-        # ``sphere_med``, against 1.3 ms ordered.
+        # ``sphere_med``, against 1.3 ms ordered. Declined (2026-11-09): two or four passes a
+        # replayed body (``array.loop_advance_by``), 0.97-0.98x the loop on ``sphere_med`` and bunny
+        # (44 passes of ~70 us, device-bound), under 1 % of a 12 ms call.
         state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
         n_vertices_i32 = wp.int32(n_vertices)
         order = hilbert_point_order(positions)
