@@ -2790,6 +2790,24 @@ def init_ring_ear_clips(
             )
 
 
+@wp.func
+def ring_finish_loop(
+    rounds: wp.array[wp.int32],
+    row: wp.int32,
+    r: wp.int32,
+    end: wp.int32,
+    out_ends: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
+) -> None:
+    # Stop round-loop loop ``r`` (state row ``row``) with its faces ending at ``end``: its face end
+    # to ``out_ends[r]`` and its face count to ``out_face_counts[r + 1]`` (``triangulate_rings``'
+    # outputs for every other loop). Shared by the round cap (``ring_compute_ears``) and the clip
+    # that writes a loop's last face (``ring_clip_selected``).
+    rounds[row + RING_LIVE] = wp.int32(0)
+    out_ends[r] = end
+    out_face_counts[r + 1] = end - rounds[row + RING_FACE_BASE]
+
+
 @wp.kernel
 def ring_compute_ears(
     points2d: wp.array[wp.vec2],
@@ -2799,10 +2817,15 @@ def ring_compute_ears(
     grid: wp.array[wp.float32],
     ring: wp.array2d[wp.int32],
     rounds: wp.array[wp.int32],
+    out_ends: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
 ) -> None:
     # ``compute_ears`` over every round-loop loop, each with its own mirror, grid and thin flag. It
-    # also lowers the loop condition, which ``ring_ear_loop_continue`` raises again while some loop
-    # is live. ``ring`` rows and ``rounds`` are the loop's carried scratch, not ``out_``.
+    # also lowers the loop condition, which ``ring_clip_selected`` raises again while some loop is
+    # live, and each live loop's first point counts its round: a loop that has run ``n_ring``
+    # rounds stops here, before this round's clips, and writes its face end and count
+    # (``ring_finish_loop``). ``ring`` rows and ``rounds`` are the loop's carried scratch, not
+    # ``out_``.
     #
     # The rounds are latency-bound, so the loads that the one-ring kernel gets as launch arguments
     # are issued before any branch, side by side with the point's own (a point of no round-loop
@@ -2824,9 +2847,15 @@ def ring_compute_ears(
     if r < 0:
         return
     row = ring_state_row(r)
+    start = offsets[r]
+    if i == start and rounds[row + RING_LIVE] != 0:
+        rounds_run = rounds[row + RING_ROUND]
+        if rounds_run >= rounds[row + RING_N_RING]:
+            ring_finish_loop(rounds, row, r, rounds[row + RING_FACE_END], out_ends, out_face_counts)
+        else:
+            rounds[row + RING_ROUND] = rounds_run + 1
     grade = EAR_NONE
     if active != 0:
-        start = offsets[r]
         mirror = rounds[row + RING_MIRROR]
         check_thin = rounds[row + RING_CHECK_THIN]
         shift, inv_cell, dims = ring_grid(rounds, grid, r)
@@ -2869,49 +2898,37 @@ def ring_select_independent(
 
 @wp.kernel
 def ring_clip_selected(
-    rounds: wp.array[wp.int32], ring: wp.array2d[wp.int32], out_faces: wp.array2d[wp.int32]
+    rounds: wp.array[wp.int32],
+    ring: wp.array2d[wp.int32],
+    out_faces: wp.array2d[wp.int32],
+    out_ends: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
 ) -> None:
     # ``clip_selected`` over every live round-loop loop, each appending through its own
-    # ``RING_FACE_END`` counter. The one round kernel that skips a finished loop: a loop stopped by
+    # ``RING_FACE_END`` counter, and the loops' control, with no launch of its own (as
+    # ``clip_selected_at`` keeps the one-ring loop's): each live loop's first point advances its
+    # thin flag (which no clip reads) and raises the loop condition, and the clip that writes a
+    # loop's last face stops it (``ring_finish_loop``), the atomic's return naming it. A loop that
+    # finishes in a round has raised the condition for one more round, which grades and selects
+    # but clips nothing of it. The one round kernel that skips a finished loop: a loop stopped by
     # its round cap may still hold ears.
     i = wp.int32(wp.tid())
     r = ring[RING_LOOP_ROW, i]
     selected = ring[4, i]
+    first = ring[RING_LOOP_ROW, wp.max(i - 1, 0)] != r or i == 0
     row = ring_state_row(wp.max(r, 0))
     live = rounds[row + RING_LIVE]
-    if r >= 0 and selected != 0 and live != 0:
-        clip_ear(ring[0], ring[1], ring[2], i, rounds, row + RING_FACE_END, out_faces)
-
-
-@wp.kernel
-def ring_ear_loop_continue(
-    rounds: wp.array[wp.int32], out_ends: wp.array[wp.int32], out_face_counts: wp.array[wp.int32]
-) -> None:
-    # ``clip_selected``'s loop control per live round-loop loop, dim == n_loops: its round count
-    # and thin flag advance, its face end and face count go to ``out_ends[r]`` and
-    # ``out_face_counts[r + 1]`` (``triangulate_rings``' outputs for every other loop), and it
-    # stays live on its own loop's test (fewer faces than ``n_ring - 2`` and fewer rounds than
-    # ``n_ring``), raising the loop condition while it does. Its state is one row, loaded whole
-    # before the first branch: the launch is one dependent chain a round.
-    r = wp.int32(wp.tid())
-    row = ring_state_row(r)
-    live = rounds[row + RING_LIVE]
-    round_next = rounds[row + RING_ROUND] + 1
-    any_good = rounds[row + RING_ANY_GOOD]
-    n_ring = rounds[row + RING_N_RING]
-    end = rounds[row + RING_FACE_END]
-    clipped = end - rounds[row + RING_FACE_BASE]
-    if live == 0:
+    if r < 0 or live == 0:
         return
-    rounds[row + RING_ROUND] = round_next
-    rounds[row + RING_CHECK_THIN] = wp.where(any_good == 0, wp.int32(1), wp.int32(0))
-    rounds[row + RING_ANY_GOOD] = wp.int32(0)
-    out_ends[r] = end
-    out_face_counts[r + 1] = clipped
-    if clipped < n_ring - 2 and round_next < n_ring:
+    if first:
+        any_good = rounds[row + RING_ANY_GOOD]
+        rounds[row + RING_CHECK_THIN] = wp.where(any_good == 0, wp.int32(1), wp.int32(0))
+        rounds[row + RING_ANY_GOOD] = wp.int32(0)
         rounds[LOOP_CONDITION] = wp.int32(1)
-    else:
-        rounds[row + RING_LIVE] = wp.int32(0)
+    if selected != 0:
+        slot = clip_ear(ring[0], ring[1], ring[2], i, rounds, row + RING_FACE_END, out_faces)
+        if slot + 1 - rounds[row + RING_FACE_BASE] == rounds[row + RING_N_RING] - 2:
+            ring_finish_loop(rounds, row, r, slot + 1, out_ends, out_face_counts)
 
 
 @wp.kernel

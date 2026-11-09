@@ -849,13 +849,14 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The packed round loop's carried scratch, the one-ring loop's under other names: ``ring`` is
     # the ``(RING_SCRATCH_ROWS, n_points)`` links / ear grades / selections and each point's loop
     # (``ring_ear_grid_cells`` writes the loop row once), ``rounds`` the loops' state rows behind
-    # the ``wp.capture_while`` condition (``ring_compute_ears`` raises a loop's good-ear flag and
-    # lowers the condition, ``ring_ear_loop_continue`` advances every row). The answers are the
-    # faces, ends and face counts, all ``out_``.
+    # the ``wp.capture_while`` condition (``ring_compute_ears`` raises a loop's good-ear flag,
+    # lowers the condition and counts each loop's rounds, ``ring_clip_selected`` advances its thin
+    # flag, raises the condition and stops a finished loop). The answers are the faces, ends and
+    # face counts, all ``out_``.
     ("polyline", "ring_ear_grid_cells"): frozenset({"ring"}),
     ("polyline", "ring_compute_ears"): frozenset({"ring", "rounds"}),
     ("polyline", "ring_select_independent"): frozenset({"ring"}),
-    ("polyline", "ring_ear_loop_continue"): frozenset({"rounds"}),
+    ("polyline", "ring_clip_selected"): frozenset({"rounds"}),
     # Round, pass 1 of 4 of the level-synchronous Ramer-Douglas-Peucker split: only arms the
     # per-span accumulators (``out_span_max`` / ``out_span_argmax``) and advances the loop's own
     # [rounds run, condition] pair -- the same ``state`` buffer ``rdp_split_spans`` carries under

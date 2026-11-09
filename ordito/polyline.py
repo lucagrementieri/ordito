@@ -1810,6 +1810,7 @@ def _triangulate_long_rings(
             kernel_polyline.ring_compute_ears,
             dim=n_points,
             inputs=[points2d, offsets, cell_starts, cell_points, grid, ring, rounds],
+            outputs=[ends, face_counts],
             device=device,
         )
         _launch.launch(
@@ -1822,14 +1823,7 @@ def _triangulate_long_rings(
             kernel_polyline.ring_clip_selected,
             dim=n_points,
             inputs=[rounds, ring],
-            outputs=[faces],
-            device=device,
-        )
-        _launch.launch(
-            kernel_polyline.ring_ear_loop_continue,
-            dim=n_loops,
-            inputs=[rounds],
-            outputs=[ends, face_counts],
+            outputs=[faces, ends, face_counts],
             device=device,
         )
 
