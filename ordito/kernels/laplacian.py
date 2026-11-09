@@ -296,6 +296,12 @@ def intrinsic_rounding_rows(
     # neither. New/old, the old being that off kernel and an on kernel of per-term
     # ``scatter_add_vector``: off CPU 0.87x, CUDA host 0.82x at 5 k faces and device 0.89-1.00x;
     # on CPU 0.95-0.98x, CUDA 1.00x; the bits unchanged on the CPU in both modes and on CUDA on.
+    #
+    # Declined (2026-11-09): this pass's first phase taken by the intrinsic key pass
+    # (``cotmatrix_entries_intrinsic_and_operator_keys``, below the undirected threshold), one
+    # launch fewer and byte-identical, device time 0.92x on ``bunny``; but ``robust_laplacian``
+    # new/old CUDA 0.97-0.99x on ``sphere_small``, 1.00-1.02x on ``bunny_decimated`` and
+    # 1.04-1.10x on ``bunny`` (all six minima slower), the call rising where the device fell.
     f = wp.int32(wp.tid())
     bound = wp.vec3d()
     weight = wp.vec3d()
