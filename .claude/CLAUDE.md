@@ -1206,6 +1206,18 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   that splits a pinched loop at the pinch. What remains of the cap's time is ear rounds at their
   launch floor (bunny 1.9 ms, dragon 3.7, lucy 16.8 against 0.1-10 ms uncapped); carrying ear
   grades across rounds was declined (`kernels/polyline.ring_compute_ears`).
+- **`intrinsic_rounding_rows` is a third of `robust_laplacian`** (2026-11-09): the `float64`
+  rounding check took 0.35 of 1.09 ms on `dragon` and 10.2 of 35 ms on `lucy`
+  (`use_intrinsic_delaunay=False`; 0.34 of 2.0 ms and 9.7 of 70 ms with the flips), evaluating
+  four `float64` cotangent triples a face at 1/64 rate. Candidate: a `float32` analytic
+  sensitivity for faces whose `float32` conditioning bound keeps them far under the limit, with
+  the `float64` finite difference kept for the rest (est. 0.75x the call). It changes the
+  bound's low bits, so a row near the limit could flip its warning: needs the user's choice.
+- **`mesh_place_columns` stops scaling past L2** (2026-11-09): 5.2 ms of the undirected pattern
+  build's 8.7 ms of timed kernels on `lucy` (wall 21 ms with the sorts), against 0.05 ms on
+  `dragon`, 100x for 32x the faces. Suspect the lower half's `keys[second_order[t]]` gather (one
+  scattered 8-byte read an edge, ~42 M on `lucy`); `lo` cannot ride the 32-bit second sort, whose
+  payload is the position. Unpriced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
