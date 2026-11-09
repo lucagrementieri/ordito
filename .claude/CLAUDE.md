@@ -1209,6 +1209,19 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   grades across rounds behind a dirty mark (shared by every ear-clipping path; at most ~0.88x on
   lucy, nothing at bunny's floor), or fewer cap readbacks. Declined: dropping the ~120 one- and
   two-point cycles dragon's sections hand the fill (byte-identical, 0.997-1.014x).
+- **The laplacian sweep's clocks and leads (2026-11-09):** `robust_laplacian` writes its intrinsic
+  half-cotangents in the key pass and takes its rounding ratio in the row pass, and
+  `mollify_intrinsic` takes its margin in the length pass (`sphere_small` 16 -> 13 launches;
+  `mollify_intrinsic` and `intrinsic_delaunay` one fewer; byte-identical). Priced on counts only:
+  other jobs held the GPU at 86-99 % throughout, so the CUDA wall ratios and the device-side half
+  of the sweep (the pattern sort from `dragon` up, peak memory on `lucy`) are unmeasured; CPU
+  under load 18-27 read new/old minima 0.70-0.92x, medians 0.90-1.05x. Untried: the rounding
+  rows (`intrinsic_rounding_rows`) in the intrinsic key pass (one launch; a `float64`-bound pass
+  and its two-phase on mode in the key kernel); `heat`'s `use_robust` operators and `energies`'
+  LSCM form half-cotangents, then the pattern (one launch each through
+  `laplacian._cotmatrix_entries_and_pattern`, which needs a public route across the module
+  boundary); `reconstruction`'s octree density could read through `read_group_sum`
+  (`group_sums(fused=True)`; setting on only: one launch and its buffer).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
