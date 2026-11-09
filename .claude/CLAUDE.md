@@ -1165,6 +1165,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
   `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
   ~0.4 ms a hub (32 lanes over 41 k dependent loads).
+- **Captured round loops outside `homology` (2026-11-09 homology sweep):** a replayed body of
+  several rounds closed by `kernels/array.loop_advance_by` took the BFS 0.69-0.75x (a
+  conditional-graph iteration costs about a launch), and issuing a loop of a handful of rounds a
+  few a read instead of recording it took the dual forest 0.90-0.97x. Unpriced candidates for the
+  first: `geodesic_walk._flip_shortest_edge_tree`'s relaxation passes,
+  `graph.shortest_path_envelope`, `points._flip_to_convex`, `reconstruction`'s round loops (an
+  idle round must be cheap: a pass sweeping every node is not); for the second, any
+  `run_device_loop` site whose rounds are few on every benchmark mesh.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

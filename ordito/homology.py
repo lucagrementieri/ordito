@@ -43,7 +43,8 @@ _FOREST_MERGED = slice(3, 4)
 # Whole calls (2026-11-09, CUDA, byte-identical) at 2 / 3 / 4 / 8 rounds a read against the captured
 # loop: a 256-face torus 0.95 / 0.91 / 0.93 / 1.05x (medians), ``sphere_med`` 0.97 / 0.95 / 0.95 /
 # 0.98x, ``handles_64`` 1.01 / 1.01 / 0.99 / 0.96x, a scrambled 2 M-face torus 0.99 / 1.00 / 0.99 /
-# 1.01x.
+# 1.01x. Declined the same day: recording the level loop, the guards and the forest's recorded loop
+# as one graph, which delays the device by the whole recording (1.01-1.04x).
 _FOREST_ROUNDS_PER_READ = 4
 
 

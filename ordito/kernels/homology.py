@@ -187,6 +187,16 @@ def bfs_push_level(
     # replayed body, and raises ``LOOP_PROGRESS``, which the closing ``array.loop_advance_by`` turns
     # into the next body's condition. A plain store, not an atomic -- one address, one value. The
     # claim rule is ``claim_bfs_vertex``, shared with ``serial_spanning_tree``.
+    #
+    # Declined (2026-11-09, whole calls, CUDA, all byte-identical): the depths as a block-local
+    # relaxation to their fixpoint over Hilbert patches of the vertices, then one pass taking each
+    # lowest-index parent (``geodesic_walk``'s shortest-edge tree): ``sphere_med`` 0.78x,
+    # ``handles_64`` 1.0x (its patches mix the slab's two faces, far apart in the graph), a
+    # scrambled 2 M-face torus 1.5-2.4x (every pass relaxes every vertex); with only the blocks
+    # beside a change running, 0.81x / 1.08x / 0.93x. A level is ~3 us above a do-nothing launch
+    # on the small meshes: loading a row's depths before its claims took 0.95x on ``sphere_med``
+    # and 0.99x elsewhere, for a second loop and a long-row fallback; loading the row bounds and
+    # first column above the frontier test cost the torus 1.32x.
     v = wp.int32(wp.tid())
     level = state[LOOP_ROUND] + step
     if out_distances[v] != level - 1:
