@@ -1153,7 +1153,9 @@ def test_mesh_collision_pairs_prebuilt_mesh_matches(
     Ordito against ordito: a prebuilt ``mesh_a`` / ``mesh_b`` gives the same answers as the arrays.
 
     The meshlib comparison above carries the oracle for the default path; this pins the prebuilt
-    path to it, for the pairs, the masks and the crossing segments alike. Both argument orders,
+    path to it, for the pairs, the masks and the crossing segments alike. The pairs and segments
+    are compared up to their order: on CUDA the internal tree has a face a leaf, the prebuilt one
+    Warp's default, so their walks list the rows differently. Both argument orders,
     because only the side with fewer faces (the box) supplies the BVH, so ``mesh_a`` is read in one
     order and ``mesh_b`` in the other. The prebuilt meshes come from
     [`ordito.Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh], the documented source.
@@ -1169,16 +1171,22 @@ def test_mesh_collision_pairs_prebuilt_mesh_matches(
     prebuilt_np = od.intersection.mesh_collision_pairs(
         *arrays, mesh_a=mesh_a, mesh_b=mesh_b
     ).numpy()
-    assert np.array_equal(prebuilt_np, default_np)
+    assert_unordered_rows_equal(prebuilt_np, default_np)
     for default_wp, prebuilt_wp in zip(
         od.intersection.collision_masks(*arrays),
         od.intersection.collision_masks(*arrays, mesh_a=mesh_a, mesh_b=mesh_b),
         strict=True,
     ):
         assert np.array_equal(prebuilt_wp.numpy(), default_wp.numpy())
+    # Bitwise-equal segments in another order: each segment's six coordinates sorted as a row.
+    segments_prebuilt_np = od.intersection.mesh_with_mesh(
+        *arrays, mesh_a=mesh_a, mesh_b=mesh_b
+    ).numpy()
+    segments_default_np = od.intersection.mesh_with_mesh(*arrays).numpy()
+    assert len(segments_default_np) > 0
     assert np.array_equal(
-        od.intersection.mesh_with_mesh(*arrays, mesh_a=mesh_a, mesh_b=mesh_b).numpy(),
-        od.intersection.mesh_with_mesh(*arrays).numpy(),
+        lexsort_rows(segments_prebuilt_np.reshape(-1, 6)),
+        lexsort_rows(segments_default_np.reshape(-1, 6)),
     )
 
 

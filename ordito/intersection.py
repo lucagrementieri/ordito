@@ -910,6 +910,7 @@ def mesh_with_mesh(
         / ``faces_b``), to spare the BVH build, as
         [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs] takes them: only the
         mesh with fewer faces (``a`` on a tie) is read, and neither is checked against the arrays.
+        The same segments either way, though not necessarily in the same order.
         [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is what to pass.
 
     Returns
@@ -1002,10 +1003,11 @@ def mesh_collision_pairs(
         A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
         / ``faces_b``), to spare the BVH build this otherwise pays on every call. Only the mesh with
         fewer faces (``a`` on a tie) supplies the BVH, so only that one is read; the other may be
-        passed and is ignored. Purely an optimization: the answer is identical either way, and it
-        is not checked against the arrays -- a mesh over *different* geometry silently answers for
-        that geometry. [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is a cached property
-        and is what to pass.
+        passed and is ignored. Purely an optimization: the same pairs either way, though not
+        necessarily in the same order (the rows follow the tree's walk), and the mesh is not
+        checked against the arrays -- a mesh over *different* geometry silently answers for that
+        geometry. [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is a cached property and is
+        what to pass.
 
     Returns
     -------
@@ -1393,13 +1395,18 @@ def _candidate_face_pairs(
 
     if target_mesh is None:
         require_nonempty_mesh(target_faces, caller)
-        # DECLINED (2026-11-09): ``bvh_leaf_size=1`` for this tree. The build costs the same and
-        # the box walk 0.74-0.82x (bunny, dragon), the deep-overlap calls 0.95-0.97x and grazing
-        # at par; but the walk order, and with it the pairs' order, then differs from a caller's
-        # ``Trimesh.warp_mesh`` (Warp's default leaf), which must give the identical array
-        # (``test_mesh_collision_pairs_prebuilt_mesh_matches``). A bare ``wp.Bvh`` over the face
-        # boxes saves 15-20 us of the ~200 us build and would need a second walk form.
-        target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
+        # A face a leaf on CUDA: the box walks are this tree's only queries, and a leaf of one
+        # face is tested by its own box. The build costs the same and the walk 0.74-0.82x (bunny,
+        # dragon); deep-overlap calls 0.95-0.97x, grazing ones at par. The rows then follow
+        # another walk than a caller's ``Trimesh.warp_mesh`` (Warp's default leaf): the same
+        # pairs, reordered. The CPU keeps Warp's leaf, where a face a leaf cost the calls
+        # 1.16-1.22x (bunny_decimated, bunny). A bare ``wp.Bvh`` over the face boxes would save
+        # 15-20 us of the ~200 us build but needs a second walk form.
+        target_mesh = wp.Mesh(
+            points=target_vertices,
+            indices=target_faces,
+            bvh_leaf_size=1 if wp.get_device(target_vertices.device).is_cuda else None,
+        )
 
     targets, counts, stride, tail = _face_box_candidates(
         query_vertices, query_faces, target_mesh, max_triangle_collisions, grow
