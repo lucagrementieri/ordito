@@ -49,6 +49,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     hilbert_point_order,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -1225,7 +1226,7 @@ def _flip_shorten_on_host(
             still = []
             for g, (_, outputs) in zip(pending, runs, strict=True):
                 # Host reads, one a range: its entry count, and whether a pool ran out.
-                status = outputs[-1].numpy()
+                status = read_array(outputs[-1])
                 n_entries, heap_overflow, segment_overflow, n_unconverged = (
                     int(v) for v in status[: kernel_flip_geodesics.STATUS_SIZE]
                 )
@@ -1244,7 +1245,9 @@ def _flip_shorten_on_host(
                     # One range is the whole answer, already in place.
                     single = (outputs[0], *(_launch.view(a, 0, n_entries) for a in outputs[1:-1]))
                     break
-                offsets, path, kind, tail, tip, vector = (array.numpy() for array in outputs[:-1])
+                offsets, path, kind, tail, tip, vector = (
+                    read_array(array) for array in outputs[:-1]
+                )
                 results[g] = (
                     offsets,
                     path[:n_entries] + starts[g],

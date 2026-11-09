@@ -528,7 +528,7 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     return scratch_np.tolist()
 
 
-def read_array(arr: wp.array[Any]) -> np.ndarray:
+def read_array(arr: odt.ArrayNd | wp.indexedarray[Any, Any]) -> np.ndarray:
     """
     ``arr.numpy()``, read back through a fresh pageable host buffer.
 
@@ -542,7 +542,7 @@ def read_array(arr: wp.array[Any]) -> np.ndarray:
     Parameters
     ----------
     arr
-        Warp array to read back.
+        Warp array, of any rank, or indexed array to read back.
 
     Returns
     -------
@@ -550,6 +550,8 @@ def read_array(arr: wp.array[Any]) -> np.ndarray:
         What ``arr.numpy()`` returns: a fresh host copy for a CUDA array, of ``arr``'s shape (a
         vector dtype adds its trailing axis).
     """
+    if type(arr) is not wp.array:
+        return arr.numpy()
     device = arr.device
     if device is None or not device.is_cuda or arr.ndim != 1 or not arr.is_contiguous:
         return arr.numpy()

@@ -137,7 +137,7 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -3071,11 +3071,11 @@ def _read_pair(
         and abs(second_ptr - first_ptr) == n * itemsize
     ):
         low = min(first_ptr, second_ptr)
-        both = wp.array(ptr=low, shape=(2 * n,), dtype=wp.float64, device=first.device).numpy()
+        both = read_array(wp.array(ptr=low, shape=(2 * n,), dtype=wp.float64, device=first.device))
         if first_ptr == low:
             return both[:n], both[n:]
         return both[n:], both[:n]
-    return first.numpy(), second.numpy()
+    return read_array(first), read_array(second)
 
 
 class _AdaptiveCg:
@@ -4152,11 +4152,11 @@ class _BatchedCg:
         it has landed. The returned view aliases that buffer and is valid until the next read.
         """
         if not self._device.is_cuda:
-            return self._head.numpy()
+            return read_array(self._head)
         if self._head_host is None:
             self._head_host = _launch.empty(self._head.size, dtype=wp.float64, device="cpu")
         _launch.copy(self._head_host, self._head)
-        return self._head_host.numpy()
+        return read_array(self._head_host)
 
 
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
@@ -6453,7 +6453,7 @@ def _multigrid_galerkin(
         )
         # The coarsest matrix, read whole for the host's dense inverse: one copy in place of the
         # keyed CSR's three prefix reads.
-        return out.numpy().reshape(n_coarse, n_coarse)
+        return read_array(out).reshape(n_coarse, n_coarse)
     galerkin = _row_key_assembly(
         matrix.device,
         n,
@@ -6576,11 +6576,13 @@ def _csr_to_dense(matrix: odt.BsrMatrix[wp.float64]) -> npt.NDArray[np.float64]:
     # then only that prefix of the columns and values. Their arrays are the key assembly's
     # capacity, many times the stored count, and reading them whole cost more than the rest of the
     # densification (0.8 ms on ``icosphere(6)``'s coarsest level).
-    offsets = cast("npt.NDArray[np.int32]", matrix.offsets.numpy())[: n + 1]
+    offsets = cast("npt.NDArray[np.int32]", read_array(matrix.offsets))[: n + 1]
     nnz = int(offsets[n])
-    columns = cast("npt.NDArray[np.int32]", matrix.columns[:nnz].numpy()) if nnz else offsets[:0]
+    columns = (
+        cast("npt.NDArray[np.int32]", read_array(matrix.columns[:nnz])) if nnz else offsets[:0]
+    )
     values = (
-        matrix.values[:nnz].numpy().astype(np.float64).reshape(nnz)
+        read_array(matrix.values[:nnz]).astype(np.float64).reshape(nnz)
         if nnz
         else np.zeros(0, dtype=np.float64)
     )

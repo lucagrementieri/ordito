@@ -70,6 +70,7 @@ from ordito import _launch
 from ordito._common import (
     checked_index_bound,
     index_extrema,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -883,9 +884,9 @@ def _raise_duplicate_group(
     """
     n_faces = faces.size // 3
     # Readbacks on the error path only: the group's rank and its members.
-    keys_np = keys.numpy()[:n_faces]
-    order_np = order.numpy()[:n_faces]
-    rows_np = faces.numpy().reshape(-1, 3)
+    keys_np = read_array(keys)[:n_faces]
+    order_np = read_array(order)[:n_faces]
+    rows_np = read_array(faces).reshape(-1, 3)
     group = int(np.count_nonzero(keys_np[1 : start + 1] != keys_np[:start]))
     stop = start + int(np.count_nonzero(keys_np[start:] == keys_np[start]))
     representative = rows_np[order_np[start]].tolist()
@@ -2735,7 +2736,7 @@ def flatten_degree3_vertices(
         # per vertex, so below about half a million elements the copy is cheaper than the launch a
         # device reduction costs. This call is over the *vertex* count, so
         # it stays on the readback at every registry mesh.
-        if not bool(candidate.numpy().any()):
+        if not bool(read_array(candidate).any()):
             break
     return positions
 
@@ -3703,7 +3704,7 @@ def remove_tunnels(
     # component after the first is one loop too many -- and they are read before cutting, so the
     # mesh is cut once, along the family that survives.
     labels, sides = _cut_face_labels(faces, selected, basis.twins)
-    labels_np = labels.numpy()
+    labels_np = read_array(labels)
     if np.unique(labels_np).size > 1:
         selected = _independent_loops(selected, labels_np, sides())
     cut_vertices, cut_faces = _cut_along_loops(vertices, faces, selected, basis.twins)
@@ -3884,7 +3885,7 @@ def _root_loop_search(
         device=device,
     )
     # Which roots found a loop, and how long it is, sizes the packed buffer; a few bytes a root.
-    counts_np = counts.numpy()
+    counts_np = read_array(counts)
     missed_np = roots_np[counts_np < 0]
     sizes_np = np.maximum(counts_np, 0)
     total = int(sizes_np.sum())
@@ -3900,7 +3901,7 @@ def _root_loop_search(
         device=device,
     )
     # The cycles go to the host to be told apart; a few dozen indices a root.
-    packed_np = packed.numpy()
+    packed_np = read_array(packed)
     return [
         packed_np[start:stop]
         for start, stop in zip(bounds_np[:-1].tolist(), bounds_np[1:].tolist(), strict=True)
@@ -3932,13 +3933,13 @@ def _measure_loops(
         block_dim=TILE_1D,
         device=device,
     )
-    lengths_list = [float(length) for length in lengths.numpy()]
-    bounds_np = offsets.numpy().astype(np.int64)
+    lengths_list = [float(length) for length in read_array(lengths)]
+    bounds_np = read_array(offsets).astype(np.int64)
     sizes_np = np.diff(bounds_np)
     for index in np.flatnonzero(sizes_np > int(kernel_reduce.ITEMS_PER_BLOCK_1D)):
         start, stop = int(bounds_np[index]), int(bounds_np[index + 1])
         lengths_list[index] = _cycle_length(vertices, odt.as_dense(packed[start:stop]))
-    packed_np = packed.numpy()
+    packed_np = read_array(packed)
     return lengths_list, [
         packed_np[start:stop]
         for start, stop in zip(bounds_np[:-1].tolist(), bounds_np[1:].tolist(), strict=True)
@@ -4009,9 +4010,9 @@ def _cut_face_labels(
     def sides() -> dict[tuple[int, int], tuple[int, int]]:
         # A loop edge is one pair of a few hundred; the readbacks are of the mesh-sized buffers
         # the table is picked out of.
-        rows = np.flatnonzero(barrier.numpy())
-        faces_np = faces.numpy()
-        twins_np = twins.numpy()
+        rows = np.flatnonzero(read_array(barrier))
+        faces_np = read_array(faces)
+        twins_np = read_array(twins)
         tips = rows - rows % 3 + (rows + 1) % 3
         return {
             (int(min(a, b)), int(max(a, b))): (int(h // 3), int(t // 3))

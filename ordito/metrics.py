@@ -41,7 +41,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import prefers_tiled_reduction, read_values, require_same_device, slice_count
+from ordito._common import (
+    prefers_tiled_reduction,
+    read_array,
+    read_values,
+    require_same_device,
+    slice_count,
+)
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -1201,7 +1207,7 @@ def _max_of_both(forward: wp.array[wp.float32], backward: wp.array[wp.float32]) 
         block_dim=TILE_1D,
         device=device,
     )
-    return float(out.numpy()[0])  # the reduced value is the function's answer
+    return float(read_array(out)[0])  # the reduced value is the function's answer
 
 
 def _totals_of_both(
@@ -1366,7 +1372,7 @@ def _backward_nearest(
     )
     # The one readback the choice costs: the box the grid needs, the forward maximum and the hit
     # count, together.
-    values = scale.numpy()
+    values = read_array(scale)
     # ``0.0 - x`` rather than ``-x``: a zero maximum is stored as ``-0.0``, and a distance reads
     # ``0.0``.
     forward_max = 0.0 - float(values[6])

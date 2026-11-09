@@ -9,7 +9,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.grouping import _unique_sorted_runs  # pyright: ignore[reportPrivateUsage]
 from ordito.halfedge import halfedge_twins, require_matching_twins
@@ -1311,7 +1311,7 @@ def _delete_region_loops(
     if host_bounds:
         # The list form's one readback: each loop's verdict and extent, from which its views are
         # cut straight out of the traced loops -- no scan and no compaction.
-        counts_np = kept_counts.numpy()
+        counts_np = read_array(kept_counts)
         views = [
             odt.as_dense(flat_loops[int(start) : int(start) + int(size)])
             for kept, size, start in counts_np

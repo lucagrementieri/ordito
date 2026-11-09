@@ -47,6 +47,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     offsets_buffer,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -997,7 +998,7 @@ def _ball_with_offsets(
     bounds = None
     if host_offsets:
         # Readback: the caller's per-query split needs every bound, and the total is the last.
-        bounds = offsets.numpy().tolist()
+        bounds = read_array(offsets).tolist()
         total_neighbors = int(bounds[-1])
     else:
         # Readback: the total sizes the neighbour buffers.

@@ -16,6 +16,7 @@ from ordito import _launch
 from ordito._common import (
     checked_index_bound,
     index_extrema,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -493,7 +494,7 @@ def split(
 
     # The one readback, unless the caller already holds the bounds on the host. ``.numpy()`` of a
     # CPU array is a view, so the bounds are built in a fresh buffer rather than in place.
-    bounds_np = np.array(offsets.numpy() if on_device else offsets, dtype=np.int64)
+    bounds_np = np.array(read_array(offsets) if on_device else offsets, dtype=np.int64)
     n_rows = n // row_size
     if bounds_np[0] != 0 or bounds_np[-1] != n_rows or bool((bounds_np[1:] < bounds_np[:-1]).any()):
         raise ValueError(

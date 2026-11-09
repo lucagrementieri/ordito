@@ -92,6 +92,9 @@ follows is the one-line claim each check makes, so a failure message reads in co
 31. **Every public function and method is timed by some benchmark row.** A module function is
     covered by an ``od.<module>.<name>`` chain under ``benchmarks/``, a method by its name; what has
     no runtime cost to time is exempted by name, with its reason, in ``_BENCHMARK_EXEMPT``.
+32. **A readback under ``ordito/`` is ``_common.read_array(arr)``, not ``arr.numpy()``**: it reads
+    a CUDA array back in ~7 us less and is ``.numpy()`` everywhere else. Docstring examples and a
+    write through the host view (``arr.numpy()[...] = ...``) are not readbacks.
 
 Why a static scan rather than importing ``ordito``
 ---------------------------------------------------
@@ -2971,4 +2974,49 @@ def benchmark_coverage_problems() -> list[str]:
         f"_BENCHMARK_EXEMPT[{name!r}]: names no public callable -- delete the entry"
         for name in sorted(set(_BENCHMARK_EXEMPT) - seen)
     )
+    return problems
+
+
+# --- check 32 -----------------------------------------------------------------------------------
+
+# The one module whose ``.numpy()`` calls are the readback helpers themselves.
+_NUMPY_READBACK_HOME = "ordito/_common.py"
+
+
+def numpy_readback_problems() -> list[str]:
+    """
+    Check 32: an ``arr.numpy()`` readback under ``ordito/`` outside ``_common.py``.
+
+    [`_common.read_array`][ordito._common.read_array] returns what ``.numpy()`` does and reads a
+    contiguous rank-1 CUDA array through ``_launch`` in ~7 us less, so every readback takes it.
+    The scan reads code, not docstrings, so the examples' ``.numpy()`` stay. A call whose result
+    is subscripted and assigned to (``arr.numpy()[:] = values``) writes through the host view of a
+    host array and is not a readback.
+    """
+    problems: list[str] = []
+    for path in sorted(_PACKAGE_DIR.rglob("*.py")):
+        site = path.relative_to(_REPO_ROOT)
+        if str(site) == _NUMPY_READBACK_HOME:
+            continue
+        try:
+            tree = _parse_source(path)
+        except SyntaxError:
+            continue  # check 12 and the suite itself report an unparseable module
+        written = {
+            id(node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "numpy"
+                and not node.args
+                and not node.keywords
+                and id(node) not in written
+            ):
+                problems.append(
+                    f"{site}:{node.lineno}: reads back through .numpy() -- use _common.read_array"
+                )
     return problems

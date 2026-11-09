@@ -60,6 +60,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     ball_grid_cell_width,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -495,7 +496,7 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     # in one buffer and cross to the host in one readback: they are two rows of three floats, so
     # what a second readback would buy is nothing and what it costs is another synchronization.
     out_plane = _scatter_fit(points, point_sum, float(n), kernel_points.SCATTER_FIT_PLANE, 2)
-    normal, centroid_out = out_plane.numpy()
+    normal, centroid_out = read_array(out_plane)
     return (wp.vec3(*normal), wp.vec3(*centroid_out))
 
 
@@ -651,9 +652,9 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     # The scatter matrix, whose last block takes its SVD. All three results in one buffer, read
     # back once: fifteen floats is less than a single readback's fixed cost, so three of them
     # bought three synchronizations and nothing else.
-    frame = _scatter_fit(
-        points, point_sum, float(n), kernel_points.SCATTER_PRINCIPAL_AXES, 5
-    ).numpy()
+    frame = read_array(
+        _scatter_fit(points, point_sum, float(n), kernel_points.SCATTER_PRINCIPAL_AXES, 5)
+    )
     return (_launch.matrix(wp.mat33, frame[:3]), wp.vec3(*frame[3]), wp.vec3(*frame[4]))
 
 

@@ -45,7 +45,13 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, record_device_loop, require_same_device
+from ordito._common import (
+    read_array,
+    read_scalar,
+    read_values,
+    record_device_loop,
+    require_same_device,
+)
 from ordito.graph import connected_component_labels
 from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import grouping as kernel_grouping
@@ -868,7 +874,7 @@ class _Plan:
         # Read back, the analysis' last sync: the whole schedule at its bound, a few integers a
         # supernode -- the header (distinct rows, groups, panels and the terms' totals), which
         # sizes the rest (a row a level; the panels' work; the groups).
-        table = schedule.numpy()
+        table = read_array(schedule)
         head = [int(value) for value in table[:header]]
         n_rows, n_groups, n_panels = head[:3]
         self.leading_negative = head[int(kernel_cholesky.SCHEDULE_LEADING_NEGATIVE)] != 0
@@ -2257,9 +2263,9 @@ def _host_landmark_coordinates(
     components -- linear in the pattern however many components there are.
     """
     n = int(matrix.nrow)
-    offsets = matrix.offsets.numpy()[: n + 1].astype(np.int64)
-    columns = matrix.columns.numpy()[: int(offsets[-1])].astype(np.int64)
-    labels_np = labels.numpy().astype(np.int64)
+    offsets = read_array(matrix.offsets)[: n + 1].astype(np.int64)
+    columns = read_array(matrix.columns)[: int(offsets[-1])].astype(np.int64)
+    labels_np = read_array(labels).astype(np.int64)
     coords = np.zeros((n, 3), np.float32)
     sizes = np.bincount(labels_np, minlength=n)
     first = np.full(n, n, np.int64)

@@ -4316,7 +4316,7 @@ class _JoinRim:
         # Only rim vertices are ever looked up (every one is some row's tail), so the compact names
         # are ranked over the rim alone; ranking keeps their order, and only equality and the
         # merge's minimum read them.
-        table_np = table.numpy()
+        table_np = read_array(table)
         names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
         n_labels = int(names.size)
         rounds = n_labels - 1 if max_joins is None else min(n_labels - 1, max_joins)
@@ -4406,12 +4406,12 @@ class _JoinRim:
     def rows(self) -> npt.NDArray[np.int32]:
         """Return the ``(n_boundary, 2)`` oriented boundary rows, in the table's order."""
         parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
-        return self._rows.numpy()[int(parity), : int(count), :2]
+        return read_array(self._rows)[int(parity), : int(count), :2]
 
     def row_components(self) -> npt.NDArray[np.int32]:
         """Return each row's current component, as a name only equality may read."""
         parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
-        return self._rows.numpy()[int(parity), : int(count), 2]
+        return read_array(self._rows)[int(parity), : int(count), 2]
 
 
 def _require_distinct_edges(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> None:
@@ -4448,7 +4448,7 @@ def _bridge_census(
             device=device,
         )
     # The counts decide the validation; the position rows are ``float32`` bits.
-    census_np = census.numpy()
+    census_np = read_array(census)
     positions_np = census_np[n_pairs:].view(np.float32).astype(np.float64)
     return census_np[:n_pairs], positions_np
 

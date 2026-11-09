@@ -34,7 +34,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_indices_below, require_same_device, scan_count
+from ordito._common import read_array, require_indices_below, require_same_device, scan_count
 from ordito.kernels import seams as kernel_seams
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -495,7 +495,7 @@ def uv_seam_edges(
     )
     _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
     # Sizes the three outputs: the one host readback.
-    totals = word_ranks.reshape((3, row_words))[:, row_words - 1].numpy()
+    totals = read_array(word_ranks.reshape((3, row_words))[:, row_words - 1])
     n_seams = int(totals[0])
     n_boundaries = int(totals[1]) - n_seams
     n_foldovers = int(totals[2]) - int(totals[1])

@@ -27,7 +27,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_values, require_same_device, scan_count
+from ordito._common import read_array, read_values, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates
@@ -225,7 +225,7 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     # an order of magnitude dearer than this. On CUDA one six-value ``read_values`` copy, which
     # builds no host array; on the CPU device that would only add a list round trip.
     if device.is_cpu:
-        corners_np = corners.numpy()
+        corners_np = read_array(corners)
     else:
         corners_np = np.array(read_values(corners, 0, 6), dtype=np.float32)
     return float(np.linalg.norm(-corners_np[3:] - corners_np[:3]))
@@ -1124,6 +1124,6 @@ def _best_chain(
     this picks the single seeded row and with refinement the chain that descended furthest. The
     column layout is ``kernels/bounds.write_chain_state``'s.
     """
-    state_np = chain_state.numpy()[half * n_chains : (half + 1) * n_chains]
+    state_np = read_array(chain_state)[half * n_chains : (half + 1) * n_chains]
     row = state_np[int(state_np[:, 0].argmin())]
     return (_launch.matrix(wp.mat33, row[7:16]), wp.vec3(*row[1:4]), wp.vec3(*row[4:7]))

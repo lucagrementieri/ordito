@@ -41,7 +41,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device
+from ordito._common import read_array, read_scalar, require_same_device
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import array as kernel_array
 from ordito.kernels import creation as kernel_creation
@@ -1567,7 +1567,7 @@ def revolve(
     """
     odt.ensure_ndim(linestring, 1, dtype=wp.vec2)
     # Host readback: the layout below is decided from the profile on the host.
-    return _revolve_profile(linestring.numpy(), linestring, angle, cap, sections, transform)
+    return _revolve_profile(read_array(linestring), linestring, angle, cap, sections, transform)
 
 
 def _revolve_profile(

@@ -25,7 +25,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_same_device, scan_count
+from ordito._common import read_array, require_same_device, scan_count
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
 from ordito.selection import _submeshes_from_face_groups  # pyright: ignore[reportPrivateUsage]
@@ -296,7 +296,7 @@ def split(
         return [(vertices_all, faces_all)]
     # The one readback: both offsets share a buffer, so a second read is not needed.
     # Host bounds as array slices: a list round trip of the offsets cost more than the read saved.
-    bounds = cast("Sequence[int]", offsets.numpy())
+    bounds = cast("Sequence[int]", read_array(offsets))
     component_vertices = od.array.split(vertices_all, bounds[n_components + 1 :], copy=copy)
     component_faces = od.array.split(faces_all, bounds[: n_components + 1], copy=copy, row_size=3)
     return list(zip(component_vertices, component_faces, strict=True))

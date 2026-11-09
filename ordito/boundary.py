@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
@@ -946,7 +946,7 @@ def _validate_packed_loops(
     total = flat_loops.size
     if int(offsets.ndim) != 1 or offsets.size == 0:
         raise ValueError(f"{name}: offsets must be a non-empty rank-1 total-terminated array")
-    offsets_np = offsets.numpy().astype(np.int64)
+    offsets_np = read_array(offsets).astype(np.int64)
     if (
         int(offsets_np[0]) != 0
         or int(offsets_np[-1]) != total

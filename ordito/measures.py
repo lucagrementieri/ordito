@@ -31,7 +31,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device
+from ordito._common import read_array, read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
@@ -183,7 +183,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     if blocks <= kernel_measures.CENTROID_HOST_FOLD_BLOCKS:
         # Read back: the few block partials themselves, folded on the host in ``float64`` -- a
         # fixed order still, without the device reduction's launches.
-        weighted = partials.numpy().astype(np.float64).sum(axis=0)
+        weighted = read_array(partials).astype(np.float64).sum(axis=0)
     else:
         weighted = od.reduce.sum(partials)
     total_area = float(weighted[3])

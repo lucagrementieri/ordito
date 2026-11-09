@@ -351,7 +351,10 @@ trusting and forwards `device=` from an input array (§2.1).
 
 ### 3.10 Readbacks
 
-- Every `.numpy()` / `int(<device value>)` readback carries a comment naming why it is unavoidable.
+- An array read back to the host is `ordito._common.read_array(arr)`, never `arr.numpy()` (check 32;
+  docstring examples keep `.numpy()`): the same array, ~7 us less on CUDA.
+- Every readback (`read_array`, `int(<device value>)`) carries a comment naming why it is
+  unavoidable.
   When the caller can supply the bound a readback infers, expose a keyword
   (`face_adjacency(n_vertices=...)`) and pass it from every in-repo caller that knows it (§14).
 - Several adjacent small values: `ordito._common.read_values(arr, start, count)`. A tail value:
@@ -406,7 +409,7 @@ Renaming a keyword argument also needs a grep of the old name alone (`**splat` `
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-Thirty-one checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
+Thirty-two checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
 
 1. Summary line naming a reference library (§6).
 2. `*_mask` producer not returning `wp.array[wp.bool]`.
@@ -439,6 +442,7 @@ Thirty-one checks fail the default `pytest` run. Read an allowlist entry's reaso
 29. Array docstring entry opening with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` (§6).
 30. `warp.utils.array_cast` under `ordito/` (§3.6).
 31. Public function or method that no `benchmarks/` row names (`od.<module>.<name>`; a method by name), outside `_BENCHMARK_EXEMPT` (§4.2).
+32. `.numpy()` readback under `ordito/` outside `_common.py` (§3.10).
 
 Two rules about the gate itself:
 
@@ -890,6 +894,7 @@ Measure `n` calls between two syncs and divide; a sync inside the loop drains th
 | readback | ~0.1 ms queued, 14 µs isolated |
 | replayed graph kernel | 1.2 µs |
 | small `.numpy()` readback / `_common.read_values` | ~27 µs (builds a host `wp.array`) / ~9 µs |
+| `.numpy()` / `_common.read_array`, 513 / 100 k `int32` | 21 / 14 µs; 55 / 44 µs (2026-11-09; `read_values` 21 µs at 513, 3.8 ms at 100 k) |
 | `wp.array` slice / `_launch.view` | 4.2 / 1.05 µs |
 | small-pattern native fill (`_launch.pattern`) / 2-element upload | 8.2 / 11.7 µs |
 
@@ -1137,10 +1142,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`_common.read_array` outside `holes` (2026-11-09):** a contiguous rank-1 CUDA readback through
-  `_launch.empty` + `copy_to_host` costs ~7 us less than `.numpy()` (14 vs 21 us at 513 `int32`;
-  `holes_many` `fill_min_weight` 0.95x from four sites). `ordito/` has ~770 `.numpy()` calls;
-  host-bound calls with several readbacks are where it shows. Unapplied outside `holes`.
 - **`halfedge_mates`' bucket pipeline under `face_connected_component_labels`:** degree count,
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
@@ -1160,13 +1161,24 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
   `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
   ~0.4 ms a hub (32 lanes over 41 k dependent loads).
-- **`triangulate_polygon` on a 65 536-vertex star takes 14 419 ear rounds** (979 ms), where
-  16 384 takes 52 (3.1 ms): after the first few dozen rounds it clips about one ear a round. Not
-  diagnosed; suspects are the thin-ear fallback (`EAR_CHECK_THIN`) on the near-collinear inner
-  ring and the independent-set rule. Found pricing the ear loop's batching (2026-11-09).
-- **`icp_mesh_pyvista` on `sphere_small` is 120 ms**, against 4.1 ms on `sphere_med` and 7.2 ms
-  on `sphere_large` (CUDA, 2026-11-09, both the recorded and the host-issued round loop): not a
-  loop-shape cost; unexamined.
+- **Ear clipping goes serial on rings whose corners are mostly thin** (diagnosed 2026-11-09): a
+  65 536-vertex star takes 14 419 rounds (979 ms; 16 384 vertices: 52 rounds), a 16 384-point
+  unit circle 1 215 (165 ms) and a 65 536-point one 6 062 (794 ms); noisy circles stay near 50.
+  Once the corners left are at the rounding level (`corner_is_thin`), `ear_eligible` lets only
+  good ears compete while any exists, and each clip makes just its neighbour good: a zipper, one
+  ear a round per front. The zipper is the sliver protection itself
+  (`test_triangulate_polygon_leaves_no_rounding_level_slivers` needs it), so letting thin ears
+  compete earlier (a scarcity threshold, or good-over-thin priority only within ring distance 2)
+  brings slivers back. Output-identical options, both larger: a single-block finish for the tail
+  (the existing one walks the whole ring per corner, O(n), and cannot take a 14 k-vertex tail; it
+  would need `ear_grade_grid`), or re-grading only the corners a clip can change (not local in
+  general: removing a tip can make a distant corner an ear). Needs the user's choice.
+- **`icp(method="pyvista")` per iteration** (2026-11-09): the 120 ms on `sphere_small` is the
+  input, which VTK also takes 500 iterations on (9 on `sphere_med`). The block runs at 128 lanes
+  now (0.62-0.72x); what is left is ~190 us an iteration on one SM against VTK's ~90 us on one
+  CPU thread, of which the `float64` `wp.svd3` is ~50 us and the exact re-search ~70 us. Open: a
+  `float32` SVD refined by one `float64` Newton step on the rotation (a method change, at
+  rounding level).
 - **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
   (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
   0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the

@@ -66,6 +66,7 @@ from tests.api_conventions import (
     library_in_summary_problems,
     map_declaration_problems,
     mask_return_problems,
+    numpy_readback_problems,
     private_import_problems,
     scan_package,
     shape_spelling_problems,
@@ -1027,6 +1028,17 @@ def test_no_warp_array_cast_in_the_package() -> None:
     problem.
     """
     _fail("warp.utils.array_cast call(s) in the package:", array_cast_problems())
+
+
+def test_readbacks_go_through_read_array() -> None:
+    """
+    No ``ordito/`` code reads an array back through ``.numpy()`` outside ``_common.py``.
+
+    Not a library comparison: this is a property of ordito's own source. Check 32. The probe that
+    shows it bites: restoring ``offsets.numpy()`` in ``holes._boundary_loops_packed`` reports one
+    problem.
+    """
+    _fail("readback(s) through .numpy():", numpy_readback_problems())
 
 
 def test_every_public_callable_has_a_benchmark() -> None:

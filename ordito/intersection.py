@@ -31,7 +31,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_nonempty_mesh, require_same_device, scan_count
+from ordito._common import (
+    read_array,
+    read_scalar,
+    require_nonempty_mesh,
+    require_same_device,
+    scan_count,
+)
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
@@ -580,7 +586,7 @@ def _link_curves(
         device=device,
     )
     # The one readback of the host link.
-    table = record.numpy()
+    table = read_array(record)
     points_np = table[2 * n :].view(np.float32).reshape(2 * n, 3)
     return _link_on_host(points_np, table[: 2 * n].reshape(n, 2))
 
@@ -666,16 +672,16 @@ def _link_on_device(
     _launch.array_scan(bounds_view, out_array=bounds_view, inclusive=True)
     # The one readback of the device link: the scanned weights size the output and bound every
     # curve, and the last slot says whether the pairing was clean.
-    table = weights.numpy()
+    table = read_array(weights)
     if table[m] != 0:
         # Undo the sort to recover each endpoint's key, and let the host link decide.
         edges_np = np.empty(m, dtype=np.int64)
         np.put(
             edges_np,
-            cast("npt.NDArray[np.int32]", odt.as_dense(endpoints[:m]).numpy()),
-            odt.as_dense(keys[:m]).numpy(),
+            cast("npt.NDArray[np.int32]", read_array(odt.as_dense(endpoints[:m]))),
+            read_array(odt.as_dense(keys[:m])),
         )
-        points_np = hit_segments.numpy().reshape(m, 3)
+        points_np = read_array(hit_segments).reshape(m, 3)
         return _link_on_host(points_np, edges_np.reshape(n, 2))
     scan = table[:m]
     names = np.flatnonzero(np.diff(scan, prepend=0))
@@ -714,16 +720,16 @@ def _emit_linked_curves(
         edges_np = np.empty(m, dtype=np.int64)
         np.put(
             edges_np,
-            cast("npt.NDArray[np.int32]", odt.as_dense(endpoints[:m]).numpy()),
-            odt.as_dense(keys[:m]).numpy(),
+            cast("npt.NDArray[np.int32]", read_array(odt.as_dense(endpoints[:m]))),
+            read_array(odt.as_dense(keys[:m])),
         )
-        return _link_on_host(hit_segments.numpy().reshape(m, 3), edges_np.reshape(n, 2))
+        return _link_on_host(read_array(hit_segments).reshape(m, 3), edges_np.reshape(n, 2))
     bounds_view = odt.as_dense(weights[:m])
     heads = od.array.flatnonzero(bounds_view)
     _launch.array_scan(bounds_view, out_array=bounds_view, inclusive=True)
     # The curves' bounds and heads: two reads of a few entries each.
-    ends = od.array.gather(bounds_view, heads).numpy()
-    heads_np = heads.numpy()
+    ends = read_array(od.array.gather(bounds_view, heads))
+    heads_np = read_array(heads)
     points = _launch.empty(int(ends[-1]), dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_intersections.emit_linked_curves,
@@ -2087,7 +2093,7 @@ def clip_mesh_with_field(
         device=device,
     )
     # Readback: the section edges are chained on the host.
-    rim_rows_np = rim_rows.numpy()
+    rim_rows_np = read_array(rim_rows)
     section_np = rim_rows_np[rim_rows_np[:, 2] != 0, :2]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
@@ -2142,7 +2148,7 @@ def _cap_section_loops(
     triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(gathered, offsets)
     _launch.copy(_byte_view(packed, offsets_bytes, wp.int32, n_loops + 1), face_offsets)
     # Readback: the planarity test and the loop sizes, over the section alone.
-    packed_np = packed.numpy()
+    packed_np = read_array(packed)
     offsets_np = packed_np[:offsets_bytes].view(np.int32)
     face_offsets_np = packed_np[offsets_bytes : 2 * offsets_bytes].view(np.int32)
     points_np = packed_np[2 * offsets_bytes :].view(np.float32).reshape(-1, 3).astype(np.float64)

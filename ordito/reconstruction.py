@@ -43,6 +43,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
     prefers_tiled_reduction,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -223,7 +224,7 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> wp.array[wp.int32
         device="cpu",
     )
 
-    written, wanted = (int(value) for value in counts.numpy())
+    written, wanted = (int(value) for value in read_array(counts))
     if wanted > written:
         raise ValueError(
             f"delaunay_triangulation's seed wanted {wanted} triangles for {n} points but a "
@@ -964,7 +965,7 @@ def _contested_rows_kept(
     )
     # Readback: the region's rows below the class boundary are the builder's first call; the
     # contested rows ascend, so it is one search of them on the host.
-    contested_np = contested.numpy()
+    contested_np = read_array(contested)
     n_rep3_local = int(np.searchsorted(contested_np, n_rep3))
     state = _run_mesh_builder(
         od.array.gather(points, used),
@@ -1118,7 +1119,7 @@ def _run_mesh_builder(
                     command.launch()
             else:
                 list(pool.map(lambda command: command.launch(), commands))
-            return int(counts.numpy()[: len(commands)].sum())
+            return int(read_array(counts)[: len(commands)].sum())
 
         run(starts)
         for _ in range(kernel_mesh_builder.COMPLICATING_ROUNDS):
@@ -1127,7 +1128,7 @@ def _run_mesh_builder(
             if run(renews) == 0:
                 break
     by_row = np.empty(n_rows, dtype=np.int32)
-    by_row[face_order] = state.numpy()
+    by_row[face_order] = read_array(state)
     return wp.array(by_row, dtype=wp.int32, device=host)
 
 
@@ -1202,7 +1203,7 @@ def _builder_groups(
     """
     n_rows = rows.shape[0]
     n_groups = _builder_group_count(n_rows)
-    rows_np = rows.numpy()  # Readback: the builder runs on the host and reads these rows.
+    rows_np = read_array(rows)  # Readback: the builder runs on the host and reads these rows.
     in_rows = np.zeros(n_vertices, dtype=bool)
     in_rows[rows_np.ravel()] = True
     vertices = np.flatnonzero(in_rows).astype(np.int32)
@@ -1219,9 +1220,9 @@ def _builder_groups(
         )
         # Readback: the grouping is host bookkeeping for the host builder. A label is the
         # smallest vertex of its component, so the sizes are a count by label.
-        labels = od.graph.connected_component_labels_from_edges(
-            edges, n_vertices, validate=False
-        ).numpy()
+        labels = read_array(
+            od.graph.connected_component_labels_from_edges(edges, n_vertices, validate=False)
+        )
         row_labels = labels[rows_np[:, 0]]
         sizes = np.bincount(row_labels, minlength=n_vertices)
         components = np.flatnonzero(sizes)
@@ -2878,7 +2879,9 @@ def _poisson_dense_solve(
     assert prev_solution is not None
     # One read of the counts, and one more only for a level that used its whole budget: a level
     # that stops at ``solver_iterations`` above its tolerance says so, as ``linalg.solve_spd`` does.
-    for iterations, (res, residual_tolerance) in zip(counts.numpy(), level_results, strict=True):
+    for iterations, (res, residual_tolerance) in zip(
+        read_array(counts), level_results, strict=True
+    ):
         _warn_if_unconverged(res, int(iterations), residual_tolerance, solver_iterations)
     return prev_solution, prev_res
 
@@ -2894,7 +2897,7 @@ def _warn_if_unconverged(
     """
     if iterations < solver_iterations:
         return
-    tolerance_sq, residual_sq = residual_tolerance.numpy()
+    tolerance_sq, residual_sq = read_array(residual_tolerance)
     residual, tolerance = math.sqrt(float(residual_sq)), math.sqrt(float(tolerance_sq))
     if residual > tolerance:
         warnings.warn(
@@ -5090,7 +5093,7 @@ class _BpaState:
             device=self.device,
         )
         # The over-increment from the losing threads of the overflowing wave never wrote a face.
-        counters = self.counters.numpy()
+        counters = read_array(self.counters)
         counters[kernel_bpa.CNT_FACE] = old_count
         counters[kernel_bpa.CNT_NEXT_FRONT] = 0
         counters[kernel_bpa.CNT_GROW] = 0
@@ -5214,7 +5217,7 @@ def _bpa_run(state: _BpaState, max_waves: int) -> int:
                 _bpa_wave(state, max_waves, begin=resumed and wave == 0)
             state.front_in, state.front_out = state.front_out, state.front_in
         resumed = False
-        counters = state.counters.numpy()
+        counters = read_array(state.counters)
         no_op_waves = _BPA_WAVES_PER_BATCH - (int(counters[kernel_bpa.CNT_WAVE]) - waves_run)
         waves_run = int(counters[kernel_bpa.CNT_WAVE])
         if no_op_waves % 2:
