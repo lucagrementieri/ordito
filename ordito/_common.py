@@ -528,6 +528,37 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     return scratch_np.tolist()
 
 
+def read_array(arr: wp.array[Any]) -> np.ndarray:
+    """
+    ``arr.numpy()``, read back through a fresh pageable host buffer.
+
+    A CUDA array's ``.numpy()`` allocates its host array and copies through ``wp.copy``'s checks;
+    ``_launch.empty`` and ``_launch.copy_to_host`` do the same work for a contiguous rank-1 array
+    in about 7 us less (14 against 21 us at 513 ``int32``, 44 against 55 at 100 k). Above a
+    handful of values it is also the cheaper of this and
+    [`read_values`][ordito._common.read_values], whose list costs a microsecond per few dozen
+    elements. Anything else, and a host array (where ``.numpy()`` is a view), takes ``.numpy()``.
+
+    Parameters
+    ----------
+    arr
+        Warp array to read back.
+
+    Returns
+    -------
+    np.ndarray
+        What ``arr.numpy()`` returns: a fresh host copy for a CUDA array, of ``arr``'s shape (a
+        vector dtype adds its trailing axis).
+    """
+    device = arr.device
+    if device is None or not device.is_cuda or arr.ndim != 1 or not arr.is_contiguous:
+        return arr.numpy()
+    host = _launch.empty(arr.size, dtype=arr.dtype, device="cpu")
+    if arr.size > 0:
+        _launch.copy_to_host(host, arr, 0, arr.size)
+    return host.numpy()
+
+
 # ``read_values``' scratch per ``(dtype, count)`` and its NumPy view, as ``_SCALAR_SCRATCH``.
 _VALUES_SCRATCH: dict[tuple[type, int], tuple[wp.array[Any], np.ndarray[Any, Any]]] = {}
 

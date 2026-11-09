@@ -3942,6 +3942,12 @@ def _solve_region_smooth(
             ratios,
             (factor_narrow, factor_t_narrow),
         )
+    # A hole fill's refined patch (about 1 000 free vertices) solves here in one block a column
+    # (``linalg._cg_one_block``), 22-52 rounds of ~100 us: the system's mat-vec and the
+    # polynomial's 24 steps, a barrier each, in one SM. Declined (2026-11-09, ``fill_smooth`` /
+    # ``refill_region`` on rim_short, sphere_small, bunny, holes_many): the multi-block solve
+    # 1.05-1.24x; polynomial degree 8 / 6 / 4 against 12, 0.98-1.04x / 0.96-1.03x / 0.96-1.13x;
+    # 1 024 lanes against 512, 0.97-1.05x.
     twl.solve_spd_columns(
         system,
         odt.as_array2d(atb, wp.float64),

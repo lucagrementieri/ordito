@@ -78,7 +78,7 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device
+from ordito._common import read_array, read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
 from ordito.kernels import boundary as kernel_boundary
@@ -213,7 +213,7 @@ class _PackedLoops:
         # come back through the cached scratch rather than a fresh host array.
         if self.n_loops <= _FEW_LOOPS:
             return np.asarray(read_values(perimeters, 0, self.n_loops), dtype=np.float32)
-        return perimeters.numpy()
+        return read_array(perimeters)
 
     def subset(self, selected_np: np.ndarray) -> _PackedLoops:
         """Pack the loops ``selected_np`` names, in that order, into loops of their own."""
@@ -1133,7 +1133,7 @@ def _traceback_fill_faces(
         return filled
     if all_or_nothing:
         # Readback: which loops the walk left whole decides the loops the caller cones, on the host.
-        counts_np = counts.numpy()
+        counts_np = read_array(counts)
         loops.blocked_np = np.flatnonzero((counts_np == 0) & (triangle_sizes_np > 0))
     n_triangles = n_padded - shortfall
     if n_triangles == 0:
@@ -3133,7 +3133,7 @@ def stitch_loops(
         inputs=[col_min, val_min, wp.int32(n), col_and_shift[n:]],
         device=device,
     )
-    col_and_shift_np = col_and_shift.numpy()
+    col_and_shift_np = read_array(col_and_shift)
     shift_a = int(col_and_shift_np[n])
     shift_b = int(col_and_shift_np[n + 1])
     # Each edge's B vertex after rolling both loops so the global-min pair is first
@@ -4645,7 +4645,7 @@ def _boundary_loops_packed(
     if offsets.size == 2:
         # One loop is the whole buffer: its size is host metadata, and nothing is read back.
         return flat_loops, np.array([flat_loops.size], dtype=np.int64), offsets
-    return flat_loops, np.diff(offsets.numpy().astype(np.int64)), offsets
+    return flat_loops, np.diff(read_array(offsets).astype(np.int64)), offsets
 
 
 def _packed_loop_argument(
