@@ -17,6 +17,7 @@ from ordito.kernels.reduce import (
     GroupSumPass,
     block_chunk_1d,
     block_min,
+    read_group_sum_vector,
     warp_lane_rank,
     warp_lanes_sum_float,
 )
@@ -314,15 +315,11 @@ def intrinsic_rounding_rows(
         add_rounding_terms(faces, f, bound, weight, sums)
 
 
-@wp.kernel
-def max_row_ratio(
-    rows: wp.array[wp.vec2d], limit: wp.float64, out_max: wp.array[wp.float64]
-) -> None:
-    # The largest ``error / scale`` over ``intrinsic_rounding_rows``' rows, where it exceeds
-    # ``limit`` (``0`` when none does): only a row carrying weight past the limit takes the
-    # one-address atomic, and a maximum is exact in any order.
-    v = wp.int32(wp.tid())
-    row = rows[v]
+@wp.func
+def commit_row_ratio(row: wp.vec2d, limit: wp.float64, out_max: wp.array[wp.float64]) -> None:
+    # One of ``intrinsic_rounding_rows``' rows into the largest ``error / scale`` past ``limit``
+    # (``out_max`` stays ``0`` when no row exceeds it): only a row carrying weight past the limit
+    # takes the one-address atomic, and a maximum is exact in any order.
     if row[1] > wp.float64(0.0):
         ratio = row[0] / row[1]
         if ratio > limit:
@@ -856,6 +853,30 @@ def cotmatrix_rows(
     cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
 
 
+@wp.kernel
+def cotmatrix_rows_and_rounding_ratio(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    rounding: wp.array[wp.vec2d],
+    rounding_sums: GroupSumPass,
+    limit: wp.float64,
+    out_values: wp.array[wp.Float],
+    out_max: wp.array[wp.float64],
+) -> None:
+    # ``cotmatrix_rows`` for ``laplacian.robust_laplacian``, which also commits row ``i``'s
+    # rounding ratio (``commit_row_ratio``): the two passes ran over the same vertices. The rows
+    # are read through the consumer-fused finish (``read_group_sum_vector``), so with the setting
+    # on no finish launch or result buffer is needed either.
+    i = wp.int32(wp.tid())
+    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+    commit_row_ratio(read_group_sum_vector(rounding, rounding_sums, i), limit, out_max)
+
+
 @wp.func
 def umbrella_entry(
     w: wp.Float,
@@ -1179,6 +1200,7 @@ ROW_NORMALIZE: OverloadTable
 LAPLACIAN_TRIPLETS: OverloadTable
 LAPLACIAN_KEYS: OverloadTable
 COTMATRIX_ROWS: OverloadTable
+COTMATRIX_ROWS_AND_ROUNDING_RATIO: OverloadTable
 LAPLACIAN_ROWS: OverloadTable
 GRAPH_LAPLACIAN_ROWS: OverloadTable
 FACE_WEIGHTED_LAPLACIAN_ROWS: OverloadTable
@@ -1192,7 +1214,8 @@ def _register_overloads() -> None:
     global COTMATRIX_ENTRIES_INTRINSIC_AND_OPERATOR_KEYS
     global ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS, LAPLACIAN_KEYS
-    global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
+    global COTMATRIX_ROWS, COTMATRIX_ROWS_AND_ROUNDING_RATIO, CONNECTION_LAPLACIAN_ROWS
+    global LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
     global FACE_WEIGHTED_LAPLACIAN_ROWS
     global MASS_DIAGONAL_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
@@ -1285,6 +1308,26 @@ def _register_overloads() -> None:
             ]
             for dtype in _MATRIX_DTYPES
             for entry_dtype in _MATRIX_DTYPES
+        },
+    )
+    COTMATRIX_ROWS_AND_ROUNDING_RATIO = OverloadTable(
+        cotmatrix_rows_and_rounding_ratio,
+        {
+            d: [
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[wp.int32],
+                wp.array2d[d],
+                wp.array[wp.vec2d],
+                GroupSumPass,
+                wp.float64,
+                wp.array[d],
+                wp.array[wp.float64],
+            ]
+            for d in _MATRIX_DTYPES
         },
     )
     # The connection Laplacian's values are always ``wp.mat22d``; only its cotangent entries

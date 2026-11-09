@@ -1081,6 +1081,19 @@ def read_group_sum(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32)
 
 
 @wp.func
+def read_group_sum_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32):
+    # ``read_group_sum`` for a vector group sum: group ``group``'s components are its slots
+    # ``group * len + c``, each rounded as the finish rounds it, so the vector is bit for bit the
+    # finished one.
+    if sums.words.shape[0] == 0:
+        return out_sums[group]
+    value = out_sums.dtype()
+    for c in range(len(value)):
+        value[c] = type(value[0])(group_sum_value(sums, group, group * len(value) + c))
+    return value
+
+
+@wp.func
 def take_group_sum(
     sums: GroupSumPass, group: wp.int32, slot: wp.int32, clear: wp.int32
 ) -> wp.float64:

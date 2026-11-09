@@ -893,18 +893,19 @@ def test_robust_laplacian_warning_repeats_run_to_run(
 
     ``sphere_irregular`` without the Delaunay flips warns, its bound at 3.9e-4 of a row's scale.
     Summed by ``float64`` atomics in arrival order, the largest ratio took two distinct values in
-    50 CUDA calls; the fixed-point rows give one, and so one warning text, on every call.
+    50 CUDA calls; the fixed-point rows (whose words the ratio is read from) give one, and so one
+    warning text, on every call.
     """
     _, mesh_wp = sphere_irregular
     lengths, _ = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
-    ratios: set[bytes] = set()
+    sums: set[bytes] = set()
     for _ in range(50):
-        worst = od.laplacian._intrinsic_rounding_ratio(  # pyright: ignore[reportPrivateUsage]
+        rows = od.laplacian._intrinsic_rounding_rows(  # pyright: ignore[reportPrivateUsage]
             mesh_wp.points.size, mesh_wp.indices, lengths
         )
-        assert worst is not None
-        ratios.add(worst.numpy().tobytes())
-    assert len(ratios) == 1
+        assert rows.words is not None
+        sums.add(rows.words.numpy().tobytes())
+    assert len(sums) == 1
     messages: set[str] = set()
     for _ in range(3):
         with warnings.catch_warnings(record=True) as caught:

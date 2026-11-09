@@ -1002,10 +1002,10 @@ def group_sums(
     ``shared_scale`` keeps pass 0 but finds one field for every group: no gathered field read in
     either pass, at the cost of setting every group's precision from the largest term overall.
 
-    ``fused`` is the consumer-fused finish, for a scalar sum: the kernel that reads the sums takes
-    ``out`` and ``launch_pass`` and reads each group through ``kernels/reduce.read_group_sum``, so
-    with the setting on no result is allocated (``out`` is ``None``) and `finish_group_sums` is
-    not called. Off, it changes nothing.
+    ``fused`` is the consumer-fused finish: the kernel that reads the sums takes ``out`` and
+    ``launch_pass`` and reads each group through ``kernels/reduce.read_group_sum`` (a vector sum
+    through ``read_group_sum_vector``), so with the setting on no result is allocated (``out`` is
+    ``None``) and `finish_group_sums` is not called. Off, it changes nothing.
     """
     if not is_deterministic():
         return GroupSums(

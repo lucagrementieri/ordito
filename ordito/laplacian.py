@@ -605,6 +605,9 @@ def robust_laplacian(
     )
     if use_intrinsic_delaunay and pattern is not None:
         raise ValueError("robust_laplacian: pattern needs use_intrinsic_delaunay=False")
+    n_vertices = vertices.size
+    device = vertices.device
+    _check_pattern(pattern, "cotmatrix", n_vertices)
     if use_intrinsic_delaunay:
         intrinsic_faces, lengths, _ = od.remesh.intrinsic_delaunay(
             vertices, faces, epsilon=epsilon, mates=mates
@@ -612,40 +615,58 @@ def robust_laplacian(
     else:
         intrinsic_faces = faces
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
-    if pattern is None and intrinsic_faces.size > 0:
-        # The half-cotangents are written by the pattern's key pass (``cotmatrix`` builds the
-        # same pattern when handed none).
+    if intrinsic_faces.size == 0:
+        return od.array.empty_square_bsr(n_vertices, dtype, device)
+    if pattern is None:
+        # The half-cotangents are written by the pattern's key pass.
         entries, pattern = _cotmatrix_entries_and_pattern(
             vertices, intrinsic_faces, dtype, edge_lengths=lengths
         )
     else:
         entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
-    worst = _intrinsic_rounding_ratio(vertices.size, intrinsic_faces, lengths)
-    # Assembled before the check is read, so the host queues it while the device runs the check.
-    laplacian = cotmatrix(
-        vertices, intrinsic_faces, cot_entries=entries, dtype=dtype, pattern=pattern
+    rows = _intrinsic_rounding_rows(n_vertices, intrinsic_faces, lengths)
+    # ``cotmatrix``'s assembly, whose row pass also takes each row's rounding ratio into ``worst``.
+    _, _, offsets, columns, run_start, keys, count, order = pattern
+    values = _launch.empty(columns.size, dtype=dtype, device=device)
+    worst = _launch.zeros(1, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_laplacian.COTMATRIX_ROWS_AND_ROUNDING_RATIO[dtype],
+        dim=n_vertices,
+        inputs=[
+            offsets,
+            columns,
+            run_start,
+            keys,
+            wp.int32(count),
+            order,
+            entries,
+            rows.out,
+            rows.launch_pass,
+            wp.float64(_INTRINSIC_ROUNDING_LIMIT),
+        ],
+        outputs=[values, worst],
+        device=device,
     )
+    laplacian = od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
     _warn_if_lengths_undetermined(worst)
     return laplacian
 
 
-def _intrinsic_rounding_ratio(
+def _intrinsic_rounding_rows(
     n_vertices: int, faces: wp.array[wp.int32], lengths: odt.Array2dFloat32
-) -> wp.array[wp.float64] | None:
+) -> _launch.GroupSums:
     """
-    ``(1,)`` the largest row movement the ``float32`` lengths' rounding allows, past the limit.
+    Each row's ``(error, scale)``: how far the ``float32`` lengths' rounding can move it.
 
-    ``0`` when no row exceeds ``_INTRINSIC_ROUNDING_LIMIT``; ``None`` for a mesh with no faces.
-    With [`is_deterministic`][ordito.config.is_deterministic] the rows are summed exactly
-    (``_launch.group_sums``), so the ratio, and the warning read from it, repeat bit for bit on
-    CUDA.
+    Summed into a consumer-fused ``_launch.group_sums`` buffer (``kernels/laplacian``'s
+    ``cotmatrix_rows_and_rounding_ratio`` reads it), so with
+    [`is_deterministic`][ordito.config.is_deterministic] the rows are summed exactly and the
+    ratio, and the warning read from it, repeat bit for bit on CUDA.
     """
     device = faces.device
     n_faces = faces.size // 3
-    if n_faces == 0:
-        return None
     # A row takes two terms per corner it holds, so ``6 * n_faces`` bound any one component.
-    rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device)
+    rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device, fused=True)
     # The first pass's terms, for the second (the setting on only).
     terms = None if rows.words is None else odt.empty_2d((n_faces, 2), wp.vec3d, device=device)
     _launch.launch_group_sums(
@@ -655,21 +676,11 @@ def _intrinsic_rounding_ratio(
         sums=rows,
         device=device,
     )
-    worst = _launch.zeros(1, dtype=wp.float64, device=device)
-    _launch.launch(
-        kernel_laplacian.max_row_ratio,
-        dim=n_vertices,
-        inputs=[_launch.finish_group_sums(rows), wp.float64(_INTRINSIC_ROUNDING_LIMIT)],
-        outputs=[worst],
-        device=device,
-    )
-    return worst
+    return rows
 
 
-def _warn_if_lengths_undetermined(worst: wp.array[wp.float64] | None) -> None:
+def _warn_if_lengths_undetermined(worst: wp.array[wp.float64]) -> None:
     """Warn when rounding the ``float32`` lengths alone can move an operator row noticeably."""
-    if worst is None:
-        return
     # Host readback: the one number the warning decides on.
     ratio = float(read_scalar(worst))
     if ratio > _INTRINSIC_ROUNDING_LIMIT:
