@@ -3694,7 +3694,7 @@
  },
  "benchmarks/test_laplacian.py::test_robust_laplacian[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 16,
+   "launch": 15,
    "alloc": 16,
    "memset": 5,
    "d2h": 3,

@@ -3248,7 +3248,7 @@
  "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 13,
+   "alloc": 12,
    "readback": 1,
    "scan": 1,
    "sort": 2
@@ -3361,7 +3361,7 @@
  },
  "benchmarks/test_laplacian.py::test_robust_laplacian[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 15,
+   "launch": 14,
    "alloc": 16,
    "h2h": 1,
    "readback": 3,

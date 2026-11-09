@@ -612,7 +612,14 @@ def robust_laplacian(
     else:
         intrinsic_faces = faces
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
-    entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
+    if pattern is None and intrinsic_faces.size > 0:
+        # The half-cotangents are written by the pattern's key pass (``cotmatrix`` builds the
+        # same pattern when handed none).
+        entries, pattern = _cotmatrix_entries_and_pattern(
+            vertices, intrinsic_faces, dtype, edge_lengths=lengths
+        )
+    else:
+        entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
     worst = _intrinsic_rounding_ratio(vertices.size, intrinsic_faces, lengths)
     # Assembled before the check is read, so the host queues it while the device runs the check.
     laplacian = cotmatrix(
@@ -1042,7 +1049,7 @@ def _mesh_operator_pattern(
     *,
     halfedges: bool = False,
     diagonal: Literal["self", "referenced", "all"] = "referenced",
-    cotangents: tuple[wp.array[wp.vec3], odt.Array2dFloat] | None = None,
+    cotangents: tuple[wp.array[wp.vec3] | odt.Array2dFloat32, odt.Array2dFloat] | None = None,
 ) -> tuple[
     wp.array[wp.int32],
     wp.array[wp.int32],
@@ -1071,20 +1078,30 @@ def _mesh_operator_pattern(
     ``3 * n_faces`` undirected keys plus a 32-bit sort of the unique edges does less sorting in less
     memory, for three more launches.
 
-    ``cotangents``, when given, is ``(vertices, out_cot)``: ``cotmatrix_entries`` of ``vertices``
-    is written into ``out_cot`` too, by the directed build's key pass itself.
+    ``cotangents``, when given, is ``(source, out_cot)``: ``cotmatrix_entries`` of the
+    ``vertices`` ``source``, or ``cotmatrix_entries_intrinsic`` of the ``(n_faces, 3)`` edge
+    lengths ``source``, is written into ``out_cot`` too, by the directed build's key pass itself.
     """
     device = faces.device
     n_faces = faces.size // 3
     directed = not halfedges and (n_faces < _UNDIRECTED_PATTERN_FROM_FACES or n_vertices == 0)
+    intrinsic = cotangents is not None and cotangents[0].ndim == 2
     if cotangents is not None and not directed:
-        vertices, out_cot = cotangents
-        _launch.launch(
-            kernel_laplacian.COTMATRIX_ENTRIES[out_cot.dtype],
-            dim=n_faces,
-            inputs=[vertices, faces, out_cot],
-            device=device,
-        )
+        source, out_cot = cotangents
+        if intrinsic:
+            _launch.launch(
+                kernel_laplacian.COTMATRIX_ENTRIES_INTRINSIC[out_cot.dtype],
+                dim=n_faces,
+                inputs=[source, out_cot],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_laplacian.COTMATRIX_ENTRIES[out_cot.dtype],
+                dim=n_faces,
+                inputs=[source, faces, out_cot],
+                device=device,
+            )
     if halfedges:
         count = 3 * n_faces
         keys, order = od.array.csr_key_buffers(count, device)
@@ -1110,11 +1127,16 @@ def _mesh_operator_pattern(
             _launch.fill_(keys[6 * n_faces : count], n_vertices * n_vertices)
         dim = max(n_faces, n_vertices) if mode == 2 else n_faces
         if cotangents is not None:
-            vertices, out_cot = cotangents
+            source, out_cot = cotangents
+            table = (
+                kernel_laplacian.COTMATRIX_ENTRIES_INTRINSIC_AND_OPERATOR_KEYS
+                if intrinsic
+                else kernel_laplacian.COTMATRIX_ENTRIES_AND_OPERATOR_KEYS
+            )
             _launch.launch(
-                kernel_laplacian.COTMATRIX_ENTRIES_AND_OPERATOR_KEYS[out_cot.dtype],
+                table[out_cot.dtype],
                 dim=dim,
-                inputs=[vertices, faces, wp.int32(n_vertices), wp.int32(mode)],
+                inputs=[source, faces, wp.int32(n_vertices), wp.int32(mode)],
                 outputs=[out_cot, keys, order],
                 device=device,
             )
@@ -1202,13 +1224,18 @@ def _mesh_operator_pattern(
 
 
 def _cotmatrix_entries_and_pattern(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type,
+    edge_lengths: odt.Array2dFloat32 | None = None,
 ) -> tuple[odt.Array2dFloat, MeshOperatorPattern]:
     """
     [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries] and the ``"cotmatrix"`` pattern.
 
     For an operator built from the faces alone: below ``_UNDIRECTED_PATTERN_FROM_FACES`` the
     half-cotangents are written by the pattern's key pass, one launch over the faces for both.
+    With ``edge_lengths`` the half-cotangents are
+    [`cotmatrix_entries_intrinsic`][ordito.laplacian.cotmatrix_entries_intrinsic]'s of them.
     """
     n_faces = faces.size // 3
     n_vertices = vertices.size
@@ -1219,7 +1246,7 @@ def _cotmatrix_entries_and_pattern(
         n_vertices,
         halfedges=halfedges,
         diagonal=diagonal,
-        cotangents=(vertices, cot_entries),
+        cotangents=(vertices if edge_lengths is None else edge_lengths, cot_entries),
     )
     pattern = MeshOperatorPattern(
         "cotmatrix", n_vertices, offsets, columns, run_start, keys, count, order

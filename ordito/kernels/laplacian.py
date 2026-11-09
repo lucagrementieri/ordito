@@ -174,15 +174,16 @@ def cotmatrix_entries_and_area_sums(
     add_face_area_exact(vertices, faces, f, out_area_sums)
 
 
-@wp.kernel
-def cotmatrix_entries_intrinsic(
-    edge_lengths: wp.array2d[wp.float32], out_cot: wp.array2d[wp.Float]
+@wp.func
+def store_intrinsic_cotangents(
+    edge_lengths: wp.array2d[wp.float32], f: wp.int32, out_cot: Any
 ) -> None:
-    # Evaluated at the output's precision: the lengths are ``float32``, but the law of cosines
-    # cancels their squares against each other, so a ``float64`` table formed in ``float32`` and
-    # cast (as this did until 2026-10-08) carried ``float32``'s cancellation error -- 6.5x the
-    # ``1e-5`` tolerance off igl's ``float64`` answer on the same lengths, on ``saddle_graded``.
-    f = wp.int32(wp.tid())
+    # Face ``f``'s row of the intrinsic half-cotangent table, evaluated at the output's precision:
+    # the lengths are ``float32``, but the law of cosines cancels their squares against each
+    # other, so a ``float64`` table formed in ``float32`` and cast (as this did until 2026-10-08)
+    # carried ``float32``'s cancellation error -- 6.5x the ``1e-5`` tolerance off igl's
+    # ``float64`` answer on the same lengths, on ``saddle_graded``. ``cotmatrix_entries_intrinsic``'
+    # body, and the half the intrinsic key pass adds to its keys.
     l0, l1, l2 = row_triple(edge_lengths, f)
     c0, c1, c2 = cot_entries_from_edge_lengths(
         type(out_cot[f, 0])(l0), type(out_cot[f, 0])(l1), type(out_cot[f, 0])(l2)
@@ -190,6 +191,15 @@ def cotmatrix_entries_intrinsic(
     out_cot[f, 0] = c0
     out_cot[f, 1] = c1
     out_cot[f, 2] = c2
+
+
+@wp.kernel
+def cotmatrix_entries_intrinsic(
+    edge_lengths: wp.array2d[wp.float32], out_cot: wp.array2d[wp.Float]
+) -> None:
+    # ``out_cot`` is generic: see ``store_intrinsic_cotangents``.
+    f = wp.int32(wp.tid())
+    store_intrinsic_cotangents(edge_lengths, f, out_cot)
 
 
 # Relative perturbation of one ``float32`` length by its rounding: half an ulp.
@@ -563,6 +573,25 @@ def cotmatrix_entries_and_operator_keys(
     store_operator_keys(faces, n_vertices, diagonal, t, out_keys, out_order)
     if t < faces.shape[0] // 3:
         store_half_cotangents(vertices, faces, t, out_cot)
+
+
+@wp.kernel
+def cotmatrix_entries_intrinsic_and_operator_keys(
+    edge_lengths: wp.array2d[wp.float32],
+    faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    diagonal: wp.int32,
+    out_cot: wp.array2d[wp.Float],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``cotmatrix_entries_and_operator_keys`` from edge lengths (``laplacian.robust_laplacian``):
+    # the two kernels differ only in where face ``t``'s half-cotangents come from, positions
+    # (``store_half_cotangents``) or lengths (``store_intrinsic_cotangents``).
+    t = wp.int32(wp.tid())
+    store_operator_keys(faces, n_vertices, diagonal, t, out_keys, out_order)
+    if t < faces.shape[0] // 3:
+        store_intrinsic_cotangents(edge_lengths, t, out_cot)
 
 
 @wp.kernel
@@ -1145,6 +1174,7 @@ _MATRIX_DTYPES = (wp.float32, wp.float64)
 COTMATRIX_ENTRIES: OverloadTable
 COTMATRIX_ENTRIES_AND_OPERATOR_KEYS: OverloadTable
 COTMATRIX_ENTRIES_INTRINSIC: OverloadTable
+COTMATRIX_ENTRIES_INTRINSIC_AND_OPERATOR_KEYS: OverloadTable
 ROW_NORMALIZE: OverloadTable
 LAPLACIAN_TRIPLETS: OverloadTable
 LAPLACIAN_KEYS: OverloadTable
@@ -1159,6 +1189,7 @@ MASS_DIAGONAL_ROWS: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_AND_OPERATOR_KEYS, COTMATRIX_ENTRIES_INTRINSIC
+    global COTMATRIX_ENTRIES_INTRINSIC_AND_OPERATOR_KEYS
     global ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS, LAPLACIAN_KEYS
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
@@ -1186,6 +1217,21 @@ def _register_overloads() -> None:
     COTMATRIX_ENTRIES_INTRINSIC = OverloadTable(
         cotmatrix_entries_intrinsic,
         {d: [wp.array2d[wp.float32], wp.array2d[d]] for d in _MATRIX_DTYPES},
+    )
+    COTMATRIX_ENTRIES_INTRINSIC_AND_OPERATOR_KEYS = OverloadTable(
+        cotmatrix_entries_intrinsic_and_operator_keys,
+        {
+            d: [
+                wp.array2d[wp.float32],
+                wp.array[wp.int32],
+                wp.int32,
+                wp.int32,
+                wp.array2d[d],
+                wp.array[wp.uint64],
+                wp.array[wp.int32],
+            ]
+            for d in _MATRIX_DTYPES
+        },
     )
     ROW_NORMALIZE = OverloadTable(
         row_normalize, {d: [wp.array[wp.int32], wp.array[d]] for d in _MATRIX_DTYPES}
