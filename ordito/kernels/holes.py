@@ -215,6 +215,17 @@ def fill_edge_term(
 
 
 @wp.func
+def fill_metric_has_edge_terms(metric_id: wp.int32) -> wp.bool:
+    # Whether ``fill_edge_term`` can be non-zero under ``metric_id``.
+    return (
+        metric_id == METRIC_EDGE_LENGTH
+        or metric_id == METRIC_UNIVERSAL
+        or metric_id == METRIC_MAX_DIHEDRAL
+        or metric_id == METRIC_COMPLEX_FILL
+    )
+
+
+@wp.func
 def combine_metric(accumulated: wp.float32, term: wp.float32, combine_id: wp.int32) -> wp.float32:
     if combine_id == COMBINE_MAX:
         return wp.max(accumulated, term)
@@ -666,35 +677,39 @@ def apex_cost(
     right = base + k * b + j
     val = combine_metric(children, tri, tables.combine_id)
 
-    # Each ``prev`` entry is bound once: a global load repeated across a branch is not something
-    # the compiler is obliged to common up.
-    if k > i + 1:
-        left_prev = tables.prev[left]
-        if left_prev >= 0:
-            e = fill_edge_term(
-                a_pos, k_pos, tables.loop_pos[o + left_prev], c_pos, tables.metric_id
-            )
+    # The edge terms read each sub-interval's apex through ``prev``, a load behind a load, and only
+    # four metrics have any (``fill_metric_has_edge_terms``): the others' terms are zero, and adding
+    # zero to the non-negative cost changes no bit, so they skip the chain.
+    if fill_metric_has_edge_terms(tables.metric_id):
+        # Each ``prev`` entry is bound once: a global load repeated across a branch is not something
+        # the compiler is obliged to common up.
+        if k > i + 1:
+            left_prev = tables.prev[left]
+            if left_prev >= 0:
+                e = fill_edge_term(
+                    a_pos, k_pos, tables.loop_pos[o + left_prev], c_pos, tables.metric_id
+                )
+                val = combine_metric(val, e, tables.combine_id)
+        elif tables.smooth_bd != 0 and tables.rim_opp_valid[o + i] != 0:
+            e = fill_edge_term(a_pos, k_pos, tables.rim_opp_pos[o + i], c_pos, tables.metric_id)
             val = combine_metric(val, e, tables.combine_id)
-    elif tables.smooth_bd != 0 and tables.rim_opp_valid[o + i] != 0:
-        e = fill_edge_term(a_pos, k_pos, tables.rim_opp_pos[o + i], c_pos, tables.metric_id)
-        val = combine_metric(val, e, tables.combine_id)
 
-    if j > k + 1:
-        right_prev = tables.prev[right]
-        if right_prev >= 0:
-            e = fill_edge_term(
-                k_pos, c_pos, tables.loop_pos[o + right_prev], a_pos, tables.metric_id
-            )
+        if j > k + 1:
+            right_prev = tables.prev[right]
+            if right_prev >= 0:
+                e = fill_edge_term(
+                    k_pos, c_pos, tables.loop_pos[o + right_prev], a_pos, tables.metric_id
+                )
+                val = combine_metric(val, e, tables.combine_id)
+        elif tables.smooth_bd != 0 and tables.rim_opp_valid[o + k] != 0:
+            e = fill_edge_term(k_pos, c_pos, tables.rim_opp_pos[o + k], a_pos, tables.metric_id)
             val = combine_metric(val, e, tables.combine_id)
-    elif tables.smooth_bd != 0 and tables.rim_opp_valid[o + k] != 0:
-        e = fill_edge_term(k_pos, c_pos, tables.rim_opp_pos[o + k], a_pos, tables.metric_id)
-        val = combine_metric(val, e, tables.combine_id)
 
-    # Closing rim edge (loop[b-1] -> loop[0]) is the base of the whole loop and has no parent, so
-    # its boundary term is added here for the top interval only.
-    if is_top and tables.smooth_bd != 0 and tables.rim_opp_valid[o + b - 1] != 0:
-        e = fill_edge_term(a_pos, c_pos, tables.rim_opp_pos[o + b - 1], k_pos, tables.metric_id)
-        val = combine_metric(val, e, tables.combine_id)
+        # Closing rim edge (loop[b-1] -> loop[0]) is the base of the whole loop and has no parent,
+        # so its boundary term is added here for the top interval only.
+        if is_top and tables.smooth_bd != 0 and tables.rim_opp_valid[o + b - 1] != 0:
+            e = fill_edge_term(a_pos, c_pos, tables.rim_opp_pos[o + b - 1], k_pos, tables.metric_id)
+            val = combine_metric(val, e, tables.combine_id)
     return val
 
 
