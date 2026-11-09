@@ -1124,7 +1124,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Harness hazards:** cap every group's mesh size first (one pathological row costs the whole JSON). Harness and hand-probe numbers are not comparable; decide on the harness number. A row can depend on mempool state left by its setup. A median at `rounds=3` can hide a one-off cost, so compare it with the minimum. Run `benchmarks/test_meshes.py` after touching the mesh registry.
 - **Plan items:** grep the target function, constant comment and benchmark docstring for a recorded decline first; stage-profile before optimizing a stage.
 - **A/B:** use a detached worktree, never `git stash` or `sed` sweeps. The editable finder outranks `PYTHONPATH`, so drop it and assert the submodule `__file__`. Check the box is quiet first (otherwise measure counts, not clocks); a failing `nvidia-smi` does not mean CUDA is unusable.
-- **Timing hygiene:** interleave A and B in one loop and report the minimum beside the median; baselines drift 10-30 %, so re-run both arms back to back. Batch launches and sync once. Use one pytest process per module. Re-run a failing configuration in a fresh process before blaming the product.
+- **Timing hygiene:** interleave A and B in one loop and report the minimum beside the median; baselines drift 10-30 %, so re-run both arms back to back. Batch launches and sync once. Use one pytest process per module. Re-run a failing configuration in a fresh process before blaming the product. A CUDA error 700 inside a census or benchmark run while another job holds most of the device's memory is pressure until it reproduces on an idle GPU (2026-11-09: `signed_distance_level_set[lucy]` faulted twice with 26 of 32 GB taken, never with the device idle, alone or in the same sequence).
 - **A row that moves only inside a whole-module sweep depends on what ran before it in the process.** In the Warp 1.19 A/B, small host-bound rows read 1.13-1.35x (CUDA: `array.split`, `concatenate`, `pack_1d_arrays`, `edges_face`, `bridge_edges`, `edges_to_csr`) and up to 3.9x on CPU (`face_gradients`, `index_bound`, `points_in_obb_mask`), repeatably across two passes. Run alone, or as a `-k` selection, the same rows matched 1.18 or beat it (CPU 0.72-0.88x; `split` direct 247 vs 253 µs). Before attributing a sweep regression, rerun the row alone and time the primitives under it directly. Two passes agreeing does not separate the two causes.
 - **CPU code placement is a confound of its own.** Warp maps a CPU module's `.text`
   page-aligned, so a kernel's offset in the object is its address modulo 4 096, and any edit to
@@ -1206,6 +1206,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   that splits a pinched loop at the pinch. What remains of the cap's time is ear rounds at their
   launch floor (bunny 1.9 ms, dragon 3.7, lucy 16.8 against 0.1-10 ms uncapped); carrying ear
   grades across rounds was declined (`kernels/polyline.ring_compute_ears`).
+- **The winding lattice walks every boundary component at every node** (2026-11-09,
+  `kernels/levelset.lattice_winding_numbers`): `dragon`'s 407 small holes cost 3.0 ms of its
+  9.6 ms device time at 1/256, almost all of it far components bounded one at a time. Unbuilt:
+  components grouped spatially (Morton order of the apex), each group bounded at once by
+  `0.5 * sum(r_i**2) / (d - R_group)**2` (an upper bound on its members' `ball_winding_bound`s),
+  its members walked only where the group's bound is not small. Sound for the decisions, since
+  the bounds stay rigorous; price it against the fallback rate it raises.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
