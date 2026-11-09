@@ -1531,8 +1531,13 @@ def _reduction_scale(point_reduction: _DiffReduction, count: int) -> float:
 
 def _zero_loss(device: wp.DeviceLike) -> wp.array[wp.float32]:
     # Rank ``int``, not ``Literal[1]``: the loss is handed to ``wp.Tape.backward``, which takes a
-    # plain ``wp.array``, and rank is invariant.
-    return _launch.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+    # plain ``wp.array``, and rank is invariant. The loss and its gradient are the two slots of one
+    # zeroed buffer, one allocation and one fill where ``requires_grad=True`` makes two of each;
+    # assigning ``grad`` also sets ``requires_grad``.
+    slots = _launch.zeros(2, dtype=wp.float32, device=device)
+    loss: wp.array[wp.float32] = _launch.view(slots, 0, 1)
+    loss.grad = _launch.view(slots, 1, 2)
+    return loss
 
 
 def _accumulate_chamfer_terms(

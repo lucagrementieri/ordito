@@ -4595,8 +4595,8 @@
  "benchmarks/test_metrics.py::test_chamfer_mesh_to_mesh_loss[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 5,
-   "alloc": 4,
-   "memset": 6
+   "alloc": 3,
+   "memset": 5
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh[sphere_small-ordito-cuda]": {
@@ -4609,15 +4609,15 @@
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh_loss[sphere_small-ordito-cuda-oneway]": {
   "counts": {
    "launch": 3,
-   "alloc": 4,
-   "memset": 6
+   "alloc": 3,
+   "memset": 5
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh_loss[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
    "launch": 6,
-   "alloc": 6,
-   "memset": 6
+   "alloc": 5,
+   "memset": 5
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-oneway]": {
@@ -4644,15 +4644,15 @@
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_loss[sphere_small-ordito-cuda-oneway]": {
   "counts": {
    "launch": 3,
-   "alloc": 4,
-   "memset": 6
+   "alloc": 3,
+   "memset": 5
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_loss[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
    "launch": 5,
-   "alloc": 4,
-   "memset": 6
+   "alloc": 3,
+   "memset": 5
   }
  },
  "benchmarks/test_metrics.py::test_hausdorff_mesh_to_mesh[sphere_small-ordito-cuda]": {
