@@ -7,12 +7,9 @@ That is the axis these rows measure at the small end: each group is now one laun
 crossing, so ``volume`` and ``surface_centroid`` read as the floor of a host-side reduction and
 ``moments`` as what its ``float64`` integrand adds on top.
 
-What this axis is **not** is a licence to copy arrays. Reducing the ``vec3d`` integrand buffers
-with ``.numpy().sum(axis=0)`` is not a crossing per return value but 72 bytes *per face* moved to be
-added on the host; ``wp.utils.array_sum`` (which reduces a ``vec3d`` array componentwise, so no
-kernel is needed) keeps the crossings at four and the bytes crossed at 80, and is what turns this
-row from a loss into a win against igl. It still loses the smallest scan mesh, where four launches
-plus four 4-byte reads are the floor and igl's faces fit in cache. Read the **min** in this group,
+What this axis is **not** is a licence to copy arrays: reducing per-face integrand buffers with
+``.numpy().sum(axis=0)`` moves 72 bytes *per face* to be added on the host, where the kernels here
+fold their sums on the device and send the host 8 to 80 bytes. Read the **min** in this group,
 not the median: with the igl and trimesh rows sharing the process the ordito medians here run an
 order of magnitude above its own min, the same instability
 [`test_holes.py`](test_holes.py) documents for its DP rows.
@@ -93,19 +90,17 @@ def test_moments(bench_case: BenchCase) -> None:
     """
     Volume, centre of mass and inertia tensor: ten ``float64`` sums over the faces.
 
-    The one row in this module that is **readback-bound rather than kernel-bound**, and deliberately
-    so: all three returns are host-side values, so four device reductions are followed by four
-    crossings that no amount of kernel work amortises. Compare it against ``centroid`` above, which
-    pays two -- the gap is what the extra quantities cost, and it is nearly all latency.
+    One launch and one read of the ten sums, like ``surface_centroid`` above; the gap between the
+    two is the ``float64`` integrand (1/64 of the ``float32`` rate on the RTX 5090), which sets the
+    row from the mid-size scan meshes up.
 
     ``igl.moments`` returns the first moment un-normalised and the inertia already about the centre
     of mass; ``trimesh``'s ``mass_properties`` computes the same three from the same integrals on
     the host. Both are timed on the whole call, since neither exposes the integrals separately.
 
     **pyvista answers the volume alone**, so its row does strictly less: ``PolyData.volume`` is the
-    same divergence integral over the faces with no centre of mass and no inertia tensor, one
-    readback rather than four. Unlike open3d's it does *not* validate first, which is what makes it
-    safe to time here at all.
+    same divergence integral over the faces with no centre of mass and no inertia tensor. Unlike
+    open3d's it does *not* validate first, which is what makes it safe to time here at all.
 
     There is no open3d row, measured rather than assumed: ``get_volume`` validates before it
     integrates, and the validation is the same brute-force ``IsWatertight`` composition its

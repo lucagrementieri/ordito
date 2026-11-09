@@ -8,11 +8,12 @@ from ordito.kernels.array import OverloadTable, mark_at, sorted_run_start
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
+    block_sum,
     commit_block_sum,
     last_ticket,
     last_ticket_vector,
-    store_block_sum,
     store_block_total,
+    store_folded_sum,
     store_folded_total,
 )
 from ordito.kernels.triangles import (
@@ -66,32 +67,45 @@ def surface_centroid_totals(
 @wp.func
 def tetrahedron_first_integrals(
     a: wp.vec3d, b: wp.vec3d, c: wp.vec3d
-) -> tuple[wp.float64, wp.float64, wp.vec3d]:
-    # The tetrahedron ``(0, a, b, c)``'s ``det = dot(a, cross(b, c))``, volume ``det / 6`` and first
-    # moment ``det * (a + b + c) / 24``: the leading integrals ``moment_integrals`` and
-    # ``centroid_integrals`` both sum, in one spelling so the two agree bit for bit.
+) -> tuple[wp.float64, wp.vec3d, wp.vec3d]:
+    # The tetrahedron ``(0, a, b, c)``'s ``det = dot(a, cross(b, c))`` (six times its volume), its
+    # corner sum ``s = a + b + c`` and ``det * s`` (24 times its first moment): the leading terms
+    # ``moment_integrals`` and ``centroid_integrals`` both sum, in one spelling so the two agree
+    # bit for bit. The constant factors wait for ``scaled_first_integrals``, once a block.
+    s = a + b + c
     det = wp.dot(a, wp.cross(b, c))
-    return det, det / wp.float64(6.0), det * (a + b + c) / wp.float64(24.0)
+    return det, s, det * s
+
+
+@wp.func
+def scaled_first_integrals(det_sum: wp.float64, first_sum: wp.vec3d) -> wp.vec4d:
+    # A block's volume and first moment from its sums of ``tetrahedron_first_integrals``' terms.
+    return wp.vec4d(
+        det_sum / wp.float64(6.0),
+        first_sum[0] / wp.float64(24.0),
+        first_sum[1] / wp.float64(24.0),
+        first_sum[2] / wp.float64(24.0),
+    )
 
 
 # Blocks to aim for in ``moment_integrals``' grid. Below it the chunk stays one tile wide, so the
-# device fills; above it the chunk doubles instead, so the ten contended ``float64`` accumulator
-# slots do not collect an atomic from every one of tens of thousands of blocks. This is where the
-# measured table at the kernel crosses over -- the block count at which a wider chunk first stops
-# losing.
-MOMENT_TARGET_BLOCKS = 1280
-# Widest chunk worth using: past this the grid stops filling the device before contention is the
-# problem, and the measured table is flat from here on.
-MOMENT_MAX_CHUNK_FACES = 8 * TILE_1D
+# device fills; above it the chunk doubles instead, so fewer blocks pay the ten-slot ``float64``
+# block fold and commit. Swept with the regrouped integrand (2026-11-09, CUDA, calls): 640 against
+# 1280 took bunny 61 -> 53 us; 160-640 within noise from dragon up.
+MOMENT_TARGET_BLOCKS = 640
+# Widest chunk worth using: 32 tiles took lucy 2.91 -> 2.44 ms against 8; 64 and 128 gained
+# nothing more there and cost dragon up to 1.25x at a target of 320 (too few blocks to fill the
+# device).
+MOMENT_MAX_CHUNK_FACES = 32 * TILE_1D
 
 
 def moment_chunk_faces(n_faces: int) -> int:
     """
     Faces one block of ``moment_integrals`` reduces, from the mesh size.
 
-    Doubles from one tile until the grid is no wider than ``MOMENT_TARGET_BLOCKS``, then stops.
-    The measured device times this is derived from are tabulated at the kernel. A host helper
-    beside its kernel because both ``measures.moments`` and ``smoothing.inflate`` launch it.
+    Doubles from one tile until the grid is no wider than ``MOMENT_TARGET_BLOCKS``, then stops at
+    ``MOMENT_MAX_CHUNK_FACES``. A host helper beside its kernel because both ``measures.moments``
+    and ``smoothing.inflate`` launch it.
     """
     chunk = TILE_1D
     while chunk < MOMENT_MAX_CHUNK_FACES and -(-n_faces // chunk) > MOMENT_TARGET_BLOCKS:
@@ -115,79 +129,68 @@ def moment_integrals(
     # per-face buffers, which is four host readbacks over 80 bytes a face written once and read
     # once. Launched ``wp.launch_tiled(dim=[ceil(n_faces / chunk_faces)], block_dim=TILE_1D)``,
     # lanes striding their own block's chunk by ``wp.block_dim()`` so it is correct on the CPU
-    # device too -- the same form as ``points.centered_covariance``, and
-    # unlike ``centroid_tiled`` above, whose lanes partition the outer work and which therefore
-    # needs a device pair.
+    # device too -- the same form as ``points.centered_covariance``.
     #
     # ``chunk_faces`` is a launch argument rather than the ``ITEMS_PER_BLOCK_1D`` constant the rest
     # of the family bakes in, because this body has a real crossover the family's single value sits
-    # on the wrong side of: the integrand is ~80 ``float64`` flops per face, so a wide chunk starves
-    # the device on a small mesh while a narrow one puts too many blocks on ten contended addresses
-    # on a large one. A runtime width measures identical to a module-constant one; see
-    # ``measures._moment_chunk_faces``.
+    # on the wrong side of: the integrand is ``float64``, so a wide chunk starves the device on a
+    # small mesh while a narrow one makes too many blocks pay the ten-slot fold and commit on a
+    # large one. A runtime width measures identical to a module-constant one; see
+    # ``moment_chunk_faces``.
     #
     # Everything accumulates in float64: the second moments scale as length^5, so a float32 sum
     # over a large mesh loses the answer's low digits before the reduction finishes.
     #
     # For the tetrahedron (0, a, b, c) with det = dot(a, cross(b, c)):
     #   int dV     = det / 6
-    #   int x dV   = det * (a.x + b.x + c.x) / 24
-    #   int x^2 dV = det * (a.x^2 + b.x^2 + c.x^2 + a.x b.x + a.x c.x + b.x c.x) / 60
-    #   int xy dV  = det * (2(a.x a.y + b.x b.y + c.x c.y)
-    #                       + a.x b.y + b.x a.y + a.x c.y + c.x a.y + b.x c.y + c.x b.y) / 120
+    #   int x dV   = det * s.x / 24                       (s = a + b + c)
+    #   int x^2 dV = det * (s.x^2 + a.x^2 + b.x^2 + c.x^2) / 120
+    #   int xy dV  = det * (s.x s.y + a.x a.y + b.x b.y + c.x c.y) / 120
+    # the second-moment forms being the textbook ones (``(a.x^2 + ... + b.x c.x) / 60`` and its
+    # product analogue) regrouped around ``s``. Each lane sums the bracketed terms and the block
+    # divides its folds once: the integrand is ``float64`` at 1/64 of the ``float32`` rate on this
+    # device, so the kernel is bound by its ``float64`` operations, and the textbook form's ten
+    # divisions and 45 products a face set its time.
     chunk, lane = wp.tid()
     offset, count = block_chunk(faces.shape[0] // 3, chunk, chunk_faces)
     if count <= 0:
         return
 
-    volume = wp.float64(0.0)
+    det_sum = wp.float64(0.0)
     first = wp.vec3d()
     squares = wp.vec3d()
     products = wp.vec3d()
     for k in range(lane, count, wp.block_dim()):
         a, b, c = face_vertices_vec3d(vertices, faces, offset + k)
-        det, volume_term, first_term = tetrahedron_first_integrals(a, b, c)
-        volume = volume + volume_term
+        det, s, first_term = tetrahedron_first_integrals(a, b, c)
+        det_sum = det_sum + det
         first = first + first_term
-        squares = squares + det * wp.vec3d(
-            a[0] * a[0] + b[0] * b[0] + c[0] * c[0] + a[0] * b[0] + a[0] * c[0] + b[0] * c[0],
-            a[1] * a[1] + b[1] * b[1] + c[1] * c[1] + a[1] * b[1] + a[1] * c[1] + b[1] * c[1],
-            a[2] * a[2] + b[2] * b[2] + c[2] * c[2] + a[2] * b[2] + a[2] * c[2] + b[2] * c[2],
-        ) / wp.float64(60.0)
+        squares = squares + det * (
+            wp.cw_mul(s, s) + wp.cw_mul(a, a) + wp.cw_mul(b, b) + wp.cw_mul(c, c)
+        )
         # (xy, xz, yz), in the same order the wrapper reads them back.
-        products = products + det * wp.vec3d(
-            wp.float64(2.0) * (a[0] * a[1] + b[0] * b[1] + c[0] * c[1])
-            + a[0] * b[1]
-            + b[0] * a[1]
-            + a[0] * c[1]
-            + c[0] * a[1]
-            + b[0] * c[1]
-            + c[0] * b[1],
-            wp.float64(2.0) * (a[0] * a[2] + b[0] * b[2] + c[0] * c[2])
-            + a[0] * b[2]
-            + b[0] * a[2]
-            + a[0] * c[2]
-            + c[0] * a[2]
-            + b[0] * c[2]
-            + c[0] * b[2],
-            wp.float64(2.0) * (a[1] * a[2] + b[1] * b[2] + c[1] * c[2])
-            + a[1] * b[2]
-            + b[1] * a[2]
-            + a[1] * c[2]
-            + c[1] * a[2]
-            + b[1] * c[2]
-            + c[1] * b[2],
-        ) / wp.float64(120.0)
+        products = products + det * (
+            wp.vec3d(s[0] * s[1], s[0] * s[2], s[1] * s[2])
+            + wp.vec3d(a[0] * a[1], a[0] * a[2], a[1] * a[2])
+            + wp.vec3d(b[0] * b[1], b[0] * b[2], b[1] * b[2])
+            + wp.vec3d(c[0] * c[1], c[0] * c[2], c[1] * c[2])
+        )
 
-    # All ten integrals in one block reduction, which is block-collective and so runs outside the
-    # ``lane == 0`` guard.
+    # All ten sums in one block reduction, which is block-collective and so runs outside the
+    # ``lane == 0`` guard, then the block's constant factors.
     local = wp.vector(length=10, dtype=wp.float64)
-    local[0] = volume
+    local[0] = det_sum
     for j in range(3):
         local[1 + j] = first[j]
         local[4 + j] = squares[j]
         local[7 + j] = products[j]
-    store_block_sum(chunk, lane, local, out_totals, 0, stride)
+    folded = block_sum(local)
+    leading = scaled_first_integrals(folded[0], wp.vec3d(folded[1], folded[2], folded[3]))
+    for j in range(4):
+        folded[j] = leading[j]
+    for j in range(6):
+        folded[4 + j] = folded[4 + j] / wp.float64(120.0)
+    store_folded_sum(chunk, lane, folded, out_totals, 0, stride)
 
 
 @wp.kernel
@@ -207,16 +210,16 @@ def centroid_integrals(
     offset, count = block_chunk(faces.shape[0] // 3, chunk, chunk_faces)
     if count <= 0:
         return
-    volume = wp.float64(0.0)
+    det_sum = wp.float64(0.0)
     first = wp.vec3d()
     for k in range(lane, count, wp.block_dim()):
         a, b, c = face_vertices_vec3d(vertices, faces, offset + k)
-        _det, volume_term, first_term = tetrahedron_first_integrals(a, b, c)
-        volume = volume + volume_term
+        det, _s, first_term = tetrahedron_first_integrals(a, b, c)
+        det_sum = det_sum + det
         first = first + first_term
-    store_block_sum(
-        chunk, lane, wp.vec4d(volume, first[0], first[1], first[2]), out_totals, 0, stride
-    )
+    folded = block_sum(wp.vec4d(det_sum, first[0], first[1], first[2]))
+    leading = scaled_first_integrals(folded[0], wp.vec3d(folded[1], folded[2], folded[3]))
+    store_folded_sum(chunk, lane, leading, out_totals, 0, stride)
 
 
 # Keyed by the vertex dtype; the volume is accumulated in its scalar type, as
