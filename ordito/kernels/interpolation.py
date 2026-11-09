@@ -2,7 +2,15 @@ from typing import Any
 
 import warp as wp
 
-from ordito.kernels.array import OverloadTable, trilinear_cell, trilinear_corner, trilinear_weight
+from ordito.kernels.array import (
+    OverloadTable,
+    declare_map_signatures,
+    divide_if_positive,
+    map_probe,
+    trilinear_cell,
+    trilinear_corner,
+    trilinear_weight,
+)
 from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.triangles import face_vertices, point_barycentric
@@ -19,6 +27,21 @@ def average_onto_faces(
     f = wp.int32(wp.tid())
     x0, x1, x2 = face_vertices(vertex_values, faces, f)
     out_face_values[f] = (x0 + x1 + x2) / wp.float32(3.0)
+
+
+@wp.func
+def mean_rounded(total: wp.float64, count: wp.float32) -> wp.float32:
+    # A vertex's exact ``float64`` sum over its count, rounded once: ``average_onto_vertices``
+    # under the deterministic setting. Unguarded, so a zero count is ``nan`` as in the
+    # arrival-order ``wp.div``.
+    return wp.float32(total / wp.float64(count))
+
+
+@wp.func
+def mean_rounded_if_counted(total: wp.float64, count: wp.float32) -> wp.float32:
+    # ``mean_rounded`` guarded as ``array.divide_if_positive``: a zero count keeps the zero sum,
+    # ``average_from_edges_onto_vertices``' convention.
+    return wp.float32(divide_if_positive(total, wp.float64(count)))
 
 
 @wp.kernel
@@ -417,3 +440,21 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_map_kernels() -> None:
+    """
+    Pre-declare this module's ``wp.map`` signatures so each builds one module.
+
+    See ``kernels/array.py::declare_map_signatures`` for why this exists.
+    """
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (mean_rounded, (dense(wp.float64), dense(wp.float32)), wp.float32),
+            (mean_rounded_if_counted, (dense(wp.float64), dense(wp.float32)), wp.float32),
+        ]
+    )
+
+
+_declare_map_kernels()

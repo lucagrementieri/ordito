@@ -38,6 +38,7 @@ from ordito._common import (
     require_same_device,
     tiled_ball_walk,
 )
+from ordito.config import is_deterministic
 from ordito.kernels import array as kernel_array
 from ordito.kernels import interpolation as kernel_interpolation
 from ordito.kernels import neighbors as kernel_neighbors
@@ -170,16 +171,15 @@ def average_onto_vertices(
             f"face_values must have one entry per face, got {face_values.size} for {n_faces} faces"
         )
 
-    out_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    out_valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_face_values_sum_and_valence,
-        dim=n_faces,
-        inputs=[faces, face_values, out_sum, out_valence],
-        device=device,
+    return _vertex_mean(
+        n_vertices,
+        n_faces,
+        kernel_scatter.SCATTER_FACE_VALUES_SUM_AND_VALENCE,
+        [faces, face_values],
+        wp.div,
+        kernel_interpolation.mean_rounded,
+        device,
     )
-    _launch.map(wp.div, out_sum, out_valence, out=out_sum)
-    return out_sum
 
 
 def average_from_edges_onto_vertices(
@@ -269,16 +269,49 @@ def average_from_edges_onto_vertices(
                 f"{name} must be ({n_faces}, 3), one row per face, got {tuple(table.shape)}"
             )
 
-    out_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    out_valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_edges_sum_and_valence,
-        dim=n_faces,
-        inputs=[faces, edges, edges_orientation, edge_values, out_sum, out_valence],
-        device=device,
+    return _vertex_mean(
+        n_vertices,
+        n_faces,
+        kernel_scatter.SCATTER_EDGES_SUM_AND_VALENCE,
+        [faces, edges, edges_orientation, edge_values],
+        kernel_array.divide_if_positive,
+        kernel_interpolation.mean_rounded_if_counted,
+        device,
     )
-    _launch.map(kernel_array.divide_if_positive, out_sum, out_valence, out=out_sum)
-    return out_sum
+
+
+def _vertex_mean(
+    n_vertices: int,
+    n_faces: int,
+    scatter: kernel_array.OverloadTable,
+    inputs: list[object],
+    divide: object,
+    divide_rounded: object,
+    device: wp.DeviceLike,
+) -> wp.array[wp.float32]:
+    """
+    Scatter a per-vertex sum and valence over the faces, then divide: both averaging scatters.
+
+    With [`is_deterministic`][ordito.config.is_deterministic] off the sum is ``float32`` in arrival
+    order and the division runs in place over it; with it on the ``float32`` terms sum exactly in
+    ``float64``, the same bits whatever order the atomics commit in, and are rounded once into the
+    output.
+    """
+    valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    if not is_deterministic():
+        out_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+        _launch.launch(
+            scatter[wp.float32], dim=n_faces, inputs=[*inputs, out_sum, valence], device=device
+        )
+        _launch.map(divide, out_sum, valence, out=out_sum)
+        return out_sum
+    exact_sum = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    _launch.launch(
+        scatter[wp.float64], dim=n_faces, inputs=[*inputs, exact_sum, valence], device=device
+    )
+    out_mean = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    _launch.map(divide_rounded, exact_sum, valence, out=out_mean)
+    return out_mean
 
 
 def transfer_onto_vertices(

@@ -182,6 +182,50 @@ def test_average_from_edges_onto_vertices_rejects_misshapen_tables(
         )
 
 
+def test_vertex_averages_are_reproducible(device: str) -> None:
+    """
+    Ordito against ordito: under the deterministic setting both vertex means repeat bit for bit.
+
+    A cone fan's apex and base centre sit in every face, the slots whose arrival order the
+    ``float32`` sums depend on; the exact ``float64`` sum takes the same bits however the atomics
+    commit. The setting's two forms also agree at the module tolerance, so the on branch is not a
+    different mean.
+    """
+    cone = tm.creation.cone(radius=1.0, height=2.0, sections=2048)
+    n_vertices = cone.vertices.shape[0]
+    faces_np = np.array(cone.faces, dtype=np.int64)
+    faces_wp = wp.array(faces_np.ravel().astype(np.int32), dtype=wp.int32, device=device)
+    rng = np.random.default_rng(7)
+    face_values_wp = wp.array(rng.uniform(size=faces_np.shape[0]), dtype=wp.float32, device=device)
+    edges_igl, orientation_igl = igl.orient_halfedges(faces_np)
+    edges_wp = odt.as_array2d(
+        wp.array(np.asarray(edges_igl, dtype=np.int32), dtype=wp.int32, device=device), wp.int32
+    )
+    orientation_wp = odt.as_array2d(
+        wp.array(np.asarray(orientation_igl, dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
+    edge_values_wp = wp.array(
+        rng.uniform(size=int(np.max(edges_igl)) + 1), dtype=wp.float32, device=device
+    )
+
+    def averages() -> list[np.ndarray]:
+        return [
+            od.interpolation.average_onto_vertices(n_vertices, faces_wp, face_values_wp).numpy(),
+            od.interpolation.average_from_edges_onto_vertices(
+                n_vertices, faces_wp, edges_wp, orientation_wp, edge_values_wp
+            ).numpy(),
+        ]
+
+    with od.config.deterministic(True):
+        first = averages()
+        for again in (averages(), averages()):
+            assert all(np.array_equal(a, b) for a, b in zip(first, again, strict=True))
+    with od.config.deterministic(False):
+        arrival = averages()
+    assert all(np.allclose(a, b, rtol=1e-5, atol=1e-5) for a, b in zip(first, arrival, strict=True))
+
+
 def _transfer_meshes(device: str) -> tuple[tm.Trimesh, tm.Trimesh]:
     """Build a fine source and a coarse target of one shape: the remesh/decimate situation."""
     del device
