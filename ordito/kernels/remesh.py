@@ -1019,7 +1019,10 @@ def scatter_scale_attribute(
             return
         key = key - lift
     lo, hi = unpack_edge_key(key, base)
-    accumulate_endpoint_value(lo, hi, wp.length(vertices[hi] - vertices[lo]), out_sum, out_valence)
+    # Plain atomics: the pooled form lost here (``scatter.add_value_and_count``).
+    accumulate_endpoint_value(
+        lo, hi, wp.length(vertices[hi] - vertices[lo]), wp.float32(1.0), out_sum, out_valence, 0
+    )
 
 
 @wp.func

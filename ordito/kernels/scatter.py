@@ -703,20 +703,34 @@ def sum_sorted_corner_values(
 
 @wp.func
 def add_value_and_count(
-    vertex: wp.int32, value: wp.float32, out_sum: wp.array[Any], out_valence: wp.array[wp.float32]
+    vertex: wp.int32,
+    value: wp.float32,
+    count: wp.float32,
+    out_sum: wp.array[Any],
+    out_valence: wp.array[wp.float32],
+    pool_peers: wp.int32,
 ) -> None:
-    # One contribution to a per-vertex mean: the value into the sum, one into the valence. Shared
-    # by the face-valued and edge-valued averaging scatters below. Pooled as ``peer_summed_add``:
-    # the lanes sharing a vertex sum their values in ``float64`` and their count, and the lowest
-    # commits both off one match. A ``float64`` sum of ``float32`` values is exact, so it is
-    # order-free (the deterministic setting); a ``float32`` sum is the arrival-order form. Device
-    # time new/old with the setting off, against the plain pair of atomics: ``fan_hub`` 0.11x
-    # (faces) and 0.19x (edges), lucy 0.80x / 0.94x, dragon 0.94x / 1.03x, below 100 k faces
-    # +2-3 us hidden by host time; CPU bits unchanged.
-    lanes = warp_peer_lanes(vertex)
+    # One contribution to a per-vertex mean: the value into the sum, ``count`` into the valence.
+    # Shared by the face-valued and edge-valued averaging scatters below and remesh's scale
+    # attribute. Under ``pool_peers`` (a constant at each call site, so the other arm folds away)
+    # it pools as ``peer_summed_add``: the lanes sharing a vertex sum their values in ``float64``
+    # and the lowest commits the sum and the lanes' number off one match. Only the CUDA device
+    # pools, and its callers count 1 a call; a CPU caller may count 0 (an exact zero added in
+    # place of a branch). A ``float64`` sum of ``float32`` values is exact, so it is order-free
+    # (the deterministic setting); a ``float32`` sum is the arrival-order form.
+    #
+    # Pooled against the plain pair of atomics, device time with the setting off: the averaging
+    # scatters ``fan_hub`` 0.11x (faces) and 0.19x (edges), lucy 0.80x / 0.94x, dragon 0.94x /
+    # 1.03x, below 100 k faces +2-3 us hidden by host time; CPU bits unchanged. Declined for
+    # remesh's scale attribute (``remesh.scatter_scale_attribute``): ``fan_hub`` 0.24x, but dragon
+    # 1.41x, lucy 1.11x and +2 us small, its launch over every halfedge with half the lanes gone
+    # by the commit, where the match costs more than the atomics it saves.
+    lanes = wp.int32(0)
+    if pool_peers != 0:
+        lanes = warp_peer_lanes(vertex)
     if lanes == 0:
         wp.atomic_add(out_sum, vertex, out_sum.dtype(value))
-        wp.atomic_add(out_valence, vertex, wp.float32(1.0))
+        wp.atomic_add(out_valence, vertex, count)
     else:
         total = warp_lanes_sum_float(lanes, wp.float64(value))
         if warp_lane_leads(lanes) != 0:
@@ -734,7 +748,7 @@ def scatter_face_values_sum_and_valence(
     f = wp.int32(wp.tid())
     value = face_values[f]
     for j in range(3):
-        add_value_and_count(faces[f * 3 + j], value, out_sum, out_valence)
+        add_value_and_count(faces[f * 3 + j], value, wp.float32(1.0), out_sum, out_valence, 1)
 
 
 @wp.func
@@ -742,16 +756,18 @@ def accumulate_endpoint_value(
     vi: wp.int32,
     vj: wp.int32,
     value: wp.float32,
+    count: wp.float32,
     out_sum: wp.array[Any],
     out_valence: wp.array[wp.float32],
+    pool_peers: wp.int32,
 ) -> None:
     # Add one edge's value to both of its endpoints and count it at each -- the shared body of the
     # two "average an edge field onto the vertices" scatters below. They compute the same quantity
     # and differ only in where they find the endpoints and the value: one walks the *half*-edges of
     # each face (the ``igl::orient_halfedges`` convention, skipping the negatively oriented copy so
     # an interior edge is counted once), the other walks the unique-edge list directly.
-    add_value_and_count(vi, value, out_sum, out_valence)
-    add_value_and_count(vj, value, out_sum, out_valence)
+    add_value_and_count(vi, value, count, out_sum, out_valence, pool_peers)
+    add_value_and_count(vj, value, count, out_sum, out_valence, pool_peers)
 
 
 @wp.func
@@ -773,14 +789,13 @@ def accumulate_oriented_edge(
     # that. The CUDA arm keeps the branch, where a doubled atomic would cost more than divergence.
     if device_is_cpu() != 0:
         kept = edges_orientation[f, j] >= 0
-        weight = wp.where(kept, wp.float32(1.0), wp.float32(0.0))
-        value = out_sum.dtype(wp.where(kept, edge_values[edges[f, j]], wp.float32(0.0)))
-        wp.atomic_add(out_sum, u, value)
-        wp.atomic_add(out_valence, u, weight)
-        wp.atomic_add(out_sum, v, value)
-        wp.atomic_add(out_valence, v, weight)
+        value = wp.where(kept, edge_values[edges[f, j]], wp.float32(0.0))
+        count = wp.where(kept, wp.float32(1.0), wp.float32(0.0))
+        accumulate_endpoint_value(u, v, value, count, out_sum, out_valence, 0)
     elif edges_orientation[f, j] >= 0:
-        accumulate_endpoint_value(u, v, edge_values[edges[f, j]], out_sum, out_valence)
+        accumulate_endpoint_value(
+            u, v, edge_values[edges[f, j]], wp.float32(1.0), out_sum, out_valence, 1
+        )
 
 
 @wp.kernel
