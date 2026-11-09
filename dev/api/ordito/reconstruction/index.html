@@ -6318,8 +6318,7 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 74</span>
-<span class="normal"> 75</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 75</span>
 <span class="normal"> 76</span>
 <span class="normal"> 77</span>
 <span class="normal"> 78</span>
@@ -6421,7 +6420,8 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 <span class="normal">174</span>
 <span class="normal">175</span>
 <span class="normal">176</span>
-<span class="normal">177</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">177</span>
+<span class="normal">178</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Delaunay triangulation of a 2D point set.</span>
 
@@ -6831,8 +6831,7 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">242</span>
-<span class="normal">243</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">243</span>
 <span class="normal">244</span>
 <span class="normal">245</span>
 <span class="normal">246</span>
@@ -7036,7 +7035,8 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
 <span class="normal">444</span>
 <span class="normal">445</span>
 <span class="normal">446</span>
-<span class="normal">447</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">447</span>
+<span class="normal">448</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7684,8 +7684,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1271</span>
-<span class="normal">1272</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1272</span>
 <span class="normal">1273</span>
 <span class="normal">1274</span>
 <span class="normal">1275</span>
@@ -7965,7 +7964,8 @@ taken from it.</p>
 <span class="normal">1549</span>
 <span class="normal">1550</span>
 <span class="normal">1551</span>
-<span class="normal">1552</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">1552</span>
+<span class="normal">1553</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8570,10 +8570,7 @@ vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4403</span>
-<span class="normal">4404</span>
-<span class="normal">4405</span>
-<span class="normal">4406</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4406</span>
 <span class="normal">4407</span>
 <span class="normal">4408</span>
 <span class="normal">4409</span>
@@ -8767,7 +8764,10 @@ vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell 
 <span class="normal">4597</span>
 <span class="normal">4598</span>
 <span class="normal">4599</span>
-<span class="normal">4600</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">4600</span>
+<span class="normal">4601</span>
+<span class="normal">4602</span>
+<span class="normal">4603</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9277,10 +9277,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4761</span>
-<span class="normal">4762</span>
-<span class="normal">4763</span>
-<span class="normal">4764</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4764</span>
 <span class="normal">4765</span>
 <span class="normal">4766</span>
 <span class="normal">4767</span>
@@ -9442,7 +9439,10 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">4923</span>
 <span class="normal">4924</span>
 <span class="normal">4925</span>
-<span class="normal">4926</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">4926</span>
+<span class="normal">4927</span>
+<span class="normal">4928</span>
+<span class="normal">4929</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

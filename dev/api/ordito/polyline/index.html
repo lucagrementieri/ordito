@@ -9676,7 +9676,9 @@ sawtooth are all shallower than a boundary loop.</p>
 <span class="normal">1033</span>
 <span class="normal">1034</span>
 <span class="normal">1035</span>
-<span class="normal">1036</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_simplify</span><span class="p">(</span>
+<span class="normal">1036</span>
+<span class="normal">1037</span>
+<span class="normal">1038</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_simplify</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">tol</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9830,6 +9832,8 @@ sawtooth are all shallower than a boundary loop.</p>
                 <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
             <span class="p">)</span>
 
+        <span class="c1"># Declined (2026-11-09): two or four rounds a replayed body (a round past the last split</span>
+        <span class="c1"># keeps nothing): 0.97-1.01x and 1.02-1.07x on noisy helices of 20 k-2 M points.</span>
         <span class="n">condition</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">])</span>
         <span class="n">run_device_loop</span><span class="p">(</span><span class="n">device</span><span class="p">,</span> <span class="n">condition</span><span class="p">,</span> <span class="n">split_round</span><span class="p">)</span>
 
@@ -9986,9 +9990,7 @@ point is repeated <code>num_points</code> times.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1064</span>
-<span class="normal">1065</span>
-<span class="normal">1066</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1066</span>
 <span class="normal">1067</span>
 <span class="normal">1068</span>
 <span class="normal">1069</span>
@@ -10064,7 +10066,9 @@ point is repeated <code>num_points</code> times.</p>
 <span class="normal">1139</span>
 <span class="normal">1140</span>
 <span class="normal">1141</span>
-<span class="normal">1142</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_resample</span><span class="p">(</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_resample</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">num_points</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10362,9 +10366,7 @@ radius reaches the long sides and the largest the short ones:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1171</span>
-<span class="normal">1172</span>
-<span class="normal">1173</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1173</span>
 <span class="normal">1174</span>
 <span class="normal">1175</span>
 <span class="normal">1176</span>
@@ -10535,7 +10537,9 @@ radius reaches the long sides and the largest the short ones:</p>
 <span class="normal">1341</span>
 <span class="normal">1342</span>
 <span class="normal">1343</span>
-<span class="normal">1344</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_radius</span><span class="p">(</span>
+<span class="normal">1344</span>
+<span class="normal">1345</span>
+<span class="normal">1346</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_radius</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">reduction</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"min"</span><span class="p">,</span> <span class="s2">"max"</span><span class="p">,</span> <span class="s2">"mean"</span><span class="p">,</span> <span class="s2">"median"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"min"</span><span class="p">,</span>
     <span class="n">center</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10837,9 +10841,7 @@ still has one angle per <em>original</em> point, and the turning angles wrap aro
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1390</span>
-<span class="normal">1391</span>
-<span class="normal">1392</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1392</span>
 <span class="normal">1393</span>
 <span class="normal">1394</span>
 <span class="normal">1395</span>
@@ -10897,7 +10899,9 @@ still has one angle per <em>original</em> point, and the turning angles wrap aro
 <span class="normal">1447</span>
 <span class="normal">1448</span>
 <span class="normal">1449</span>
-<span class="normal">1450</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_angles</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_angles</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Angles between consecutive segments at each vertex of a polyline.</span>
 
@@ -11114,9 +11118,7 @@ middle index (the tip of the ear each one clipped).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1453</span>
-<span class="normal">1454</span>
-<span class="normal">1455</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1455</span>
 <span class="normal">1456</span>
 <span class="normal">1457</span>
 <span class="normal">1458</span>
@@ -11221,7 +11223,9 @@ middle index (the tip of the ear each one clipped).</p>
 <span class="normal">1557</span>
 <span class="normal">1558</span>
 <span class="normal">1559</span>
-<span class="normal">1560</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
+<span class="normal">1560</span>
+<span class="normal">1561</span>
+<span class="normal">1562</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Triangulate the simple planar polygon bounded by a closed 3D polyline (ear clipping).</span>
 
@@ -11504,9 +11508,7 @@ in the order <a class="autorefs autorefs-internal" title="polyline_triangulate" 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1565</span>
 <span class="normal">1566</span>
 <span class="normal">1567</span>
 <span class="normal">1568</span>
@@ -11610,7 +11612,9 @@ in the order <a class="autorefs autorefs-internal" title="polyline_triangulate" 
 <span class="normal">1666</span>
 <span class="normal">1667</span>
 <span class="normal">1668</span>
-<span class="normal">1669</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
     <span class="n">polylines</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">offsets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -11855,9 +11859,7 @@ repeats from call to call only with <a class="autorefs autorefs-internal" title=
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1838</span>
-<span class="normal">1839</span>
-<span class="normal">1840</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1840</span>
 <span class="normal">1841</span>
 <span class="normal">1842</span>
 <span class="normal">1843</span>
@@ -11913,7 +11915,9 @@ repeats from call to call only with <a class="autorefs autorefs-internal" title=
 <span class="normal">1893</span>
 <span class="normal">1894</span>
 <span class="normal">1895</span>
-<span class="normal">1896</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="normal">1896</span>
+<span class="normal">1897</span>
+<span class="normal">1898</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Triangulate a simple 2D polygon by ear clipping, adding no new vertices.</span>
 

@@ -10135,7 +10135,20 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 <span class="normal">1387</span>
 <span class="normal">1388</span>
 <span class="normal">1389</span>
-<span class="normal">1390</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
+<span class="normal">1390</span>
+<span class="normal">1391</span>
+<span class="normal">1392</span>
+<span class="normal">1393</span>
+<span class="normal">1394</span>
+<span class="normal">1395</span>
+<span class="normal">1396</span>
+<span class="normal">1397</span>
+<span class="normal">1398</span>
+<span class="normal">1399</span>
+<span class="normal">1400</span>
+<span class="normal">1401</span>
+<span class="normal">1402</span>
+<span class="normal">1403</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
     <span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
@@ -10333,10 +10346,12 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
     <span class="c1"># (``kernels/graph.shortest_path_envelope_patch_pass``); the first pass stays a plain pull, so a</span>
     <span class="c1"># field it all but settles pays for no patch rounds.</span>
     <span class="n">patches</span> <span class="o">=</span> <span class="p">[</span><span class="kc">False</span><span class="p">]</span>
+    <span class="n">passes_per_body</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1</span><span class="p">]</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">envelope_pass_body</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># One pass, then (Jacobi) a copy of its result back over ``labels``, then the shared</span>
-        <span class="c1"># round-closing kernel, which turns the pass's progress and the cap into the condition.</span>
+        <span class="c1"># ``passes_per_body`` passes, each followed (Jacobi) by a copy of its result back over</span>
+        <span class="c1"># ``labels``, then the shared round-closing kernel, which turns the passes' progress and the</span>
+        <span class="c1"># cap into the condition.</span>
         <span class="c1"># **Two Jacobi passes per round, written into each other's buffer, would remove the copy**</span>
         <span class="c1"># and are **not portable**: measured with that body, the CPU device relaxed strictly fewer</span>
         <span class="c1"># nodes per round than CUDA at every cap, because the recorded body did not replay as two</span>
@@ -10344,26 +10359,30 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
         <span class="c1"># indivisible unit across devices, so a loop whose *result buffer* depends on the body</span>
         <span class="c1"># running whole cannot rely on it. A Python-level ping-pong cannot help either: the body is</span>
         <span class="c1"># recorded once and replayed, so rebinding the names would only take effect at record time.</span>
-        <span class="k">if</span> <span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_patch_pass</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="o">-</span><span class="p">(</span><span class="o">-</span><span class="n">node_count</span> <span class="o">//</span> <span class="n">_ENVELOPE_PATCH_LANES</span><span class="p">)],</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">ENVELOPE_PATCH_ROUNDS</span><span class="p">],</span>
-                <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">block_dim</span><span class="o">=</span><span class="n">_ENVELOPE_PATCH_LANES</span><span class="p">,</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_pass</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-        <span class="k">if</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">labels</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">passes_per_body</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
+            <span class="k">if</span> <span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]:</span>
+                <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
+                    <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_patch_pass</span><span class="p">,</span>
+                    <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="o">-</span><span class="p">(</span><span class="o">-</span><span class="n">node_count</span> <span class="o">//</span> <span class="n">_ENVELOPE_PATCH_LANES</span><span class="p">)],</span>
+                    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">ENVELOPE_PATCH_ROUNDS</span><span class="p">],</span>
+                    <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
+                    <span class="n">block_dim</span><span class="o">=</span><span class="n">_ENVELOPE_PATCH_LANES</span><span class="p">,</span>
+                    <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+                <span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+                    <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_pass</span><span class="p">,</span>
+                    <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
+                    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
+                    <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">labels</span><span class="p">:</span>
+                <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_array</span><span class="o">.</span><span class="n">loop_advance</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">max_pass_count_i32</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+            <span class="n">kernel_array</span><span class="o">.</span><span class="n">loop_advance_by</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">passes_per_body</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">max_pass_count_i32</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
 
     <span class="c1"># The first pass runs uncaptured and its read is the call's one readback: it carries the</span>
@@ -10376,6 +10395,13 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
     <span class="c1"># The rest of the passes run on-device via ``wp.capture_while``, so their convergence checks</span>
     <span class="c1"># and the cap cost no host readback.</span>
     <span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">order</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="n">labels</span>
+    <span class="k">if</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="n">labels</span><span class="p">:</span>
+        <span class="c1"># In place, a pass past the fixpoint moves nothing, so a replayed body runs several and</span>
+        <span class="c1"># the loop's conditional node and closing launch come once a body. A capped call keeps one</span>
+        <span class="c1"># pass a body: its answer is exactly that many passes.</span>
+        <span class="n">passes_per_body</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">_ENVELOPE_PATCH_PASSES_PER_BODY</span> <span class="k">if</span> <span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">else</span> <span class="n">_ENVELOPE_PASSES_PER_BODY</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">condition</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">run_device_loop</span><span class="p">(</span>
             <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">envelope_pass_body</span>

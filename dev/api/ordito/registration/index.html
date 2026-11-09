@@ -7421,7 +7421,11 @@ correspondences are given:</p>
 <span class="normal">609</span>
 <span class="normal">610</span>
 <span class="normal">611</span>
-<span class="normal">612</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7715,7 +7719,11 @@ correspondences are given:</p>
     <span class="c1"># weightless (its test compares against an ``inf`` previous cost), which only a distance gate</span>
     <span class="c1"># can make it -- uniform weights sum to ``n`` -- so only a gated call reads the round counter,</span>
     <span class="c1"># which a weightless round does not advance, before launching what it recorded. The read comes</span>
-    <span class="c1"># after the recording, so it finds round 0 finished and waits on nothing.</span>
+    <span class="c1"># after the recording, so it finds round 0 finished and waits on nothing. Declined</span>
+    <span class="c1"># (2026-11-09): issuing the rounds from the host instead (a round past convergence would refine</span>
+    <span class="c1"># the fit, so several a read need the three kernels gated): one a read lost 1.02-1.14x over</span>
+    <span class="c1"># ``icp_point_cloud``, ``icp_point_to_plane_cloud`` and ``icp_mesh`` on ``sphere_small`` to</span>
+    <span class="c1"># ``sphere_large``, so the recording costs less than the reads it removes.</span>
     <span class="n">iterate</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
         <span class="n">replay</span> <span class="o">=</span> <span class="n">record_device_loop</span><span class="p">(</span>
@@ -8159,11 +8167,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 685</span>
-<span class="normal"> 686</span>
-<span class="normal"> 687</span>
-<span class="normal"> 688</span>
-<span class="normal"> 689</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 689</span>
 <span class="normal"> 690</span>
 <span class="normal"> 691</span>
 <span class="normal"> 692</span>
@@ -8526,7 +8530,12 @@ a mesh target.</p>
 <span class="normal">1049</span>
 <span class="normal">1050</span>
 <span class="normal">1051</span>
-<span class="normal">1052</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8870,6 +8879,7 @@ a mesh target.</p>
 
             <span class="n">replay</span> <span class="o">=</span> <span class="n">rounds_serial</span>
         <span class="k">elif</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="c1"># Recorded rather than issued from the host: see the decline at ``icp``'s loop.</span>
             <span class="n">replay</span> <span class="o">=</span> <span class="n">record_device_loop</span><span class="p">(</span>
                 <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">iterate</span>
             <span class="p">)</span>

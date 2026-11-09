@@ -11805,7 +11805,7 @@ solid ring:</p>
 <span class="sd">    """</span>
     <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="n">linestring</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)</span>
     <span class="c1"># Host readback: the layout below is decided from the profile on the host.</span>
-    <span class="k">return</span> <span class="n">_revolve_profile</span><span class="p">(</span><span class="n">linestring</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">linestring</span><span class="p">,</span> <span class="n">angle</span><span class="p">,</span> <span class="n">cap</span><span class="p">,</span> <span class="n">sections</span><span class="p">,</span> <span class="n">transform</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_revolve_profile</span><span class="p">(</span><span class="n">read_array</span><span class="p">(</span><span class="n">linestring</span><span class="p">),</span> <span class="n">linestring</span><span class="p">,</span> <span class="n">angle</span><span class="p">,</span> <span class="n">cap</span><span class="p">,</span> <span class="n">sections</span><span class="p">,</span> <span class="n">transform</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

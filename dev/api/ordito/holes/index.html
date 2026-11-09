@@ -8740,44 +8740,7 @@ deleted (a 6-vertex rim): either bound fills the small hole and leaves the large
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1343</span>
-<span class="normal">1344</span>
-<span class="normal">1345</span>
-<span class="normal">1346</span>
-<span class="normal">1347</span>
-<span class="normal">1348</span>
-<span class="normal">1349</span>
-<span class="normal">1350</span>
-<span class="normal">1351</span>
-<span class="normal">1352</span>
-<span class="normal">1353</span>
-<span class="normal">1354</span>
-<span class="normal">1355</span>
-<span class="normal">1356</span>
-<span class="normal">1357</span>
-<span class="normal">1358</span>
-<span class="normal">1359</span>
-<span class="normal">1360</span>
-<span class="normal">1361</span>
-<span class="normal">1362</span>
-<span class="normal">1363</span>
-<span class="normal">1364</span>
-<span class="normal">1365</span>
-<span class="normal">1366</span>
-<span class="normal">1367</span>
-<span class="normal">1368</span>
-<span class="normal">1369</span>
-<span class="normal">1370</span>
-<span class="normal">1371</span>
-<span class="normal">1372</span>
-<span class="normal">1373</span>
-<span class="normal">1374</span>
-<span class="normal">1375</span>
-<span class="normal">1376</span>
-<span class="normal">1377</span>
-<span class="normal">1378</span>
-<span class="normal">1379</span>
-<span class="normal">1380</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1380</span>
 <span class="normal">1381</span>
 <span class="normal">1382</span>
 <span class="normal">1383</span>
@@ -8857,7 +8820,44 @@ deleted (a 6-vertex rim): either bound fills the small hole and leaves the large
 <span class="normal">1457</span>
 <span class="normal">1458</span>
 <span class="normal">1459</span>
-<span class="normal">1460</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_small</span><span class="p">(</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span>
+<span class="normal">1472</span>
+<span class="normal">1473</span>
+<span class="normal">1474</span>
+<span class="normal">1475</span>
+<span class="normal">1476</span>
+<span class="normal">1477</span>
+<span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_small</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_perimeter</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9507,44 +9507,7 @@ deleted (a 6-vertex rim): both are patched, and the patches gain interior vertic
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1553</span>
-<span class="normal">1554</span>
-<span class="normal">1555</span>
-<span class="normal">1556</span>
-<span class="normal">1557</span>
-<span class="normal">1558</span>
-<span class="normal">1559</span>
-<span class="normal">1560</span>
-<span class="normal">1561</span>
-<span class="normal">1562</span>
-<span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
-<span class="normal">1566</span>
-<span class="normal">1567</span>
-<span class="normal">1568</span>
-<span class="normal">1569</span>
-<span class="normal">1570</span>
-<span class="normal">1571</span>
-<span class="normal">1572</span>
-<span class="normal">1573</span>
-<span class="normal">1574</span>
-<span class="normal">1575</span>
-<span class="normal">1576</span>
-<span class="normal">1577</span>
-<span class="normal">1578</span>
-<span class="normal">1579</span>
-<span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1590</span>
 <span class="normal">1591</span>
 <span class="normal">1592</span>
 <span class="normal">1593</span>
@@ -9711,7 +9674,44 @@ deleted (a 6-vertex rim): both are patched, and the patches gain interior vertic
 <span class="normal">1754</span>
 <span class="normal">1755</span>
 <span class="normal">1756</span>
-<span class="normal">1757</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_smooth</span><span class="p">(</span>
+<span class="normal">1757</span>
+<span class="normal">1758</span>
+<span class="normal">1759</span>
+<span class="normal">1760</span>
+<span class="normal">1761</span>
+<span class="normal">1762</span>
+<span class="normal">1763</span>
+<span class="normal">1764</span>
+<span class="normal">1765</span>
+<span class="normal">1766</span>
+<span class="normal">1767</span>
+<span class="normal">1768</span>
+<span class="normal">1769</span>
+<span class="normal">1770</span>
+<span class="normal">1771</span>
+<span class="normal">1772</span>
+<span class="normal">1773</span>
+<span class="normal">1774</span>
+<span class="normal">1775</span>
+<span class="normal">1776</span>
+<span class="normal">1777</span>
+<span class="normal">1778</span>
+<span class="normal">1779</span>
+<span class="normal">1780</span>
+<span class="normal">1781</span>
+<span class="normal">1782</span>
+<span class="normal">1783</span>
+<span class="normal">1784</span>
+<span class="normal">1785</span>
+<span class="normal">1786</span>
+<span class="normal">1787</span>
+<span class="normal">1788</span>
+<span class="normal">1789</span>
+<span class="normal">1790</span>
+<span class="normal">1791</span>
+<span class="normal">1792</span>
+<span class="normal">1793</span>
+<span class="normal">1794</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_smooth</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">metric</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"plane_normalized"</span><span class="p">,</span>
@@ -10255,44 +10255,7 @@ surrounding resolution:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1815</span>
-<span class="normal">1816</span>
-<span class="normal">1817</span>
-<span class="normal">1818</span>
-<span class="normal">1819</span>
-<span class="normal">1820</span>
-<span class="normal">1821</span>
-<span class="normal">1822</span>
-<span class="normal">1823</span>
-<span class="normal">1824</span>
-<span class="normal">1825</span>
-<span class="normal">1826</span>
-<span class="normal">1827</span>
-<span class="normal">1828</span>
-<span class="normal">1829</span>
-<span class="normal">1830</span>
-<span class="normal">1831</span>
-<span class="normal">1832</span>
-<span class="normal">1833</span>
-<span class="normal">1834</span>
-<span class="normal">1835</span>
-<span class="normal">1836</span>
-<span class="normal">1837</span>
-<span class="normal">1838</span>
-<span class="normal">1839</span>
-<span class="normal">1840</span>
-<span class="normal">1841</span>
-<span class="normal">1842</span>
-<span class="normal">1843</span>
-<span class="normal">1844</span>
-<span class="normal">1845</span>
-<span class="normal">1846</span>
-<span class="normal">1847</span>
-<span class="normal">1848</span>
-<span class="normal">1849</span>
-<span class="normal">1850</span>
-<span class="normal">1851</span>
-<span class="normal">1852</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1852</span>
 <span class="normal">1853</span>
 <span class="normal">1854</span>
 <span class="normal">1855</span>
@@ -10403,7 +10366,44 @@ surrounding resolution:</p>
 <span class="normal">1960</span>
 <span class="normal">1961</span>
 <span class="normal">1962</span>
-<span class="normal">1963</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refill_region</span><span class="p">(</span>
+<span class="normal">1963</span>
+<span class="normal">1964</span>
+<span class="normal">1965</span>
+<span class="normal">1966</span>
+<span class="normal">1967</span>
+<span class="normal">1968</span>
+<span class="normal">1969</span>
+<span class="normal">1970</span>
+<span class="normal">1971</span>
+<span class="normal">1972</span>
+<span class="normal">1973</span>
+<span class="normal">1974</span>
+<span class="normal">1975</span>
+<span class="normal">1976</span>
+<span class="normal">1977</span>
+<span class="normal">1978</span>
+<span class="normal">1979</span>
+<span class="normal">1980</span>
+<span class="normal">1981</span>
+<span class="normal">1982</span>
+<span class="normal">1983</span>
+<span class="normal">1984</span>
+<span class="normal">1985</span>
+<span class="normal">1986</span>
+<span class="normal">1987</span>
+<span class="normal">1988</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span>
+<span class="normal">1991</span>
+<span class="normal">1992</span>
+<span class="normal">1993</span>
+<span class="normal">1994</span>
+<span class="normal">1995</span>
+<span class="normal">1996</span>
+<span class="normal">1997</span>
+<span class="normal">1998</span>
+<span class="normal">1999</span>
+<span class="normal">2000</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refill_region</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -10805,44 +10805,7 @@ closed flat:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1966</span>
-<span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
-<span class="normal">1972</span>
-<span class="normal">1973</span>
-<span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span>
-<span class="normal">1977</span>
-<span class="normal">1978</span>
-<span class="normal">1979</span>
-<span class="normal">1980</span>
-<span class="normal">1981</span>
-<span class="normal">1982</span>
-<span class="normal">1983</span>
-<span class="normal">1984</span>
-<span class="normal">1985</span>
-<span class="normal">1986</span>
-<span class="normal">1987</span>
-<span class="normal">1988</span>
-<span class="normal">1989</span>
-<span class="normal">1990</span>
-<span class="normal">1991</span>
-<span class="normal">1992</span>
-<span class="normal">1993</span>
-<span class="normal">1994</span>
-<span class="normal">1995</span>
-<span class="normal">1996</span>
-<span class="normal">1997</span>
-<span class="normal">1998</span>
-<span class="normal">1999</span>
-<span class="normal">2000</span>
-<span class="normal">2001</span>
-<span class="normal">2002</span>
-<span class="normal">2003</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2003</span>
 <span class="normal">2004</span>
 <span class="normal">2005</span>
 <span class="normal">2006</span>
@@ -10901,7 +10864,44 @@ closed flat:</p>
 <span class="normal">2059</span>
 <span class="normal">2060</span>
 <span class="normal">2061</span>
-<span class="normal">2062</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_hole</span><span class="p">(</span>
+<span class="normal">2062</span>
+<span class="normal">2063</span>
+<span class="normal">2064</span>
+<span class="normal">2065</span>
+<span class="normal">2066</span>
+<span class="normal">2067</span>
+<span class="normal">2068</span>
+<span class="normal">2069</span>
+<span class="normal">2070</span>
+<span class="normal">2071</span>
+<span class="normal">2072</span>
+<span class="normal">2073</span>
+<span class="normal">2074</span>
+<span class="normal">2075</span>
+<span class="normal">2076</span>
+<span class="normal">2077</span>
+<span class="normal">2078</span>
+<span class="normal">2079</span>
+<span class="normal">2080</span>
+<span class="normal">2081</span>
+<span class="normal">2082</span>
+<span class="normal">2083</span>
+<span class="normal">2084</span>
+<span class="normal">2085</span>
+<span class="normal">2086</span>
+<span class="normal">2087</span>
+<span class="normal">2088</span>
+<span class="normal">2089</span>
+<span class="normal">2090</span>
+<span class="normal">2091</span>
+<span class="normal">2092</span>
+<span class="normal">2093</span>
+<span class="normal">2094</span>
+<span class="normal">2095</span>
+<span class="normal">2096</span>
+<span class="normal">2097</span>
+<span class="normal">2098</span>
+<span class="normal">2099</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_hole</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -11235,44 +11235,7 @@ appended per rim vertex.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2065</span>
-<span class="normal">2066</span>
-<span class="normal">2067</span>
-<span class="normal">2068</span>
-<span class="normal">2069</span>
-<span class="normal">2070</span>
-<span class="normal">2071</span>
-<span class="normal">2072</span>
-<span class="normal">2073</span>
-<span class="normal">2074</span>
-<span class="normal">2075</span>
-<span class="normal">2076</span>
-<span class="normal">2077</span>
-<span class="normal">2078</span>
-<span class="normal">2079</span>
-<span class="normal">2080</span>
-<span class="normal">2081</span>
-<span class="normal">2082</span>
-<span class="normal">2083</span>
-<span class="normal">2084</span>
-<span class="normal">2085</span>
-<span class="normal">2086</span>
-<span class="normal">2087</span>
-<span class="normal">2088</span>
-<span class="normal">2089</span>
-<span class="normal">2090</span>
-<span class="normal">2091</span>
-<span class="normal">2092</span>
-<span class="normal">2093</span>
-<span class="normal">2094</span>
-<span class="normal">2095</span>
-<span class="normal">2096</span>
-<span class="normal">2097</span>
-<span class="normal">2098</span>
-<span class="normal">2099</span>
-<span class="normal">2100</span>
-<span class="normal">2101</span>
-<span class="normal">2102</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2102</span>
 <span class="normal">2103</span>
 <span class="normal">2104</span>
 <span class="normal">2105</span>
@@ -11331,7 +11294,44 @@ appended per rim vertex.</p>
 <span class="normal">2158</span>
 <span class="normal">2159</span>
 <span class="normal">2160</span>
-<span class="normal">2161</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_bottom</span><span class="p">(</span>
+<span class="normal">2161</span>
+<span class="normal">2162</span>
+<span class="normal">2163</span>
+<span class="normal">2164</span>
+<span class="normal">2165</span>
+<span class="normal">2166</span>
+<span class="normal">2167</span>
+<span class="normal">2168</span>
+<span class="normal">2169</span>
+<span class="normal">2170</span>
+<span class="normal">2171</span>
+<span class="normal">2172</span>
+<span class="normal">2173</span>
+<span class="normal">2174</span>
+<span class="normal">2175</span>
+<span class="normal">2176</span>
+<span class="normal">2177</span>
+<span class="normal">2178</span>
+<span class="normal">2179</span>
+<span class="normal">2180</span>
+<span class="normal">2181</span>
+<span class="normal">2182</span>
+<span class="normal">2183</span>
+<span class="normal">2184</span>
+<span class="normal">2185</span>
+<span class="normal">2186</span>
+<span class="normal">2187</span>
+<span class="normal">2188</span>
+<span class="normal">2189</span>
+<span class="normal">2190</span>
+<span class="normal">2191</span>
+<span class="normal">2192</span>
+<span class="normal">2193</span>
+<span class="normal">2194</span>
+<span class="normal">2195</span>
+<span class="normal">2196</span>
+<span class="normal">2197</span>
+<span class="normal">2198</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_bottom</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">direction</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -11654,44 +11654,7 @@ rim, which the fill can close:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
-<span class="normal">2237</span>
-<span class="normal">2238</span>
-<span class="normal">2239</span>
-<span class="normal">2240</span>
-<span class="normal">2241</span>
-<span class="normal">2242</span>
-<span class="normal">2243</span>
-<span class="normal">2244</span>
-<span class="normal">2245</span>
-<span class="normal">2246</span>
-<span class="normal">2247</span>
-<span class="normal">2248</span>
-<span class="normal">2249</span>
-<span class="normal">2250</span>
-<span class="normal">2251</span>
-<span class="normal">2252</span>
-<span class="normal">2253</span>
-<span class="normal">2254</span>
-<span class="normal">2255</span>
-<span class="normal">2256</span>
-<span class="normal">2257</span>
-<span class="normal">2258</span>
-<span class="normal">2259</span>
-<span class="normal">2260</span>
-<span class="normal">2261</span>
-<span class="normal">2262</span>
-<span class="normal">2263</span>
-<span class="normal">2264</span>
-<span class="normal">2265</span>
-<span class="normal">2266</span>
-<span class="normal">2267</span>
-<span class="normal">2268</span>
-<span class="normal">2269</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2269</span>
 <span class="normal">2270</span>
 <span class="normal">2271</span>
 <span class="normal">2272</span>
@@ -11802,7 +11765,44 @@ rim, which the fill can close:</p>
 <span class="normal">2377</span>
 <span class="normal">2378</span>
 <span class="normal">2379</span>
-<span class="normal">2380</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fillable_loop_mask</span><span class="p">(</span>
+<span class="normal">2380</span>
+<span class="normal">2381</span>
+<span class="normal">2382</span>
+<span class="normal">2383</span>
+<span class="normal">2384</span>
+<span class="normal">2385</span>
+<span class="normal">2386</span>
+<span class="normal">2387</span>
+<span class="normal">2388</span>
+<span class="normal">2389</span>
+<span class="normal">2390</span>
+<span class="normal">2391</span>
+<span class="normal">2392</span>
+<span class="normal">2393</span>
+<span class="normal">2394</span>
+<span class="normal">2395</span>
+<span class="normal">2396</span>
+<span class="normal">2397</span>
+<span class="normal">2398</span>
+<span class="normal">2399</span>
+<span class="normal">2400</span>
+<span class="normal">2401</span>
+<span class="normal">2402</span>
+<span class="normal">2403</span>
+<span class="normal">2404</span>
+<span class="normal">2405</span>
+<span class="normal">2406</span>
+<span class="normal">2407</span>
+<span class="normal">2408</span>
+<span class="normal">2409</span>
+<span class="normal">2410</span>
+<span class="normal">2411</span>
+<span class="normal">2412</span>
+<span class="normal">2413</span>
+<span class="normal">2414</span>
+<span class="normal">2415</span>
+<span class="normal">2416</span>
+<span class="normal">2417</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fillable_loop_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -12207,44 +12207,7 @@ closed body:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
-<span class="normal">2388</span>
-<span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span>
-<span class="normal">2393</span>
-<span class="normal">2394</span>
-<span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
-<span class="normal">2402</span>
-<span class="normal">2403</span>
-<span class="normal">2404</span>
-<span class="normal">2405</span>
-<span class="normal">2406</span>
-<span class="normal">2407</span>
-<span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
-<span class="normal">2415</span>
-<span class="normal">2416</span>
-<span class="normal">2417</span>
-<span class="normal">2418</span>
-<span class="normal">2419</span>
-<span class="normal">2420</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2420</span>
 <span class="normal">2421</span>
 <span class="normal">2422</span>
 <span class="normal">2423</span>
@@ -12291,7 +12254,44 @@ closed body:</p>
 <span class="normal">2464</span>
 <span class="normal">2465</span>
 <span class="normal">2466</span>
-<span class="normal">2467</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch</span><span class="p">(</span>
+<span class="normal">2467</span>
+<span class="normal">2468</span>
+<span class="normal">2469</span>
+<span class="normal">2470</span>
+<span class="normal">2471</span>
+<span class="normal">2472</span>
+<span class="normal">2473</span>
+<span class="normal">2474</span>
+<span class="normal">2475</span>
+<span class="normal">2476</span>
+<span class="normal">2477</span>
+<span class="normal">2478</span>
+<span class="normal">2479</span>
+<span class="normal">2480</span>
+<span class="normal">2481</span>
+<span class="normal">2482</span>
+<span class="normal">2483</span>
+<span class="normal">2484</span>
+<span class="normal">2485</span>
+<span class="normal">2486</span>
+<span class="normal">2487</span>
+<span class="normal">2488</span>
+<span class="normal">2489</span>
+<span class="normal">2490</span>
+<span class="normal">2491</span>
+<span class="normal">2492</span>
+<span class="normal">2493</span>
+<span class="normal">2494</span>
+<span class="normal">2495</span>
+<span class="normal">2496</span>
+<span class="normal">2497</span>
+<span class="normal">2498</span>
+<span class="normal">2499</span>
+<span class="normal">2500</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span>
+<span class="normal">2504</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -12710,44 +12710,7 @@ closed body:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span>
-<span class="normal">2474</span>
-<span class="normal">2475</span>
-<span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2507</span>
 <span class="normal">2508</span>
 <span class="normal">2509</span>
 <span class="normal">2510</span>
@@ -12826,7 +12789,44 @@ closed body:</p>
 <span class="normal">2583</span>
 <span class="normal">2584</span>
 <span class="normal">2585</span>
-<span class="normal">2586</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_min_weight</span><span class="p">(</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span>
+<span class="normal">2588</span>
+<span class="normal">2589</span>
+<span class="normal">2590</span>
+<span class="normal">2591</span>
+<span class="normal">2592</span>
+<span class="normal">2593</span>
+<span class="normal">2594</span>
+<span class="normal">2595</span>
+<span class="normal">2596</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span>
+<span class="normal">2623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_min_weight</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -13504,44 +13504,7 @@ threshold (see Notes):</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2635</span>
-<span class="normal">2636</span>
-<span class="normal">2637</span>
-<span class="normal">2638</span>
-<span class="normal">2639</span>
-<span class="normal">2640</span>
-<span class="normal">2641</span>
-<span class="normal">2642</span>
-<span class="normal">2643</span>
-<span class="normal">2644</span>
-<span class="normal">2645</span>
-<span class="normal">2646</span>
-<span class="normal">2647</span>
-<span class="normal">2648</span>
-<span class="normal">2649</span>
-<span class="normal">2650</span>
-<span class="normal">2651</span>
-<span class="normal">2652</span>
-<span class="normal">2653</span>
-<span class="normal">2654</span>
-<span class="normal">2655</span>
-<span class="normal">2656</span>
-<span class="normal">2657</span>
-<span class="normal">2658</span>
-<span class="normal">2659</span>
-<span class="normal">2660</span>
-<span class="normal">2661</span>
-<span class="normal">2662</span>
-<span class="normal">2663</span>
-<span class="normal">2664</span>
-<span class="normal">2665</span>
-<span class="normal">2666</span>
-<span class="normal">2667</span>
-<span class="normal">2668</span>
-<span class="normal">2669</span>
-<span class="normal">2670</span>
-<span class="normal">2671</span>
-<span class="normal">2672</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2672</span>
 <span class="normal">2673</span>
 <span class="normal">2674</span>
 <span class="normal">2675</span>
@@ -13715,7 +13678,44 @@ threshold (see Notes):</p>
 <span class="normal">2843</span>
 <span class="normal">2844</span>
 <span class="normal">2845</span>
-<span class="normal">2846</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_smooth</span><span class="p">(</span>
+<span class="normal">2846</span>
+<span class="normal">2847</span>
+<span class="normal">2848</span>
+<span class="normal">2849</span>
+<span class="normal">2850</span>
+<span class="normal">2851</span>
+<span class="normal">2852</span>
+<span class="normal">2853</span>
+<span class="normal">2854</span>
+<span class="normal">2855</span>
+<span class="normal">2856</span>
+<span class="normal">2857</span>
+<span class="normal">2858</span>
+<span class="normal">2859</span>
+<span class="normal">2860</span>
+<span class="normal">2861</span>
+<span class="normal">2862</span>
+<span class="normal">2863</span>
+<span class="normal">2864</span>
+<span class="normal">2865</span>
+<span class="normal">2866</span>
+<span class="normal">2867</span>
+<span class="normal">2868</span>
+<span class="normal">2869</span>
+<span class="normal">2870</span>
+<span class="normal">2871</span>
+<span class="normal">2872</span>
+<span class="normal">2873</span>
+<span class="normal">2874</span>
+<span class="normal">2875</span>
+<span class="normal">2876</span>
+<span class="normal">2877</span>
+<span class="normal">2878</span>
+<span class="normal">2879</span>
+<span class="normal">2880</span>
+<span class="normal">2881</span>
+<span class="normal">2882</span>
+<span class="normal">2883</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_smooth</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -14210,44 +14210,7 @@ closed body, naming the two rims:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2939</span>
-<span class="normal">2940</span>
-<span class="normal">2941</span>
-<span class="normal">2942</span>
-<span class="normal">2943</span>
-<span class="normal">2944</span>
-<span class="normal">2945</span>
-<span class="normal">2946</span>
-<span class="normal">2947</span>
-<span class="normal">2948</span>
-<span class="normal">2949</span>
-<span class="normal">2950</span>
-<span class="normal">2951</span>
-<span class="normal">2952</span>
-<span class="normal">2953</span>
-<span class="normal">2954</span>
-<span class="normal">2955</span>
-<span class="normal">2956</span>
-<span class="normal">2957</span>
-<span class="normal">2958</span>
-<span class="normal">2959</span>
-<span class="normal">2960</span>
-<span class="normal">2961</span>
-<span class="normal">2962</span>
-<span class="normal">2963</span>
-<span class="normal">2964</span>
-<span class="normal">2965</span>
-<span class="normal">2966</span>
-<span class="normal">2967</span>
-<span class="normal">2968</span>
-<span class="normal">2969</span>
-<span class="normal">2970</span>
-<span class="normal">2971</span>
-<span class="normal">2972</span>
-<span class="normal">2973</span>
-<span class="normal">2974</span>
-<span class="normal">2975</span>
-<span class="normal">2976</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2976</span>
 <span class="normal">2977</span>
 <span class="normal">2978</span>
 <span class="normal">2979</span>
@@ -14445,7 +14408,44 @@ closed body, naming the two rims:</p>
 <span class="normal">3171</span>
 <span class="normal">3172</span>
 <span class="normal">3173</span>
-<span class="normal">3174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_loops</span><span class="p">(</span>
+<span class="normal">3174</span>
+<span class="normal">3175</span>
+<span class="normal">3176</span>
+<span class="normal">3177</span>
+<span class="normal">3178</span>
+<span class="normal">3179</span>
+<span class="normal">3180</span>
+<span class="normal">3181</span>
+<span class="normal">3182</span>
+<span class="normal">3183</span>
+<span class="normal">3184</span>
+<span class="normal">3185</span>
+<span class="normal">3186</span>
+<span class="normal">3187</span>
+<span class="normal">3188</span>
+<span class="normal">3189</span>
+<span class="normal">3190</span>
+<span class="normal">3191</span>
+<span class="normal">3192</span>
+<span class="normal">3193</span>
+<span class="normal">3194</span>
+<span class="normal">3195</span>
+<span class="normal">3196</span>
+<span class="normal">3197</span>
+<span class="normal">3198</span>
+<span class="normal">3199</span>
+<span class="normal">3200</span>
+<span class="normal">3201</span>
+<span class="normal">3202</span>
+<span class="normal">3203</span>
+<span class="normal">3204</span>
+<span class="normal">3205</span>
+<span class="normal">3206</span>
+<span class="normal">3207</span>
+<span class="normal">3208</span>
+<span class="normal">3209</span>
+<span class="normal">3210</span>
+<span class="normal">3211</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_loops</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loop_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -14605,7 +14605,7 @@ closed body, naming the two rims:</p>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">col_min</span><span class="p">,</span> <span class="n">val_min</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n</span><span class="p">),</span> <span class="n">col_and_shift</span><span class="p">[</span><span class="n">n</span><span class="p">:]],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">col_and_shift_np</span> <span class="o">=</span> <span class="n">col_and_shift</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="n">col_and_shift_np</span> <span class="o">=</span> <span class="n">read_array</span><span class="p">(</span><span class="n">col_and_shift</span><span class="p">)</span>
     <span class="n">shift_a</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">col_and_shift_np</span><span class="p">[</span><span class="n">n</span><span class="p">])</span>
     <span class="n">shift_b</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">col_and_shift_np</span><span class="p">[</span><span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">])</span>
     <span class="c1"># Each edge's B vertex after rolling both loops so the global-min pair is first</span>
@@ -15016,44 +15016,7 @@ closed body, naming the two rims:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3272</span>
-<span class="normal">3273</span>
-<span class="normal">3274</span>
-<span class="normal">3275</span>
-<span class="normal">3276</span>
-<span class="normal">3277</span>
-<span class="normal">3278</span>
-<span class="normal">3279</span>
-<span class="normal">3280</span>
-<span class="normal">3281</span>
-<span class="normal">3282</span>
-<span class="normal">3283</span>
-<span class="normal">3284</span>
-<span class="normal">3285</span>
-<span class="normal">3286</span>
-<span class="normal">3287</span>
-<span class="normal">3288</span>
-<span class="normal">3289</span>
-<span class="normal">3290</span>
-<span class="normal">3291</span>
-<span class="normal">3292</span>
-<span class="normal">3293</span>
-<span class="normal">3294</span>
-<span class="normal">3295</span>
-<span class="normal">3296</span>
-<span class="normal">3297</span>
-<span class="normal">3298</span>
-<span class="normal">3299</span>
-<span class="normal">3300</span>
-<span class="normal">3301</span>
-<span class="normal">3302</span>
-<span class="normal">3303</span>
-<span class="normal">3304</span>
-<span class="normal">3305</span>
-<span class="normal">3306</span>
-<span class="normal">3307</span>
-<span class="normal">3308</span>
-<span class="normal">3309</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3309</span>
 <span class="normal">3310</span>
 <span class="normal">3311</span>
 <span class="normal">3312</span>
@@ -15233,7 +15196,46 @@ closed body, naming the two rims:</p>
 <span class="normal">3486</span>
 <span class="normal">3487</span>
 <span class="normal">3488</span>
-<span class="normal">3489</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_loops_min_weight</span><span class="p">(</span>
+<span class="normal">3489</span>
+<span class="normal">3490</span>
+<span class="normal">3491</span>
+<span class="normal">3492</span>
+<span class="normal">3493</span>
+<span class="normal">3494</span>
+<span class="normal">3495</span>
+<span class="normal">3496</span>
+<span class="normal">3497</span>
+<span class="normal">3498</span>
+<span class="normal">3499</span>
+<span class="normal">3500</span>
+<span class="normal">3501</span>
+<span class="normal">3502</span>
+<span class="normal">3503</span>
+<span class="normal">3504</span>
+<span class="normal">3505</span>
+<span class="normal">3506</span>
+<span class="normal">3507</span>
+<span class="normal">3508</span>
+<span class="normal">3509</span>
+<span class="normal">3510</span>
+<span class="normal">3511</span>
+<span class="normal">3512</span>
+<span class="normal">3513</span>
+<span class="normal">3514</span>
+<span class="normal">3515</span>
+<span class="normal">3516</span>
+<span class="normal">3517</span>
+<span class="normal">3518</span>
+<span class="normal">3519</span>
+<span class="normal">3520</span>
+<span class="normal">3521</span>
+<span class="normal">3522</span>
+<span class="normal">3523</span>
+<span class="normal">3524</span>
+<span class="normal">3525</span>
+<span class="normal">3526</span>
+<span class="normal">3527</span>
+<span class="normal">3528</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">stitch_loops_min_weight</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loop_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -15347,11 +15349,15 @@ closed body, naming the two rims:</p>
     <span class="n">n_ab</span> <span class="o">=</span> <span class="n">n_a</span> <span class="o">+</span> <span class="n">n_b</span>
     <span class="c1"># Every rim-sized buffer below is a view of one allocation per dtype. The ``int32`` one holds</span>
     <span class="c1"># ``[start_a, start_b, face range flag, band triangle count]``, the rolled loops A and B, the</span>
-    <span class="c1"># closest columns and each rim's rim-opposite scratch, and arrives ``RIM_NO_FACE``-filled, which</span>
-    <span class="c1"># the scratch needs and the rest overwrite; the closest-pair launch clears the flag both</span>
-    <span class="c1"># rim-opposite probes may raise.</span>
+    <span class="c1"># closest columns, each rim's rim-opposite scratch and the band DP's stripe ticket and progress,</span>
+    <span class="c1"># and arrives ``RIM_NO_FACE``-filled (``-1``), which the scratch and the DP's slots need and the</span>
+    <span class="c1"># rest overwrite; the closest-pair launch clears the flag both rim-opposite probes may raise.</span>
+    <span class="n">n_dp_slots</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">+</span> <span class="n">_stitch_stripe_count</span><span class="p">(</span><span class="n">n_a</span><span class="p">)</span>
     <span class="n">ints</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span>
-        <span class="mi">4</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_ab</span> <span class="o">+</span> <span class="n">n_a</span> <span class="o">+</span> <span class="mi">4</span> <span class="o">*</span> <span class="n">n_ab</span><span class="p">,</span> <span class="n">kernel_holes</span><span class="o">.</span><span class="n">RIM_NO_FACE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="mi">4</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_ab</span> <span class="o">+</span> <span class="n">n_a</span> <span class="o">+</span> <span class="mi">4</span> <span class="o">*</span> <span class="n">n_ab</span> <span class="o">+</span> <span class="n">n_dp_slots</span><span class="p">,</span>
+        <span class="n">kernel_holes</span><span class="o">.</span><span class="n">RIM_NO_FACE</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">pair_and_count</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">ints</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
     <span class="n">flag</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">pair_and_count</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
@@ -15407,9 +15413,6 @@ closed body, naming the two rims:</p>
 
     <span class="n">dp</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_a</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_b</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">came</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_a</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_b</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_holes</span><span class="o">.</span><span class="n">seed_stitch_tables</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">n_a</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_b</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">dp</span><span class="p">,</span> <span class="n">came</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-    <span class="p">)</span>
     <span class="c1"># Built once, outside the loop: the ten values below are the same on every one of the</span>
     <span class="c1"># ``n_a + n_b`` launches, and a wp.launch argument costs host time linearly on both devices, so</span>
     <span class="c1"># bundling them once here rather than passing all ten on every launch is a real saving.</span>
@@ -15424,7 +15427,8 @@ closed body, naming the two rims:</p>
     <span class="n">tables</span><span class="o">.</span><span class="n">metric_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">metric_id</span><span class="p">)</span>
     <span class="n">tables</span><span class="o">.</span><span class="n">n_a</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_a</span><span class="p">)</span>
     <span class="n">tables</span><span class="o">.</span><span class="n">n_b</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_b</span><span class="p">)</span>
-    <span class="n">_run_stitch_dp</span><span class="p">(</span><span class="n">tables</span><span class="p">,</span> <span class="n">n_a</span><span class="p">,</span> <span class="n">n_b</span><span class="p">,</span> <span class="n">dp</span><span class="p">,</span> <span class="n">came</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">dp_slots</span> <span class="o">=</span> <span class="n">scratch</span> <span class="o">+</span> <span class="mi">4</span> <span class="o">*</span> <span class="n">n_ab</span>
+    <span class="n">_run_stitch_dp</span><span class="p">(</span><span class="n">tables</span><span class="p">,</span> <span class="n">n_a</span><span class="p">,</span> <span class="n">n_b</span><span class="p">,</span> <span class="n">dp</span><span class="p">,</span> <span class="n">came</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">ints</span><span class="p">,</span> <span class="n">dp_slots</span><span class="p">,</span> <span class="n">dp_slots</span> <span class="o">+</span> <span class="n">n_dp_slots</span><span class="p">))</span>
 
     <span class="c1"># Every path from the far corner to the seed is ``n_a + n_b`` steps, so the band is written at</span>
     <span class="c1"># that size straight into the tail of the combined buffer, and the count read back is short</span>
@@ -15695,71 +15699,7 @@ rims into one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3614</span>
-<span class="normal">3615</span>
-<span class="normal">3616</span>
-<span class="normal">3617</span>
-<span class="normal">3618</span>
-<span class="normal">3619</span>
-<span class="normal">3620</span>
-<span class="normal">3621</span>
-<span class="normal">3622</span>
-<span class="normal">3623</span>
-<span class="normal">3624</span>
-<span class="normal">3625</span>
-<span class="normal">3626</span>
-<span class="normal">3627</span>
-<span class="normal">3628</span>
-<span class="normal">3629</span>
-<span class="normal">3630</span>
-<span class="normal">3631</span>
-<span class="normal">3632</span>
-<span class="normal">3633</span>
-<span class="normal">3634</span>
-<span class="normal">3635</span>
-<span class="normal">3636</span>
-<span class="normal">3637</span>
-<span class="normal">3638</span>
-<span class="normal">3639</span>
-<span class="normal">3640</span>
-<span class="normal">3641</span>
-<span class="normal">3642</span>
-<span class="normal">3643</span>
-<span class="normal">3644</span>
-<span class="normal">3645</span>
-<span class="normal">3646</span>
-<span class="normal">3647</span>
-<span class="normal">3648</span>
-<span class="normal">3649</span>
-<span class="normal">3650</span>
-<span class="normal">3651</span>
-<span class="normal">3652</span>
-<span class="normal">3653</span>
-<span class="normal">3654</span>
-<span class="normal">3655</span>
-<span class="normal">3656</span>
-<span class="normal">3657</span>
-<span class="normal">3658</span>
-<span class="normal">3659</span>
-<span class="normal">3660</span>
-<span class="normal">3661</span>
-<span class="normal">3662</span>
-<span class="normal">3663</span>
-<span class="normal">3664</span>
-<span class="normal">3665</span>
-<span class="normal">3666</span>
-<span class="normal">3667</span>
-<span class="normal">3668</span>
-<span class="normal">3669</span>
-<span class="normal">3670</span>
-<span class="normal">3671</span>
-<span class="normal">3672</span>
-<span class="normal">3673</span>
-<span class="normal">3674</span>
-<span class="normal">3675</span>
-<span class="normal">3676</span>
-<span class="normal">3677</span>
-<span class="normal">3678</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3678</span>
 <span class="normal">3679</span>
 <span class="normal">3680</span>
 <span class="normal">3681</span>
@@ -15796,7 +15736,71 @@ rims into one:</p>
 <span class="normal">3712</span>
 <span class="normal">3713</span>
 <span class="normal">3714</span>
-<span class="normal">3715</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bridge_edges</span><span class="p">(</span>
+<span class="normal">3715</span>
+<span class="normal">3716</span>
+<span class="normal">3717</span>
+<span class="normal">3718</span>
+<span class="normal">3719</span>
+<span class="normal">3720</span>
+<span class="normal">3721</span>
+<span class="normal">3722</span>
+<span class="normal">3723</span>
+<span class="normal">3724</span>
+<span class="normal">3725</span>
+<span class="normal">3726</span>
+<span class="normal">3727</span>
+<span class="normal">3728</span>
+<span class="normal">3729</span>
+<span class="normal">3730</span>
+<span class="normal">3731</span>
+<span class="normal">3732</span>
+<span class="normal">3733</span>
+<span class="normal">3734</span>
+<span class="normal">3735</span>
+<span class="normal">3736</span>
+<span class="normal">3737</span>
+<span class="normal">3738</span>
+<span class="normal">3739</span>
+<span class="normal">3740</span>
+<span class="normal">3741</span>
+<span class="normal">3742</span>
+<span class="normal">3743</span>
+<span class="normal">3744</span>
+<span class="normal">3745</span>
+<span class="normal">3746</span>
+<span class="normal">3747</span>
+<span class="normal">3748</span>
+<span class="normal">3749</span>
+<span class="normal">3750</span>
+<span class="normal">3751</span>
+<span class="normal">3752</span>
+<span class="normal">3753</span>
+<span class="normal">3754</span>
+<span class="normal">3755</span>
+<span class="normal">3756</span>
+<span class="normal">3757</span>
+<span class="normal">3758</span>
+<span class="normal">3759</span>
+<span class="normal">3760</span>
+<span class="normal">3761</span>
+<span class="normal">3762</span>
+<span class="normal">3763</span>
+<span class="normal">3764</span>
+<span class="normal">3765</span>
+<span class="normal">3766</span>
+<span class="normal">3767</span>
+<span class="normal">3768</span>
+<span class="normal">3769</span>
+<span class="normal">3770</span>
+<span class="normal">3771</span>
+<span class="normal">3772</span>
+<span class="normal">3773</span>
+<span class="normal">3774</span>
+<span class="normal">3775</span>
+<span class="normal">3776</span>
+<span class="normal">3777</span>
+<span class="normal">3778</span>
+<span class="normal">3779</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bridge_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">edge_a</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
@@ -16181,71 +16185,7 @@ quarter unit:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3756</span>
-<span class="normal">3757</span>
-<span class="normal">3758</span>
-<span class="normal">3759</span>
-<span class="normal">3760</span>
-<span class="normal">3761</span>
-<span class="normal">3762</span>
-<span class="normal">3763</span>
-<span class="normal">3764</span>
-<span class="normal">3765</span>
-<span class="normal">3766</span>
-<span class="normal">3767</span>
-<span class="normal">3768</span>
-<span class="normal">3769</span>
-<span class="normal">3770</span>
-<span class="normal">3771</span>
-<span class="normal">3772</span>
-<span class="normal">3773</span>
-<span class="normal">3774</span>
-<span class="normal">3775</span>
-<span class="normal">3776</span>
-<span class="normal">3777</span>
-<span class="normal">3778</span>
-<span class="normal">3779</span>
-<span class="normal">3780</span>
-<span class="normal">3781</span>
-<span class="normal">3782</span>
-<span class="normal">3783</span>
-<span class="normal">3784</span>
-<span class="normal">3785</span>
-<span class="normal">3786</span>
-<span class="normal">3787</span>
-<span class="normal">3788</span>
-<span class="normal">3789</span>
-<span class="normal">3790</span>
-<span class="normal">3791</span>
-<span class="normal">3792</span>
-<span class="normal">3793</span>
-<span class="normal">3794</span>
-<span class="normal">3795</span>
-<span class="normal">3796</span>
-<span class="normal">3797</span>
-<span class="normal">3798</span>
-<span class="normal">3799</span>
-<span class="normal">3800</span>
-<span class="normal">3801</span>
-<span class="normal">3802</span>
-<span class="normal">3803</span>
-<span class="normal">3804</span>
-<span class="normal">3805</span>
-<span class="normal">3806</span>
-<span class="normal">3807</span>
-<span class="normal">3808</span>
-<span class="normal">3809</span>
-<span class="normal">3810</span>
-<span class="normal">3811</span>
-<span class="normal">3812</span>
-<span class="normal">3813</span>
-<span class="normal">3814</span>
-<span class="normal">3815</span>
-<span class="normal">3816</span>
-<span class="normal">3817</span>
-<span class="normal">3818</span>
-<span class="normal">3819</span>
-<span class="normal">3820</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3820</span>
 <span class="normal">3821</span>
 <span class="normal">3822</span>
 <span class="normal">3823</span>
@@ -16323,7 +16263,71 @@ quarter unit:</p>
 <span class="normal">3895</span>
 <span class="normal">3896</span>
 <span class="normal">3897</span>
-<span class="normal">3898</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bridge_edges_smooth</span><span class="p">(</span>
+<span class="normal">3898</span>
+<span class="normal">3899</span>
+<span class="normal">3900</span>
+<span class="normal">3901</span>
+<span class="normal">3902</span>
+<span class="normal">3903</span>
+<span class="normal">3904</span>
+<span class="normal">3905</span>
+<span class="normal">3906</span>
+<span class="normal">3907</span>
+<span class="normal">3908</span>
+<span class="normal">3909</span>
+<span class="normal">3910</span>
+<span class="normal">3911</span>
+<span class="normal">3912</span>
+<span class="normal">3913</span>
+<span class="normal">3914</span>
+<span class="normal">3915</span>
+<span class="normal">3916</span>
+<span class="normal">3917</span>
+<span class="normal">3918</span>
+<span class="normal">3919</span>
+<span class="normal">3920</span>
+<span class="normal">3921</span>
+<span class="normal">3922</span>
+<span class="normal">3923</span>
+<span class="normal">3924</span>
+<span class="normal">3925</span>
+<span class="normal">3926</span>
+<span class="normal">3927</span>
+<span class="normal">3928</span>
+<span class="normal">3929</span>
+<span class="normal">3930</span>
+<span class="normal">3931</span>
+<span class="normal">3932</span>
+<span class="normal">3933</span>
+<span class="normal">3934</span>
+<span class="normal">3935</span>
+<span class="normal">3936</span>
+<span class="normal">3937</span>
+<span class="normal">3938</span>
+<span class="normal">3939</span>
+<span class="normal">3940</span>
+<span class="normal">3941</span>
+<span class="normal">3942</span>
+<span class="normal">3943</span>
+<span class="normal">3944</span>
+<span class="normal">3945</span>
+<span class="normal">3946</span>
+<span class="normal">3947</span>
+<span class="normal">3948</span>
+<span class="normal">3949</span>
+<span class="normal">3950</span>
+<span class="normal">3951</span>
+<span class="normal">3952</span>
+<span class="normal">3953</span>
+<span class="normal">3954</span>
+<span class="normal">3955</span>
+<span class="normal">3956</span>
+<span class="normal">3957</span>
+<span class="normal">3958</span>
+<span class="normal">3959</span>
+<span class="normal">3960</span>
+<span class="normal">3961</span>
+<span class="normal">3962</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bridge_edges_smooth</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">edge_a</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
@@ -16706,71 +16710,7 @@ one bridge welds them into a single component:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/holes.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4024</span>
-<span class="normal">4025</span>
-<span class="normal">4026</span>
-<span class="normal">4027</span>
-<span class="normal">4028</span>
-<span class="normal">4029</span>
-<span class="normal">4030</span>
-<span class="normal">4031</span>
-<span class="normal">4032</span>
-<span class="normal">4033</span>
-<span class="normal">4034</span>
-<span class="normal">4035</span>
-<span class="normal">4036</span>
-<span class="normal">4037</span>
-<span class="normal">4038</span>
-<span class="normal">4039</span>
-<span class="normal">4040</span>
-<span class="normal">4041</span>
-<span class="normal">4042</span>
-<span class="normal">4043</span>
-<span class="normal">4044</span>
-<span class="normal">4045</span>
-<span class="normal">4046</span>
-<span class="normal">4047</span>
-<span class="normal">4048</span>
-<span class="normal">4049</span>
-<span class="normal">4050</span>
-<span class="normal">4051</span>
-<span class="normal">4052</span>
-<span class="normal">4053</span>
-<span class="normal">4054</span>
-<span class="normal">4055</span>
-<span class="normal">4056</span>
-<span class="normal">4057</span>
-<span class="normal">4058</span>
-<span class="normal">4059</span>
-<span class="normal">4060</span>
-<span class="normal">4061</span>
-<span class="normal">4062</span>
-<span class="normal">4063</span>
-<span class="normal">4064</span>
-<span class="normal">4065</span>
-<span class="normal">4066</span>
-<span class="normal">4067</span>
-<span class="normal">4068</span>
-<span class="normal">4069</span>
-<span class="normal">4070</span>
-<span class="normal">4071</span>
-<span class="normal">4072</span>
-<span class="normal">4073</span>
-<span class="normal">4074</span>
-<span class="normal">4075</span>
-<span class="normal">4076</span>
-<span class="normal">4077</span>
-<span class="normal">4078</span>
-<span class="normal">4079</span>
-<span class="normal">4080</span>
-<span class="normal">4081</span>
-<span class="normal">4082</span>
-<span class="normal">4083</span>
-<span class="normal">4084</span>
-<span class="normal">4085</span>
-<span class="normal">4086</span>
-<span class="normal">4087</span>
-<span class="normal">4088</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4088</span>
 <span class="normal">4089</span>
 <span class="normal">4090</span>
 <span class="normal">4091</span>
@@ -16838,7 +16778,71 @@ one bridge welds them into a single component:</p>
 <span class="normal">4153</span>
 <span class="normal">4154</span>
 <span class="normal">4155</span>
-<span class="normal">4156</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">join_closest_components</span><span class="p">(</span>
+<span class="normal">4156</span>
+<span class="normal">4157</span>
+<span class="normal">4158</span>
+<span class="normal">4159</span>
+<span class="normal">4160</span>
+<span class="normal">4161</span>
+<span class="normal">4162</span>
+<span class="normal">4163</span>
+<span class="normal">4164</span>
+<span class="normal">4165</span>
+<span class="normal">4166</span>
+<span class="normal">4167</span>
+<span class="normal">4168</span>
+<span class="normal">4169</span>
+<span class="normal">4170</span>
+<span class="normal">4171</span>
+<span class="normal">4172</span>
+<span class="normal">4173</span>
+<span class="normal">4174</span>
+<span class="normal">4175</span>
+<span class="normal">4176</span>
+<span class="normal">4177</span>
+<span class="normal">4178</span>
+<span class="normal">4179</span>
+<span class="normal">4180</span>
+<span class="normal">4181</span>
+<span class="normal">4182</span>
+<span class="normal">4183</span>
+<span class="normal">4184</span>
+<span class="normal">4185</span>
+<span class="normal">4186</span>
+<span class="normal">4187</span>
+<span class="normal">4188</span>
+<span class="normal">4189</span>
+<span class="normal">4190</span>
+<span class="normal">4191</span>
+<span class="normal">4192</span>
+<span class="normal">4193</span>
+<span class="normal">4194</span>
+<span class="normal">4195</span>
+<span class="normal">4196</span>
+<span class="normal">4197</span>
+<span class="normal">4198</span>
+<span class="normal">4199</span>
+<span class="normal">4200</span>
+<span class="normal">4201</span>
+<span class="normal">4202</span>
+<span class="normal">4203</span>
+<span class="normal">4204</span>
+<span class="normal">4205</span>
+<span class="normal">4206</span>
+<span class="normal">4207</span>
+<span class="normal">4208</span>
+<span class="normal">4209</span>
+<span class="normal">4210</span>
+<span class="normal">4211</span>
+<span class="normal">4212</span>
+<span class="normal">4213</span>
+<span class="normal">4214</span>
+<span class="normal">4215</span>
+<span class="normal">4216</span>
+<span class="normal">4217</span>
+<span class="normal">4218</span>
+<span class="normal">4219</span>
+<span class="normal">4220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">join_closest_components</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
