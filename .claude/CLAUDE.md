@@ -1185,6 +1185,18 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
+- **`remesh._vertex_scale_attribute` ignores the deterministic setting** (found 2026-11-09 in
+  the interpolation sweep): its edge-length sums are `float32` atomics in arrival order
+  (`kernels/remesh.scatter_scale_attribute`), and they differ between CUDA runs with the setting
+  on. They feed `refine_region_to_density`'s `alpha * sigma` test, so a decision can move. The
+  fix the averaging scatters took (an exact `float64` sum under the setting,
+  `scatter.add_value_and_count` over a `float64` table) ports directly; peer pooling does not pay
+  there (dragon 1.41x).
+- **CPU scatters with an unpredictable skip** (2026-11-09): `average_from_edges_onto_vertices`
+  skipped half its halfedges at random, and adding an exact zero in place of the branch took its
+  CPU kernel 0.51x (dragon), bit-identical. Other per-element scatters with a data-dependent
+  `continue` (an orientation, a mask, a sentinel) may take the same `device_is_cpu` arm; not yet
+  searched.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

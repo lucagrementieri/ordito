@@ -117,7 +117,9 @@ def average_onto_vertices(
 
     Each vertex value is the mean of ``face_values`` over incident triangle corners.
     Vertices referenced by no face divide by a zero valence and are ``nan``, matching
-    the unguarded division in ``igl::average_onto_vertices``.
+    the unguarded division in ``igl::average_onto_vertices``. Under
+    [`is_deterministic`][ordito.config.is_deterministic] each sum is formed exactly and rounded
+    once, so the result repeats bit for bit.
 
     Parameters
     ----------
@@ -198,7 +200,9 @@ def average_from_edges_onto_vertices(
     corresponding unique edge is accumulated onto both of its endpoint vertices; each
     vertex value is then the mean over its incident (positively oriented) half-edges.
     Vertices with zero valence are left at ``0``, matching the guarded division in
-    ``igl::average_from_edges_onto_vertices``.
+    ``igl::average_from_edges_onto_vertices``. Under
+    [`is_deterministic`][ordito.config.is_deterministic] each sum is formed exactly and rounded
+    once, so the result repeats bit for bit.
 
     Parameters
     ----------
@@ -353,8 +357,7 @@ def transfer_onto_vertices(
     max_dist
         Maximum search radius per target vertex. Targets with no source face within it keep the
         zero-filled output and report ``inf`` in the returned distance, which is how a caller
-        detects them. When ``None``, derived from the box enclosing both meshes, so every target
-        hits.
+        detects them. When ``None``, unbounded, so every target hits.
     mesh
         A ``wp.Mesh`` already built over ``source_vertices`` and ``source_faces``, to spare the BVH
         build this otherwise pays on every call. Not checked against them: a mesh over other

@@ -63,6 +63,13 @@ def transfer_onto_vertices(
     # pre-filled (so a caller who narrowed the search still gets a deterministic buffer), and the
     # distance is promoted to ``inf``: ``wp.mesh_query_point_no_sign`` reports ``max_dist`` there,
     # which is indistinguishable from a genuine hit at exactly that range.
+    #
+    # The wrapper's mesh is Warp's default build (an LBVH on CUDA, leaf size 4), which is about
+    # half the call from bunny to lucy. Declined, build plus query against it on CUDA: leaf sizes
+    # 1, 2 and 8 0.98-1.05x on sphere_med, bunny and dragon; the SAH, median and cuBQL builders
+    # query 0.4-0.9x as long but build 10-300x as long (dragon: 0.70 ms LBVH, 16-400 ms the
+    # others). A zero-filled value buffer in place of an empty one written on a miss costs ~3 us
+    # of a ~190 us small call (the mesh build ~150 us): not taken.
     i = wp.int32(wp.tid())
     closest, distance, f = closest_point_query(mesh_id, target_vertices[i], max_dist)
     if f < 0:
@@ -154,7 +161,9 @@ def write_gaussian_mean(
     # VTK returns the source's own value where a query sits on a data point, rather than blending
     # its neighbours in; the interpolant is then exact at the data. A query with no neighbours, or
     # whose every weight underflowed, is left at the null value the wrapper pre-filled -- so the
-    # miss case needs no per-dtype null argument here.
+    # miss case needs no per-dtype null argument here. Writing the null here instead would trade
+    # the fill (~3 us more than an empty allocation, of a ~50 us small call whose hash-grid build
+    # is ~28 us) for a launch argument (~1 us) on every kernel: declined.
     if coincident >= 0:
         out_values[q] = source_values[coincident]
     elif total > wp.float32(0.0):
