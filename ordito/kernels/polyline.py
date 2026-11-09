@@ -2809,6 +2809,13 @@ def ring_compute_ears(
     # loop reads loop 0's, unused), and only ``ring_clip_selected`` asks whether the loop is still
     # live: grading and selecting the ears of a finished loop changes nothing read again (its faces
     # are all clipped, or its round cap stops its clips).
+    #
+    # DECLINED (2026-11-09): carrying a grade across rounds. A triangle the containment walk found
+    # empty stays empty until a neighbour is clipped (the points only retire), so a corner last
+    # graded ``EAR_GOOD`` / ``EAR_THIN`` could skip the walk, ``ring_clip_selected`` resetting its
+    # clipped ears' neighbours. Byte-identical, but 0.97-1.01x on wavy and noisy rings of 1 k to
+    # 64 k points, 0.90x on a 4 k-point star, and 0.99-1.00x on the capped clip of bunny, dragon
+    # and lucy: the rounds are not the ears' walks.
     i = wp.int32(wp.tid())
     if i == 0:
         rounds[LOOP_CONDITION] = wp.int32(0)

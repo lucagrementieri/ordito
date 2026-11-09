@@ -1195,33 +1195,17 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **The capped clip's section is ear-clipping time** (diagnosed 2026-11-09):
-  `clip_mesh_with_field(cap=True)` costs 2.2 ms on bunny, 4.3 on dragon and 23 on lucy against
-  0.1-10 ms uncapped. Not the thin-ring zipper above: the long loops take 39 (bunny, 963 points),
-  65 (dragon) and 162 rounds (lucy, 8 030 points). Bunny's rounds sit at the four-launch latency
-  floor (~19 us a captured round) and its 300-odd-point loops cost ~0.3 ms in the one-block clip,
-  whose `EAR_ONE_BLOCK_MAX` split is already at its measured level; half its 2.2 ms wall is the
-  host waiting between the cap's nine readbacks. On dragon most of the device time is the
-  min-weight fill of one 451-point section whose projection is not simple (the ear clip returns
-  446 of its 449 triangles, so it falls back by design). On lucy `ring_compute_ears` is ~33 of a
-  round's ~52 us: it re-grades every live corner each round, though an ear's grade changes only
-  when a neighbour is clipped or the loop's `check_thin` flips. Options, none priced: carry the
-  grades across rounds behind a dirty mark (shared by every ear-clipping path; at most ~0.88x on
-  lucy, nothing at bunny's floor), or fewer cap readbacks. Declined: dropping the ~120 one- and
-  two-point cycles dragon's sections hand the fill (byte-identical, 0.997-1.014x).
-- **The laplacian sweep's clocks and leads (2026-11-09):** `robust_laplacian` writes its intrinsic
-  half-cotangents in the key pass and takes its rounding ratio in the row pass, and
-  `mollify_intrinsic` takes its margin in the length pass (`sphere_small` 16 -> 13 launches;
-  `mollify_intrinsic` and `intrinsic_delaunay` one fewer; byte-identical). Priced on counts only:
-  other jobs held the GPU at 86-99 % throughout, so the CUDA wall ratios and the device-side half
-  of the sweep (the pattern sort from `dragon` up, peak memory on `lucy`) are unmeasured; CPU
-  under load 18-27 read new/old minima 0.70-0.92x, medians 0.90-1.05x. Untried: the rounding
-  rows (`intrinsic_rounding_rows`) in the intrinsic key pass (one launch; a `float64`-bound pass
-  and its two-phase on mode in the key kernel); `heat`'s `use_robust` operators and `energies`'
-  LSCM form half-cotangents, then the pattern (one launch each through
-  `laplacian._cotmatrix_entries_and_pattern`, which needs a public route across the module
-  boundary); `reconstruction`'s octree density could read through `read_group_sum`
-  (`group_sums(fused=True)`; setting on only: one launch and its buffer).
+- **A pinched section still races in the capped clip** (2026-11-09): where two non-adjacent
+  cut faces' crossings merge into one point (a vertex just past the level whose kept neighbours
+  lie far beyond), the section passes through that point twice, so it has two successors, and
+  `graph.successor_cycles` "keeps one of them" by arrival order; the cap then leaves that loop
+  open (icosphere(3) with vertex 0 at `-1e-4` and two non-adjacent neighbours at `1e7`: not
+  watertight). The self-loop case of the same collapse is fixed (`section_rim_edges` drops it),
+  which made lucy's cap reproducible and dragon's section five loops instead of 178. Open: a
+  deterministic choice of successor in `scatter_successor_tails` under the setting, and a cap
+  that splits a pinched loop at the pinch. What remains of the cap's time is ear rounds at their
+  launch floor (bunny 1.9 ms, dragon 3.7, lucy 16.8 against 0.1-10 ms uncapped); carrying ear
+  grades across rounds was declined (`kernels/polyline.ring_compute_ears`).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
