@@ -28,6 +28,7 @@ from warp.geometry import IsoSurfaceMarchingCubes
 import ordito as od
 import ordito.typing as odt
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL
+from ordito.kernels import levelset as kernel_levelset
 from tests.comparisons import (
     assert_nearest_bijection,
     assert_unordered_rows_equal,
@@ -1232,6 +1233,8 @@ _WINDING_LATTICE_SETTLES = [
     ("warp_sign", "_EXACT_WINDING_CAPACITY", 0),
     # A margin of nearly 1/2 puts most of the lattice in doubt, through both settling stages.
     ("wide_margin", "_WINDING_UNDECIDED_DELTA", 0.45),
+    # The cone components walked by group, one group of them all here.
+    ("grouped", "_CONE_GROUPS_FROM", 1),
 ]
 # No room for any cone: the input falls back to sampling every node, so this arm compares the
 # sampled lattice with itself and only proves the fallback runs -- on the inputs with a boundary.
@@ -1295,6 +1298,51 @@ def test_signed_distance_level_set_winding_lattice_is_the_sampled_lattice(
             cells,
         )
         assert np.array_equal(lattice_faces_wp.numpy(), sampled_faces_wp.numpy()), (settle, cells)
+        compared += int(sampled_faces_wp.size > 0)
+    assert compared >= 2, "the comparison has surfaces to compare"
+
+
+@pytest.mark.parametrize("groups_from", [1, 1 << 30])
+def test_signed_distance_level_set_winding_lattice_with_many_holes_is_the_sampled_lattice(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, groups_from: int
+) -> None:
+    """
+    Ordito against ordito: many holes, their cones walked by group or flat, bit for bit.
+
+    Removing faces that share no vertex leaves one boundary component per face, past
+    ``CONE_GROUP_SIZE`` several times over, so the grouped walk bounds some groups whole and walks
+    others, and refines its bounds before a fallback; the flat walk is the reference it must
+    match, both against sampling every node.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_np = np.asarray(mesh_tm.faces)
+    used = np.zeros(len(mesh_tm.vertices), dtype=bool)
+    removed = []
+    for f in range(0, len(faces_np), 7):
+        if not used[faces_np[f]].any():
+            used[faces_np[f]] = True
+            removed.append(f)
+    assert len(removed) > 2 * kernel_levelset.CONE_GROUP_SIZE, len(removed)
+    kept_np = np.delete(faces_np, removed, axis=0).astype(np.int32).ravel()
+    vertices_wp = mesh_wp.points
+    faces_wp = wp.array(kept_np, dtype=wp.int32, device=vertices_wp.device)
+    monkeypatch.setattr(od.levelset, "_CONE_GROUPS_FROM", groups_from)
+    spacing = float(mesh_tm.scale) / 40.0
+    compared = 0
+    for cells in (2.0, 0.0, -1.0):
+        iso = cells * spacing
+        pad = 2 + max(math.ceil(cells), 0)
+        shape, bounds = od.proximity.signed_distance_lattice(
+            vertices_wp, spacing, bounds=od.bounds.aabb(vertices_wp), pad=pad
+        )
+        lattice_vertices_wp, lattice_faces_wp = od.levelset.signed_distance_level_set(
+            vertices_wp, faces_wp, iso, shape, bounds=bounds
+        )
+        sampled_vertices_wp, sampled_faces_wp = _sampled_level_set(
+            monkeypatch, vertices_wp, faces_wp, iso, shape, bounds
+        )
+        assert np.array_equal(lattice_vertices_wp.numpy(), sampled_vertices_wp.numpy()), cells
+        assert np.array_equal(lattice_faces_wp.numpy(), sampled_faces_wp.numpy()), cells
         compared += int(sampled_faces_wp.size > 0)
     assert compared >= 2, "the comparison has surfaces to compare"
 

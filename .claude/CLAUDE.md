@@ -1206,13 +1206,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   that splits a pinched loop at the pinch. What remains of the cap's time is ear rounds at their
   launch floor (bunny 1.9 ms, dragon 3.7, lucy 16.8 against 0.1-10 ms uncapped); carrying ear
   grades across rounds was declined (`kernels/polyline.ring_compute_ears`).
-- **The winding lattice walks every boundary component at every node** (2026-11-09,
-  `kernels/levelset.lattice_winding_numbers`): `dragon`'s 407 small holes cost 3.0 ms of its
-  9.6 ms device time at 1/256, almost all of it far components bounded one at a time. Unbuilt:
-  components grouped spatially (Morton order of the apex), each group bounded at once by
-  `0.5 * sum(r_i**2) / (d - R_group)**2` (an upper bound on its members' `ball_winding_bound`s),
-  its members walked only where the group's bound is not small. Sound for the decisions, since
-  the bounds stay rigorous; price it against the fallback rate it raises.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

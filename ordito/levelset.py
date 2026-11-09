@@ -133,6 +133,11 @@ _EXACT_WINDING_WORK = 1 << 32
 # (three chain edges a face) passes it at about 1 400 faces on a lattice of 4 M nodes.
 _MAX_CONE_WORK = 1 << 34
 
+# Boundary components from which the winding lattice bounds them in Hilbert-ordered groups of
+# ``kernels/levelset.CONE_GROUP_SIZE`` before walking them one by one (``_cone_groups``): below it a
+# node's walk over every component is shorter than the grouping's sort and two launches.
+_CONE_GROUPS_FROM = 128
+
 
 def marching_cubes(
     field: odt.ArrayNdFloat,
@@ -899,6 +904,9 @@ def _winding_band_field(
     if math.prod(shape) * int(chain.shape[0]) > _MAX_CONE_WORK:
         return None
     labels, sorted_keys, order, starts, radius = _cone_components(vertices, chain)
+    members, group_spheres, group_terms = _cone_groups(
+        vertices, sorted_keys, starts, radius, bounds
+    )
 
     # A search capped one cell diagonal past ``|iso|`` reaches every node an edge crossing ``iso``
     # can end at; the margin covers the rounding of the distances against the cap.
@@ -961,7 +969,7 @@ def _winding_band_field(
     undecided = _launch.empty(_EXACT_WINDING_CAPACITY, dtype=wp.vec3, device=device)
     counts = _launch.view(zeroed, 3 * n_nodes, 3 * n_nodes + 2)
     _launch.launch(
-        kernel_levelset.lattice_winding_numbers,
+        kernel_levelset.LATTICE_WINDING_NUMBERS[members.size > 0],
         dim=shape,
         inputs=[
             lower,
@@ -976,6 +984,9 @@ def _winding_band_field(
             sorted_keys,
             starts,
             radius,
+            members,
+            group_spheres,
+            group_terms,
             wp.float32(_WINDING_UNDECIDED_DELTA),
             wp.float32(abs(iso) - 1.01 * diagonal - rounding),
             wp.float32(rounding),
@@ -1118,6 +1129,55 @@ def _cone_components(
     return labels, sorted_keys, order, starts, radius
 
 
+def _cone_groups(
+    vertices: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    radius: wp.array[wp.float32],
+    bounds: tuple[wp.vec3, wp.vec3],
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec4], wp.array[wp.vec2]]:
+    """
+    Group many boundary components spatially, so a lattice node bounds a far group at once.
+
+    Returns ``(members, spheres, terms)``: the components sorted along a Hilbert curve by apex,
+    each run of ``kernels/levelset.CONE_GROUP_SIZE`` a group, with a sphere holding its apexes and
+    its members' summed squared and largest radii (``kernels/levelset.cone_group_bound``). All
+    three empty below ``_CONE_GROUPS_FROM`` components, where the lattice walks every component.
+    """
+    device = vertices.device
+    n_components = starts.size - 1
+    if n_components < _CONE_GROUPS_FROM:
+        return (
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec4, device=device),
+            _launch.empty(0, dtype=wp.vec2, device=device),
+        )
+    lower_f, upper_f = odt.vec3_floats(bounds[0]), odt.vec3_floats(bounds[1])
+    inv_extent = wp.vec3(
+        *(1023.0 / max(upper_f[axis] - lower_f[axis], 1.0e-30) for axis in range(3))
+    )
+    keys_buffer, order_buffer = _launch.sort_buffers(n_components, wp.int32, device)
+    _launch.launch(
+        kernel_levelset.cone_group_keys,
+        dim=n_components,
+        inputs=[vertices, sorted_keys, starts, bounds[0], inv_extent],
+        outputs=[keys_buffer, order_buffer],
+        device=device,
+    )
+    _keys, members = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer, end_bit=30)
+    n_groups = -(-n_components // kernel_levelset.CONE_GROUP_SIZE)
+    spheres = _launch.empty(n_groups, dtype=wp.vec4, device=device)
+    terms = _launch.empty(n_groups, dtype=wp.vec2, device=device)
+    _launch.launch(
+        kernel_levelset.cone_group_spheres,
+        dim=n_groups,
+        inputs=[vertices, sorted_keys, starts, radius, members],
+        outputs=[spheres, terms],
+        device=device,
+    )
+    return members, spheres, terms
+
+
 def _settle_undecided_winding(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1135,7 +1195,7 @@ def _settle_undecided_winding(
     a node unless it too lies within the margin of 1/2; only those, or all of them when they are
     too many to sum, are evaluated by Warp itself, which needs its solid-angle BVH. The sum is only
     a way of not building that BVH, so it is skipped when a node near 1/2 on the lattice already
-    needs it (``undecided_counts``' second, ``kernels/levelset.lattice_winding_numbers``): Warp's
+    needs it (``undecided_counts``' second, ``kernels/levelset.LATTICE_WINDING_NUMBERS``): Warp's
     sign is the one the sum stands in for. ``lattice`` is the ``(lower, step)`` pair the nodes'
     positions are formed from.
     """

@@ -8,6 +8,7 @@ from ordito.kernels.array import (
     OverloadTable,
     append_slot,
     bit_rank,
+    hilbert_code_30,
     lattice_position,
     nth_bit_position,
     ravel_index,
@@ -84,6 +85,9 @@ CONE_NEAR_RADII = wp.float32(4.0)
 # leaves a node far from 1/2 decided, and keeps the node more than 1.15 radii from such a cone, so
 # not on it.
 CONE_NEAR_ALLOWANCE = wp.float32(0.15)
+# Components per group when a mesh has many (``levelset._CONE_GROUPS_FROM``): sorted along a
+# Hilbert curve by apex, each run of this many is one group, bounded at once from far enough.
+CONE_GROUP_SIZE = 32
 INV_FOUR_PI = wp.float32(0.07957747154594767)
 
 
@@ -182,6 +186,59 @@ def cone_bounds(
         radius = wp.max(radius, wp.length(vertices[chain[e, 0]] - apex))
         radius = wp.max(radius, wp.length(vertices[chain[e, 1]] - apex))
     out_radius[c] = radius * 1.001 + 1.0e-30
+
+
+@wp.kernel
+def cone_group_keys(
+    vertices: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    lower: wp.vec3,
+    inv_extent: wp.vec3,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Each component's apex on a Hilbert curve over the lattice, with the identity payload, into the
+    # leading halves of the radix sort's double-width buffers: consecutive components in the sorted
+    # order are near each other, so a run of them is a compact group.
+    c = wp.int32(wp.tid())
+    out_keys[c] = hilbert_code_30(vertices[sorted_keys[starts[c]]], lower, inv_extent)
+    out_order[c] = c
+
+
+@wp.kernel
+def cone_group_spheres(
+    vertices: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    radius: wp.array[wp.float32],
+    members: wp.array[wp.int32],
+    out_spheres: wp.array[wp.vec4],
+    out_terms: wp.array[wp.vec2],
+) -> None:
+    # Group ``g``'s members ``members[g * CONE_GROUP_SIZE:]``: a sphere holding every member's
+    # apex (centre, radius) and the members' summed squared and largest cone radii, the terms of
+    # ``cone_group_bound``. Inflated by a rounding margin so the bound stays one.
+    g = wp.int32(wp.tid())
+    first = g * CONE_GROUP_SIZE
+    last = wp.min(first + CONE_GROUP_SIZE, members.shape[0])
+    low = vertices[sorted_keys[starts[members[first]]]]
+    high = low
+    for t in range(first + 1, last):
+        apex = vertices[sorted_keys[starts[members[t]]]]
+        low = wp.min(low, apex)
+        high = wp.max(high, apex)
+    centre = 0.5 * (low + high)
+    reach = wp.float32(0.0)
+    squares = wp.float32(0.0)
+    largest = wp.float32(0.0)
+    for t in range(first, last):
+        component = members[t]
+        reach = wp.max(reach, wp.length(vertices[sorted_keys[starts[component]]] - centre))
+        squares = squares + radius[component] * radius[component]
+        largest = wp.max(largest, radius[component])
+    out_spheres[g] = wp.vec4(centre[0], centre[1], centre[2], reach * 1.001 + 1.0e-30)
+    out_terms[g] = wp.vec2(squares * 1.001, largest)
 
 
 @wp.func
@@ -476,6 +533,31 @@ def near_cone_bound_taken(reach: wp.float32, radius: wp.float32, spent: wp.float
 
 
 @wp.func
+def cone_group_span(n_components: wp.int32, g: wp.int32) -> wp.vec2i:
+    # The slots ``[first, last)`` of group ``g``'s components in ``members``.
+    return wp.vec2i(g * CONE_GROUP_SIZE, wp.min((g + 1) * CONE_GROUP_SIZE, n_components))
+
+
+@wp.func
+def cone_group_bound(
+    p: wp.vec3, spheres: wp.array[wp.vec4], terms: wp.array[wp.vec2], g: wp.int32
+) -> wp.float32:
+    # A bound on group ``g``'s members' winding numbers at once, or ``-1`` to take them one by
+    # one. Taken only where the gap to the sphere holding their apexes exceeds ``CONE_NEAR_RADII``
+    # of their largest radius, so every member is one the walk would bound as far
+    # (``ball_winding_bound``), and their sum is at most ``0.5 * sum(r**2) / gap**2``, since
+    # ``1 - sqrt(1 - x) <= x``. The one rule every loop of the grouped
+    # ``lattice_winding_numbers`` applies.
+    bound = wp.float32(-1.0)
+    sphere = spheres[g]
+    gap = wp.length(p - wp.vec3(sphere[0], sphere[1], sphere[2])) - sphere[3]
+    group = terms[g]
+    if gap > CONE_NEAR_RADII * group[1]:
+        bound = 0.5 * group[0] / (gap * gap)
+    return bound
+
+
+@wp.func
 def cone_component_winding(
     vertices: wp.array[wp.vec3],
     chain: wp.array2d[wp.int32],
@@ -498,121 +580,274 @@ def cone_component_winding(
     return wp.vec2(angle * INV_FOUR_PI, on_cone)
 
 
-@wp.kernel
-def lattice_winding_numbers(
-    lower: wp.vec3,
-    step: wp.vec3,
-    crossings_z: wp.array3d[wp.int32],
-    crossings_x: wp.array3d[wp.int32],
-    ambiguous: wp.array3d[wp.int32],
-    distance: wp.array3d[wp.float32],
+@wp.func
+def cone_walk_step(
     vertices: wp.array[wp.vec3],
     chain: wp.array2d[wp.int32],
     order: wp.array[wp.int32],
     sorted_keys: wp.array[wp.int32],
     starts: wp.array[wp.int32],
     radius: wp.array[wp.float32],
-    delta: wp.float32,
-    sign_irrelevant_below: wp.float32,
-    surface_tie: wp.float32,
-    out_winding: wp.array3d[wp.float32],
-    out_slots: wp.array3d[wp.int32],
-    out_undecided: wp.array[wp.vec3],
-    out_count: wp.array[wp.int32],
-) -> None:
-    # The node's winding number: the column count plus the cones' solid angle, a cone farther than
-    # ``CONE_NEAR_RADII`` of its radius, and a nearer one while ``near_cone_bound_taken`` allows,
-    # bounded instead of summed unless the bounds leave the sign (with its ``delta`` margin) open.
-    # Then the near ones left are summed first, and the far ones only where their bound alone
-    # still leaves it open, so a node walks the far components twice only where it did when every
-    # near one was summed. Measured on CUDA (2026-11-09) against summing every component within
-    # four radii: 0.36x this kernel on ``bunny`` at 1/256 (five large holes), 0.84-0.92x on
-    # ``dragon`` (407 small ones). Declined there: one allowance shared with the far bounds
-    # (``dragon`` 1.45x, more fallbacks), totalling the far bounds first (1.6x, a third walk), the
-    # near ones' indices kept in registers for the fallback (1.12x), and a two-radius cut with no
-    # allowance (1.7-2.5x on a busy device; the far bounds then summing past the margin).
-    # A node whose sign matters -- it may end a crossing edge
-    # or sit on the other side of ``iso`` under either sign (``distance >= sign_irrelevant_below``)
-    # -- and whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
-    # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too). ``out_count[1]`` counts
-    # those whose winding number is near 1/2 on the lattice: the lattice value is exact unless it is
-    # in doubt, so summing such a node over every face leaves it near 1/2 again, and it ends up
-    # taking Warp's sign. One of them settles that Warp's solid-angle BVH is built.
-    i, j, k = wp.tid()
-    p = lattice_position(lower, step, i, j, k)
-    base = wp.float32(crossings_z[i, j, k])
-    d = distance[i, j, k]
-    if d < sign_irrelevant_below:
-        # Within ``|iso|`` less a cell diagonal of the surface, either sign leaves the node on the
-        # same side of ``iso``, and so does every axis neighbour (its distance is at most one edge
-        # more): no edge marching cubes interpolates ends here, so the column count stands in for
-        # the winding number and the cones are not summed.
-        out_winding[i, j, k] = base
-        out_slots[i, j, k] = 0
-        return
-    near = wp.float32(0.0)
-    far_bound = wp.float32(0.0)
-    near_spent = wp.float32(0.0)
-    on_cone = wp.float32(0.0)
-    n_components = starts.shape[0] - 1
-    for component in range(n_components):
-        apex = vertices[sorted_keys[starts[component]]]
-        reach = wp.length(p - apex)
-        if reach > CONE_NEAR_RADII * radius[component]:
-            far_bound = far_bound + ball_winding_bound(reach, radius[component])
+    component: wp.int32,
+    p: wp.vec3,
+    walk: wp.vec4,
+) -> wp.vec4:
+    # One component of ``lattice_winding_numbers``' walk, on its state ``(near winding, far
+    # bound, near bounds spent, on a cone)``: bounded if farther than ``CONE_NEAR_RADII`` of its
+    # radius or while ``near_cone_bound_taken`` allows, else summed.
+    apex = vertices[sorted_keys[starts[component]]]
+    reach = wp.length(p - apex)
+    result = walk
+    if reach > CONE_NEAR_RADII * radius[component]:
+        result[1] = walk[1] + ball_winding_bound(reach, radius[component])
+    else:
+        bound = near_cone_bound_taken(reach, radius[component], walk[2])
+        if bound >= 0.0:
+            result[2] = walk[2] + bound
         else:
-            bound = near_cone_bound_taken(reach, radius[component], near_spent)
-            if bound >= 0.0:
-                near_spent = near_spent + bound
+            term = cone_component_winding(
+                vertices, chain, order, apex, starts[component], starts[component + 1], p
+            )
+            result[0] = walk[0] + term[0]
+            result[3] = wp.max(walk[3], term[1])
+    return result
+
+
+@wp.func
+def cone_replay_step(
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    radius: wp.array[wp.float32],
+    component: wp.int32,
+    p: wp.vec3,
+    replay: wp.vec3,
+) -> wp.vec3:
+    # The first fallback stage on ``(near bounds spent, winding, on a cone)``: a near component
+    # ``cone_walk_step`` bounded, found again by replaying its allowance, is summed.
+    apex = vertices[sorted_keys[starts[component]]]
+    reach = wp.length(p - apex)
+    result = replay
+    if reach <= CONE_NEAR_RADII * radius[component]:
+        bound = near_cone_bound_taken(reach, radius[component], replay[0])
+        if bound >= 0.0:
+            term = cone_component_winding(
+                vertices, chain, order, apex, starts[component], starts[component + 1], p
+            )
+            result = wp.vec3(replay[0] + bound, replay[1] + term[0], wp.max(replay[2], term[1]))
+    return result
+
+
+@wp.func
+def cone_far_step(
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    radius: wp.array[wp.float32],
+    component: wp.int32,
+    whole: wp.bool,
+    p: wp.vec3,
+    far: wp.vec2,
+) -> wp.vec2:
+    # The second fallback stage on ``(winding, on a cone)``: a component bounded as far -- by its
+    # own reach, or in a group bounded ``whole`` -- is summed.
+    apex = vertices[sorted_keys[starts[component]]]
+    result = far
+    if whole or wp.length(p - apex) > CONE_NEAR_RADII * radius[component]:
+        term = cone_component_winding(
+            vertices, chain, order, apex, starts[component], starts[component + 1], p
+        )
+        result = wp.vec2(far[0] + term[0], wp.max(far[1], term[1]))
+    return result
+
+
+def _lattice_winding_numbers_kernel(grouped: bool) -> wp.Kernel:
+    """``lattice_winding_numbers`` walking its cone components flat or by group."""
+
+    def lattice_winding_numbers(
+        lower: wp.vec3,
+        step: wp.vec3,
+        crossings_z: wp.array3d[wp.int32],
+        crossings_x: wp.array3d[wp.int32],
+        ambiguous: wp.array3d[wp.int32],
+        distance: wp.array3d[wp.float32],
+        vertices: wp.array[wp.vec3],
+        chain: wp.array2d[wp.int32],
+        order: wp.array[wp.int32],
+        sorted_keys: wp.array[wp.int32],
+        starts: wp.array[wp.int32],
+        radius: wp.array[wp.float32],
+        members: wp.array[wp.int32],
+        group_spheres: wp.array[wp.vec4],
+        group_terms: wp.array[wp.vec2],
+        delta: wp.float32,
+        sign_irrelevant_below: wp.float32,
+        surface_tie: wp.float32,
+        out_winding: wp.array3d[wp.float32],
+        out_slots: wp.array3d[wp.int32],
+        out_undecided: wp.array[wp.vec3],
+        out_count: wp.array[wp.int32],
+    ) -> None:
+        # The node's winding number: the column count plus the cones' solid angle, a cone farther
+        # than ``CONE_NEAR_RADII`` of its radius, and a nearer one while ``near_cone_bound_taken``
+        # allows, bounded instead of summed unless the bounds leave the sign (with its ``delta``
+        # margin) open. Then the near ones left are summed first, and the far ones only where their
+        # bound alone still leaves it open, so a node walks the far components twice only where it
+        # did when every near one was summed. Measured on CUDA (2026-11-09) against summing every
+        # component within four radii: 0.36x this kernel on ``bunny`` at 1/256 (five large holes),
+        # 0.84-0.92x on ``dragon`` (407 small ones). Declined there: one allowance shared with the
+        # far bounds (``dragon`` 1.45x, more fallbacks), totalling the far bounds first (1.6x, a
+        # third walk), the near ones' indices kept in registers for the fallback (1.12x), and a
+        # two-radius cut with no allowance (1.7-2.5x on a busy device; the far bounds then summing
+        # past the margin). A node whose sign matters -- it may end a crossing edge or sit on the
+        # other side of ``iso`` under either sign (``distance >= sign_irrelevant_below``) -- and
+        # whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
+        # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too). ``out_count[1]``
+        # counts those whose winding number is near 1/2 on the lattice: the lattice value is exact
+        # unless it is in doubt, so summing such a node over every face leaves it near 1/2 again,
+        # and it ends up taking Warp's sign. One of them settles that Warp's solid-angle BVH is
+        # built.
+        #
+        # ``grouped`` (``levelset._CONE_GROUPS_FROM`` components on) walks them in Hilbert-ordered
+        # groups of ``CONE_GROUP_SIZE``, a group bounded at once where ``cone_group_bound`` allows:
+        # ``dragon``'s 407 holes 0.38x this kernel at 1/256, 0.44-0.51x at 1/64-1/128 (the call
+        # 0.83x / 0.96-0.98x). A grouped node whose sign the group bounds leave open first refines
+        # them into its members' own, before any fallback sums cones: without that, the looser
+        # bounds sent 121-3 133 nodes into the far fallback (each summing every far cone) and cost
+        # ``dragon`` 1.36-4.3x. The flat kernel holds no group code: the grouped branch in the same
+        # kernel cost ``bunny``'s flat walk 1.08-1.10x; split, it is within 1.01x.
+        i, j, k = wp.tid()
+        p = lattice_position(lower, step, i, j, k)
+        base = wp.float32(crossings_z[i, j, k])
+        d = distance[i, j, k]
+        if d < sign_irrelevant_below:
+            # Within ``|iso|`` less a cell diagonal of the surface, either sign leaves the node on
+            # the same side of ``iso``, and so does every axis neighbour (its distance is at most
+            # one edge more): no edge marching cubes interpolates ends here, so the column count
+            # stands in for the winding number and the cones are not summed.
+            out_winding[i, j, k] = base
+            out_slots[i, j, k] = 0
+            return
+        # ``(near, far bound, near bounds spent, on a cone)``, ``cone_walk_step``'s state.
+        walk = wp.vec4(0.0, 0.0, 0.0, 0.0)
+        whole_bound = wp.float32(0.0)
+        n_components = starts.shape[0] - 1
+        n_groups = (n_components + CONE_GROUP_SIZE - 1) // CONE_GROUP_SIZE
+        if wp.static(grouped):
+            for g in range(n_groups):
+                group_bound = cone_group_bound(p, group_spheres, group_terms, g)
+                if group_bound >= 0.0:
+                    whole_bound = whole_bound + group_bound
+                else:
+                    span = cone_group_span(n_components, g)
+                    for t in range(span[0], span[1]):
+                        walk = cone_walk_step(
+                            vertices, chain, order, sorted_keys, starts, radius, members[t], p, walk
+                        )
+        else:
+            for component in range(n_components):
+                walk = cone_walk_step(
+                    vertices, chain, order, sorted_keys, starts, radius, component, p, walk
+                )
+        winding = base + walk[0]
+        far_bound = walk[1]
+        near_spent = walk[2]
+        on_cone = walk[3]
+        if wp.static(grouped):
+            if (
+                whole_bound > 0.0
+                and wp.abs(winding - 0.5) <= far_bound + whole_bound + near_spent + delta
+            ):
+                # A group's bound is looser than its members' own: before any fallback walks cones,
+                # the groups bounded whole give way to their members' bounds, the walk's far bounds.
+                whole_bound = wp.float32(0.0)
+                for g in range(n_groups):
+                    if cone_group_bound(p, group_spheres, group_terms, g) >= 0.0:
+                        span = cone_group_span(n_components, g)
+                        for t in range(span[0], span[1]):
+                            component = members[t]
+                            reach = wp.length(p - vertices[sorted_keys[starts[component]]])
+                            whole_bound = whole_bound + ball_winding_bound(reach, radius[component])
+            far_bound = far_bound + whole_bound
+        if near_spent > 0.0 and wp.abs(winding - 0.5) <= far_bound + near_spent + delta:
+            # First the near components left bounded (no member of a group bounded whole is near);
+            # then, only where the farther ones' bound alone leaves the sign open, those too.
+            replay = wp.vec3(0.0, winding, on_cone)
+            if wp.static(grouped):
+                for g in range(n_groups):
+                    if cone_group_bound(p, group_spheres, group_terms, g) < 0.0:
+                        span = cone_group_span(n_components, g)
+                        for t in range(span[0], span[1]):
+                            replay = cone_replay_step(
+                                vertices, chain, order, sorted_keys, starts, radius, members[t], p,
+                                replay,
+                            )  # fmt: skip
             else:
-                term = cone_component_winding(
-                    vertices, chain, order, apex, starts[component], starts[component + 1], p
-                )
-                near = near + term[0]
-                on_cone = wp.max(on_cone, term[1])
-    winding = base + near
-    if near_spent > 0.0 and wp.abs(winding - 0.5) <= far_bound + near_spent + delta:
-        # First the near components left bounded, picked out again by replaying their allowance;
-        # then, only where the farther ones' bound alone leaves the sign open, those too.
-        spent = wp.float32(0.0)
-        for component in range(n_components):
-            apex = vertices[sorted_keys[starts[component]]]
-            reach = wp.length(p - apex)
-            if reach <= CONE_NEAR_RADII * radius[component]:
-                bound = near_cone_bound_taken(reach, radius[component], spent)
-                if bound >= 0.0:
-                    spent = spent + bound
-                    term = cone_component_winding(
-                        vertices, chain, order, apex, starts[component], starts[component + 1], p
+                for component in range(n_components):
+                    replay = cone_replay_step(
+                        vertices, chain, order, sorted_keys, starts, radius, component, p, replay
                     )
-                    winding = winding + term[0]
-                    on_cone = wp.max(on_cone, term[1])
-    if wp.abs(winding - 0.5) <= far_bound + delta:
-        for component in range(n_components):
-            apex = vertices[sorted_keys[starts[component]]]
-            if wp.length(p - apex) > CONE_NEAR_RADII * radius[component]:
-                term = cone_component_winding(
-                    vertices, chain, order, apex, starts[component], starts[component + 1], p
-                )
-                winding = winding + term[0]
-                on_cone = wp.max(on_cone, term[1])
-    out_winding[i, j, k] = winding
-    near_half = wp.abs(winding - 0.5) < delta
-    doubtful = (
-        near_half
-        or ambiguous[i, j, k] != 0
-        or on_cone != 0.0
-        or crossings_z[i, j, k] != crossings_x[i, j, k]
-        or d <= surface_tie
+            winding = replay[1]
+            on_cone = replay[2]
+        if wp.abs(winding - 0.5) <= far_bound + delta:
+            far = wp.vec2(winding, on_cone)
+            if wp.static(grouped):
+                for g in range(n_groups):
+                    whole = cone_group_bound(p, group_spheres, group_terms, g) >= 0.0
+                    span = cone_group_span(n_components, g)
+                    for t in range(span[0], span[1]):
+                        component = members[t]
+                        far = cone_far_step(
+                            vertices, chain, order, sorted_keys, starts, radius, component, whole,
+                            p, far,
+                        )  # fmt: skip
+            else:
+                for component in range(n_components):
+                    far = cone_far_step(
+                        vertices,
+                        chain,
+                        order,
+                        sorted_keys,
+                        starts,
+                        radius,
+                        component,
+                        False,
+                        p,
+                        far,
+                    )
+            winding = far[0]
+            on_cone = far[1]
+        out_winding[i, j, k] = winding
+        near_half = wp.abs(winding - 0.5) < delta
+        doubtful = (
+            near_half
+            or ambiguous[i, j, k] != 0
+            or on_cone != 0.0
+            or crossings_z[i, j, k] != crossings_x[i, j, k]
+            or d <= surface_tie
+        )
+        slot = wp.int32(0)
+        if doubtful and d > TOLERANCE_MERGE_CONSTANT:
+            slot = append_slot(out_count, 0) + 1
+            if slot <= out_undecided.shape[0]:
+                out_undecided[slot - 1] = p
+            if near_half:
+                append_slot(out_count, 1)
+        out_slots[i, j, k] = slot
+
+    return wp.kernel(
+        lattice_winding_numbers, name=f"lattice_winding_numbers_{'grouped' if grouped else 'flat'}"
     )
-    slot = wp.int32(0)
-    if doubtful and d > TOLERANCE_MERGE_CONSTANT:
-        slot = append_slot(out_count, 0) + 1
-        if slot <= out_undecided.shape[0]:
-            out_undecided[slot - 1] = p
-        if near_half:
-            append_slot(out_count, 1)
-    out_slots[i, j, k] = slot
+
+
+# The winding lattice's kernel, keyed by whether its components are grouped.
+LATTICE_WINDING_NUMBERS = {
+    grouped: _lattice_winding_numbers_kernel(grouped) for grouped in (False, True)
+}
 
 
 @wp.kernel
