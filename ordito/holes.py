@@ -1051,6 +1051,7 @@ def _fill_packed_loops(
                     kernel_holes.FILL_STATE_RETRY_SPAN_BASE,
                     kernel_holes.FILL_STATE_RETRY_SPAN_BASE + 1,
                 ),
+                seeded=True,
             )
 
     counts = _launch.view(prev_and_counts, loops.dp_total, loops.dp_total + 2 * n_loops)
@@ -1174,6 +1175,8 @@ def _run_hole_dp(
     span_base: wp.array[wp.int32],
     tiled: bool | None = None,
     captured: bool | None = None,
+    *,
+    seeded: bool = False,
 ) -> None:
     """
     Fill the ragged ``dp`` / ``prev`` tables for every loop flagged in ``active``, in place.
@@ -1203,6 +1206,10 @@ def _run_hole_dp(
     host was the critical path at all -- the second bound is why this is not simply a rim-length
     test. The CPU device has no graph to record and always takes the plain loop. ``captured``
     exists so a test can force either and compare them, and the two must agree byte for byte.
+
+    ``seeded`` says an earlier sweep over the same tables already wrote the rim edges' base
+    entries (``kernels/holes.init_dp_row``), which no sweep overwrites, so the base launch is
+    skipped: the ``min_area`` retry's.
 
     ``dp`` / ``prev`` are filled in place. They are bound into ``HoleFillTables`` rather than
     passed per launch, because their pointers are invariant across the sweep -- see that struct's
@@ -1241,12 +1248,13 @@ def _run_hole_dp(
     # and walking its spans does the per-span loop's work with one launch.
     swept = not tiled and resolved.is_cpu
     if not swept:
-        _launch.launch(
-            kernel_holes.init_dp_base,
-            dim=(loops.n_loops, loops.max_size),
-            inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
-            device=device,
-        )
+        if not seeded:
+            _launch.launch(
+                kernel_holes.init_dp_base,
+                dim=(loops.n_loops, loops.max_size),
+                inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
+                device=device,
+            )
         if n_spans <= 0:
             # Every rim is a triangle or smaller, so the base table is already the whole answer.
             return

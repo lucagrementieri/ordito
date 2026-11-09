@@ -356,24 +356,32 @@ def init_dp_row(
     out_prev: wp.array[wp.int32],
 ):
     # dp[i, j] = min metric to triangulate the sub-polygon on chord (i, j) and the arc i..j;
-    # adjacent spans (rim edges) cost 0, everything else starts unfilled. The ragged table packs
-    # every loop's ``B x B`` block end to end, so loop ``ell`` owns
-    # ``out_dp[dp_offsets[ell] + i * B + j]``. Row ``i`` of loop ``ell``; rows past the loop's own
-    # ``B``, and inactive loops, return at once. Shared by ``init_dp_base`` and ``fill_dp_sweep``.
+    # adjacent spans (rim edges) cost 0. The ragged table packs every loop's ``B x B`` block end to
+    # end, so loop ``ell`` owns ``out_dp[dp_offsets[ell] + i * B + j]``. Row ``i`` of loop ``ell``;
+    # rows past the loop's own ``B``, and inactive loops, return at once. Shared by
+    # ``init_dp_base`` and ``fill_dp_sweep``.
+    #
+    # Only the rim edges are written, and their mirrors (``j == i - 1``, see ``store_dp``): the
+    # sweep writes every interval of span 2 and up, and its mirror, before any interval reads it,
+    # and reads ``prev`` only there, so the rest of the table is never read unwritten. Nor do the
+    # sweeps write a rim edge, so the zeros outlast a sweep and the ``min_area`` retry needs none
+    # of its own. A loop under three vertices, which the sweep never reaches, keeps its whole row
+    # of ``BAD_METRIC`` and ``-1`` for what reads it (``flag_bad_triangulations``).
     if active[ell] == 0:
         return
     b = loop_offsets[ell + 1] - loop_offsets[ell]
     if i >= b:
         return
-    base = dp_offsets[ell]
-    row = base + i * b
-    for j in range(b):
-        out_prev[row + j] = -1
-        # ``j == i - 1`` is the mirror of rim edge ``(i - 1, i)``: see ``store_dp``.
-        if j == i + 1 or j == i - 1:
-            out_dp[row + j] = 0.0
-        else:
-            out_dp[row + j] = BAD_METRIC
+    row = dp_offsets[ell] + i * b
+    if b < 3:
+        for j in range(b):
+            out_prev[row + j] = -1
+            out_dp[row + j] = wp.where(j == i + 1 or j == i - 1, wp.float32(0.0), BAD_METRIC)
+        return
+    if i + 1 < b:
+        out_dp[row + i + 1] = 0.0
+    if i >= 1:
+        out_dp[row + i - 1] = 0.0
 
 
 @wp.kernel
@@ -384,7 +392,8 @@ def init_dp_base(
     out_dp: wp.array[wp.float32],
     out_prev: wp.array[wp.int32],
 ) -> None:
-    # ``init_dp_row`` over ``(n_loops, max_B)``, one thread per row.
+    # ``init_dp_row`` over ``(n_loops, max_B)``, one thread per row. Writing the whole table here
+    # took 1 ms a sweep on lucy's 2 765-vertex rim (2026-11-09), a row of stores a thread.
     ell, i = wp.tid()
     init_dp_row(loop_offsets, dp_offsets, active, ell, i, out_dp, out_prev)
 
