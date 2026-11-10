@@ -6,6 +6,7 @@ from ordito.constants import ALLCLOSE_ATOL_CONSTANT, ALLCLOSE_RTOL_CONSTANT, FLO
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
+    append_slot_if,
     binary_search_index,
     binary_search_index_left,
     cross2,
@@ -1860,7 +1861,22 @@ def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
 EAR_COUNT = wp.int32(2)
 EAR_ANY_GOOD = wp.int32(3)
 EAR_CHECK_THIN = wp.int32(4)
-EAR_STATE_SIZE = 5
+# Then the face count when the last round was graded (``compute_ears`` reads the last round's clips
+# off it and hands the ring to ``ear_clip_tail``), and the tail's queue: an append counter, then
+# up to ``EAR_TAIL_COOP_MAX`` corners whose containment walks the whole block shares, then the
+# tail's three list append counters (``EAR_GOOD_ADDS``) and the queued corners' blocked flags.
+EAR_LAST_COUNT = wp.int32(5)
+EAR_QUEUE_COUNT = wp.int32(6)
+EAR_QUEUE = wp.int32(7)
+EAR_TAIL_COOP_MAX = 32
+# ``ear_clip_tail``'s lanes. It is launched in a module of its own, since a kernel launched at a
+# second block width rebuilds its whole module at that width. 256 and 128 lanes ran the 65 536-point
+# star's tail 1.2-1.25x slower (2026-11-10); 1 024 lanes need more registers than a block has.
+EAR_TAIL_BLOCK_DIM = 512
+# The last slot: the first round at which ``compute_ears`` may hand the ring to the tail again
+# after the tail handed a round back (``EAR_TAIL_HANDBACK``).
+EAR_TAIL_HOLD = wp.int32(10 + 2 * EAR_TAIL_COOP_MAX)
+EAR_STATE_SIZE = 11 + 2 * EAR_TAIL_COOP_MAX
 
 
 @wp.func
@@ -1968,6 +1984,8 @@ def init_ear_clip(
         out_state[EAR_COUNT] = wp.int32(0)
         out_state[EAR_ANY_GOOD] = wp.int32(0)
         out_state[EAR_CHECK_THIN] = wp.int32(0)
+        out_state[EAR_LAST_COUNT] = wp.int32(0)
+        out_state[EAR_TAIL_HOLD] = wp.int32(0)
     init_ring_slot(left, right, active, 0, k, n_ring)
     write_cell_starts(keys, n_ring, k, out_starts)
 
@@ -1996,14 +2014,13 @@ def edge_slab_x_range(
 
 
 @wp.func
-def ear_grade_grid(
+def grid_ear_blocker(
     points2d: wp.array[wp.vec2],
-    left: wp.array[wp.int32],
-    right: wp.array[wp.int32],
     active: wp.array[wp.int32],
+    a: wp.int32,
     i: wp.int32,
+    b: wp.int32,
     mirror: wp.int32,
-    check_thin: wp.int32,
     start: wp.int32,
     cell_starts: wp.array[wp.int32],
     cell_base: wp.int32,
@@ -2011,20 +2028,20 @@ def ear_grade_grid(
     shift: wp.vec2,
     inv_cell: wp.float32,
     dims: wp.vec2i,
+    part: wp.int32,
+    parts: wp.int32,
 ) -> wp.int32:
-    # ``ear_grade`` with the containment test walking grid cells instead of the ring. It tests the
-    # same vertices (every active one but a, i and b) with the same predicate, so it returns the
-    # same grade. Row by row it walks only the cells the triangle crosses -- the triangle's x
-    # extent over the row's slab, grown by the ``EAR_GRID_PAD_ULPS`` margin in both axes and by a
-    # hundredth of a cell in y against the rounding of the slab's bounds -- so a long thin ear
-    # across the polygon costs its area in cells, not its bounding box's. The ring starts at
-    # ``points2d[start]`` and its grid's cells at ``cell_starts[cell_base]``: both are 0 for the
-    # one ring of ``compute_ears``, a packed loop's own for ``ring_compute_ears``.
-    corner = ear_corner(points2d, left, right, i, mirror, check_thin)
-    if corner < EAR_TEST_THIN:
-        return corner
-    a = left[i]
-    b = right[i]
+    # An active vertex other than a, i and b that lies in triangle (a, i, b), ``-1`` when none
+    # does, walking the ear grid's cells the triangle crosses: share ``part`` of ``parts`` of that
+    # walk, so ``parts`` lanes walking their shares together (``ear_clip_tail``'s cooperative
+    # walk) test exactly the cells one walk with ``parts == 1`` tests (``ear_grade_grid``), each
+    # finding its own vertex if any. Row by row it walks only the
+    # cells the triangle crosses -- the triangle's x extent over the row's slab, grown by the
+    # ``EAR_GRID_PAD_ULPS`` margin in both axes and by a hundredth of a cell in y against the
+    # rounding of the slab's bounds -- so a long thin ear across the polygon costs its area in
+    # cells, not its bounding box's. The shares stride the rows; with more shares than rows each
+    # row's cells are cut into ``parts // rows`` runs. The ring starts at ``points2d[start]`` and
+    # its grid's cells at ``cell_starts[cell_base]``.
     pa = ring_point(points2d, a, mirror)
     pi = ring_point(points2d, i, mirror)
     pb = ring_point(points2d, b, mirror)
@@ -2042,7 +2059,12 @@ def ear_grade_grid(
     slack = pad + wp.float32(0.01) * cell_size
     row_lo = ear_grid_cell(lo - wp.vec2(pad, pad), origin, inv_cell, dims)[1]
     row_hi = ear_grid_cell(hi + wp.vec2(pad, pad), origin, inv_cell, dims)[1]
-    for cy in range(row_lo, row_hi + 1):
+    row_step = wp.min(parts, row_hi - row_lo + 1)
+    pieces = parts // row_step
+    piece = part // row_step
+    if piece >= pieces:
+        return wp.int32(-1)
+    for cy in range(row_lo + part % row_step, row_hi + 1, row_step):
         y0 = origin[1] + wp.float32(cy) * cell_size - slack
         y1 = origin[1] + wp.float32(cy + 1) * cell_size + slack
         empty = wp.vec2(hi[0], lo[0])
@@ -2052,8 +2074,11 @@ def ear_grade_grid(
         if x_range[0] <= x_range[1]:
             c0 = ear_grid_cell(wp.vec2(x_range[0] - pad, y0), origin, inv_cell, dims)[0]
             c1 = ear_grid_cell(wp.vec2(x_range[1] + pad, y0), origin, inv_cell, dims)[0]
+            span = c1 - c0 + 1
             row = cell_base + cy * dims[0]
-            for k in range(cell_starts[row + c0], cell_starts[row + c1 + 1]):
+            first = row + c0 + span * piece // pieces
+            stop = row + c0 + span * (piece + 1) // pieces
+            for k in range(cell_starts[first], cell_starts[stop]):
                 j = cell_points[k]
                 if (
                     j != i
@@ -2062,7 +2087,56 @@ def ear_grade_grid(
                     and active[j] == 1
                     and point_in_triangle(pa, pi, pb, ring_point(points2d, j, mirror))
                 ):
-                    return EAR_NONE
+                    return j
+    return wp.int32(-1)
+
+
+@wp.func
+def ear_grade_grid(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    check_thin: wp.int32,
+    start: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_base: wp.int32,
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+) -> wp.int32:
+    # ``ear_grade`` with the containment test walking grid cells instead of the ring
+    # (``grid_ear_blocker``, one walk). It tests the same vertices (every active one but a, i and
+    # b) with the same predicate, so it returns the same grade. The ring starts at
+    # ``points2d[start]`` and its grid's cells at ``cell_starts[cell_base]``: both are 0 for the
+    # one ring of ``compute_ears``, a packed loop's own for ``ring_compute_ears``.
+    corner = ear_corner(points2d, left, right, i, mirror, check_thin)
+    if corner < EAR_TEST_THIN:
+        return corner
+    if (
+        grid_ear_blocker(
+            points2d,
+            active,
+            left[i],
+            i,
+            right[i],
+            mirror,
+            start,
+            cell_starts,
+            cell_base,
+            cell_points,
+            shift,
+            inv_cell,
+            dims,
+            0,
+            1,
+        )
+        >= 0
+    ):
+        return EAR_NONE
     return unblocked_grade(corner)
 
 
@@ -2130,6 +2204,24 @@ def grade_ear_at(
         state[EAR_ANY_GOOD] = wp.int32(1)
 
 
+# When the round loop hands its ring to ``ear_clip_tail``: from a round whose predecessor clipped
+# at least one ear but fewer than one in ``EAR_TAIL_RATIO`` of the faces still to come -- the
+# zipper, where a ring of corners at the rounding level (``corner_is_thin``) lets each clip make
+# just its neighbour a good ear, so a round clips one ear a front -- or once at most
+# ``EAR_TAIL_FACES`` faces are left, where a round is too little work for the device. A round that
+# clipped nothing (the round before thin corners are walked) says nothing either way. The host
+# passes both to ``compute_ears`` as ``tail``; a ratio of 0 and no faces keep the tail out.
+# Ratios from 16 to 256 timed within 2 % of each other on stars, unit circles and noisy circles of
+# 4 096 to 65 536 points (2026-11-10).
+EAR_TAIL_RATIO = 64
+EAR_TAIL_FACES = 0
+# ``ear_clip_tail`` hands a round back to the loop once its open corners (the containment walks
+# it must run) pass one in ``EAR_TAIL_HANDBACK`` of its lanes, and the loop then keeps the ring for
+# ``EAR_TAIL_HOLD_ROUNDS`` rounds before it may hand it over again.
+EAR_TAIL_HANDBACK = wp.int32(4)
+EAR_TAIL_HOLD_ROUNDS = wp.int32(8)
+
+
 @wp.kernel
 def compute_ears(
     points2d: wp.array[wp.vec2],
@@ -2142,11 +2234,24 @@ def compute_ears(
     shift: wp.vec2,
     inv_cell: wp.float32,
     dims: wp.vec2i,
+    target: wp.int32,
+    tail: wp.vec2i,
     state: wp.array[wp.int32],
     out_is_ear: wp.array[wp.int32],
 ) -> None:
-    # ``grade_ear_at`` a thread a corner: the multi-launch path's grading step.
+    # ``grade_ear_at`` a thread a corner: the multi-launch path's grading step. Thread 0 also
+    # decides whether this is the loop's last round (``tail``, ``EAR_TAIL_RATIO``): lowering the
+    # condition here still lets the round finish, so the tail starts at a round boundary. The face
+    # count is settled here (the clips run in the round's last launch).
     i = wp.int32(wp.tid())
+    if i == 0:
+        count = state[EAR_COUNT]
+        clipped = count - state[EAR_LAST_COUNT]
+        state[EAR_LAST_COUNT] = count
+        remaining = target - count
+        held = state[LOOP_ROUND] < state[EAR_TAIL_HOLD]
+        if not held and clipped > 0 and (clipped * tail[0] < remaining or remaining <= tail[1]):
+            state[LOOP_CONDITION] = wp.int32(0)
     grade_ear_at(
         points2d,
         left,
@@ -2372,6 +2477,471 @@ def ear_clip_rounds(
             clip_selected_at(
                 selected, left, right, active, target, max_rounds, i, out_faces, out_state
             )
+
+
+# ``ear_clip_tail``'s corner words: the corner's ``ear_corner`` class with thin corners walked
+# (``EAR_NONE``, ``EAR_THIN``, ``EAR_TEST_THIN`` or ``EAR_TEST_GOOD``) in the low bits, and a
+# bit for each candidate list holding an entry for it. A corner the class sends to no walk and no
+# grade (``EAR_NONE``) is in neither list; ``EAR_THIN`` and ``EAR_TEST_GOOD`` corners are in the
+# good list, which every round grades; ``EAR_TEST_THIN`` corners are in the thin list, which only a
+# round walking thin corners grades.
+EAR_CLASS_MASK = wp.int32(7)
+EAR_IN_GOOD = wp.int32(8)
+EAR_IN_THIN = wp.int32(16)
+
+
+@wp.func
+def tail_entry_valid(
+    corners: wp.array[wp.int32], active: wp.array[wp.int32], i: wp.int32, bit: wp.int32
+) -> wp.bool:
+    # Whether corner ``i``'s entry in the list ``bit`` names is current: the corner is active and
+    # its class still belongs in that list. A list keeps an entry whose class has moved until it is
+    # compacted (``tail_compact``); the list's bit says the entry exists, so a corner is never
+    # listed twice in one list.
+    corner = corners[i] & EAR_CLASS_MASK
+    in_good = corner == EAR_THIN or corner == EAR_TEST_GOOD
+    belongs = wp.where(bit == EAR_IN_GOOD, in_good, corner == EAR_TEST_THIN)
+    return active[i] != 0 and belongs
+
+
+@wp.func
+def tail_classify(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    corners: wp.array[wp.int32],
+    word: wp.int32,
+) -> wp.vec2i:
+    # Store corner ``i``'s class in its word (``word``, its current one) and return whether it now
+    # needs an entry in the good and in the thin list that it does not have yet; the caller appends
+    # them. The class is ``ear_corner``'s with thin corners walked, a function of the corner and its
+    # two neighbours alone.
+    corner = ear_corner(points2d, left, right, i, mirror, wp.int32(1))
+    to_good = wp.where(
+        (corner == EAR_THIN or corner == EAR_TEST_GOOD) and (word & EAR_IN_GOOD) == 0, 1, 0
+    )
+    to_thin = wp.where(corner == EAR_TEST_THIN and (word & EAR_IN_THIN) == 0, 1, 0)
+    corners[i] = (
+        (word & (EAR_IN_GOOD | EAR_IN_THIN))
+        | corner
+        | wp.where(to_good != 0, EAR_IN_GOOD, 0)
+        | wp.where(to_thin != 0, EAR_IN_THIN, 0)
+    )
+    return wp.vec2i(to_good, to_thin)
+
+
+@wp.func
+def tail_append(
+    lists: wp.array[wp.int32],
+    base: wp.int32,
+    length: wp.int32,
+    counter: wp.array[wp.int32],
+    slot_index: wp.int32,
+    i: wp.int32,
+    flag: wp.int32,
+) -> None:
+    # Append corner ``i`` to the list at ``lists[base]`` of block-uniform ``length`` when ``flag``
+    # is set, through ``counter[slot_index]`` (zeroed before the pass; one atomic a warp,
+    # ``append_slot_if``, whose order decides nothing). Every lane of a warp calls it together.
+    slot = append_slot_if(counter, slot_index, flag)
+    if flag != 0:
+        lists[base + length + slot] = i
+
+
+@wp.func
+def tail_compact(
+    lists: wp.array[wp.int32],
+    base: wp.int32,
+    length: wp.int32,
+    bit: wp.int32,
+    corners: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    lane: wp.int32,
+) -> wp.int32:
+    # Drop the entries ``tail_entry_valid`` rejects from the list at ``lists[base]`` in place, a
+    # block-wide chunk at a time ranked by an exclusive tile scan (an entry moves only down, and
+    # each chunk's entries are read before its scan), clearing the dropped corners' ``bit``.
+    # Every lane must call it; returns the new length, block-uniform.
+    carry = wp.int32(0)
+    for chunk in range(0, length, wp.block_dim()):
+        k = chunk + lane
+        i = wp.int32(-1)
+        keep = wp.int32(0)
+        if k < length:
+            i = lists[base + k]
+            if tail_entry_valid(corners, active, i, bit):
+                keep = wp.int32(1)
+            else:
+                corners[i] = corners[i] - bit
+        before = carry + wp.untile(wp.tile_scan_exclusive(wp.tile(keep)))
+        if keep != 0:
+            lists[base + before] = i
+        carry += block_sum(keep)
+    return carry
+
+
+@wp.func
+def tail_ear_blocker(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    part: wp.int32,
+    parts: wp.int32,
+) -> wp.int32:
+    # ``grid_ear_blocker`` for corner ``i`` of the one ring: share ``part`` of ``parts``.
+    return grid_ear_blocker(
+        points2d,
+        active,
+        left[i],
+        i,
+        right[i],
+        mirror,
+        0,
+        cell_starts,
+        0,
+        cell_points,
+        shift,
+        inv_cell,
+        dims,
+        part,
+        parts,
+    )
+
+
+@wp.func
+def tail_open_grade(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    is_ear: wp.array[wp.int32],
+) -> wp.int32:
+    # Resolve an open corner's grade (``is_ear`` holds its class) by one lane's whole walk; returns
+    # 1 when it is a good ear.
+    grade = unblocked_grade(is_ear[i])
+    if (
+        tail_ear_blocker(
+            points2d,
+            left,
+            right,
+            active,
+            i,
+            mirror,
+            cell_starts,
+            cell_points,
+            shift,
+            inv_cell,
+            dims,
+            0,
+            1,
+        )
+        >= 0
+    ):
+        grade = EAR_NONE
+    is_ear[i] = grade
+    return wp.where(grade == EAR_GOOD, 1, 0)
+
+
+# Slots of ``ear_clip_tail``'s scratch counters in the loop state: the open-corner queue's
+# (``EAR_QUEUE_COUNT``), then the good list's, the thin list's and the round's clip list's appends.
+EAR_GOOD_ADDS = wp.int32(EAR_QUEUE + EAR_TAIL_COOP_MAX)
+EAR_THIN_ADDS = wp.int32(EAR_QUEUE + EAR_TAIL_COOP_MAX + 1)
+EAR_CLIP_ADDS = wp.int32(EAR_QUEUE + EAR_TAIL_COOP_MAX + 2)
+# Then a flag a queued corner: its walk found a vertex in its triangle.
+EAR_QUEUE_BLOCKED = wp.int32(EAR_QUEUE + EAR_TAIL_COOP_MAX + 3)
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def ear_clip_tail(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    is_ear: wp.array[wp.int32],
+    clips: wp.array[wp.int32],
+    lists: wp.array[wp.int32],
+    corners: wp.array[wp.int32],
+    target: wp.int32,
+    max_rounds: wp.int32,
+    out_faces: wp.array2d[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # The rest of the round loop (``compute_ears`` -> ``select_independent`` -> ``clip_selected``)
+    # by one block, from the round boundary ``compute_ears`` handed it at: the same grades, the
+    # same selection and the same clips round by round, so the same faces. What differs is what a
+    # round costs: it touches only the corners that can be ears. Every active corner is classed
+    # once (``tail_classify``); a clip reclasses only its two neighbours, the only corners whose
+    # class it changes. The good list (``EAR_THIN`` and ``EAR_TEST_GOOD`` classes) is graded every
+    # round; the thin list (``EAR_TEST_THIN``) only in a round walking thin corners, the round
+    # after one resetting its grades; every other corner's grade is ``EAR_NONE`` throughout. Only
+    # a graded corner can be selected, so selection walks the same lists and queues the round's
+    # clips (``clips``), and the clip pass walks that queue. A zipper round (``EAR_TAIL_RATIO``)
+    # thus costs its few candidates and its barriers, where the round loop paid three launches over
+    # the ring. The containment walks of up to ``EAR_TAIL_COOP_MAX`` open corners -- a zipper
+    # round's good ears and the convex corners some vertex still blocks, about ten a round on the
+    # star and the circle, whose walks across the ring were the round's time on one thread -- are
+    # shared out together, a few dozen lanes a corner (``grid_ear_blocker``'s shares); more go a
+    # lane each.
+    #
+    # ``lists`` holds the good list in its first ``n_ring`` entries and the thin list in its
+    # second, each at most one entry a corner (``EAR_IN_GOOD`` / ``EAR_IN_THIN``) and compacted in
+    # place once mostly stale. CUDA only: the CPU's ``ear_clip_rounds`` runs every round in one
+    # launch already.
+    #
+    # Measured against the round loop alone (2026-11-10, byte-identical faces): the 65 536-point
+    # star 0.21x (14 419 rounds), unit circles of 16 384 / 65 536 points 0.40x / 0.17x; the noisy
+    # circles, which never hand over, and the 16 384-point star, whose tail hands its wide rounds
+    # back, 1.00-1.04x. A zipper round still costs about 14 us here: five block barriers and the
+    # walks of the ~10 open corners, most of them convex corners a vertex blocks; remembering each
+    # corner's blocker did not cut the open count (153 288 walks over the star's tail either way:
+    # the blockers do not outlive a round).
+    _block, lane = wp.tid()
+    lanes = wp.block_dim()
+    n = active.shape[0]
+    rounds = out_state[LOOP_ROUND]
+    clipped_total = out_state[EAR_COUNT]
+    check_thin = out_state[EAR_CHECK_THIN]
+    if lane == 0:
+        out_state[EAR_QUEUE_COUNT] = wp.int32(0)
+        out_state[EAR_GOOD_ADDS] = wp.int32(0)
+        out_state[EAR_THIN_ADDS] = wp.int32(0)
+        out_state[EAR_CLIP_ADDS] = wp.int32(0)
+    block_barrier()
+    # Class every active corner and list it; no grade carries over from the loop.
+    adds = wp.vec2i(0, 0)
+    for chunk in range(0, n, lanes):
+        i = chunk + lane
+        want = wp.vec2i(0, 0)
+        if i < n:
+            is_ear[i] = EAR_NONE
+            if active[i] != 0:
+                want = tail_classify(points2d, left, right, i, mirror, corners, wp.int32(0))
+            else:
+                corners[i] = EAR_NONE
+        tail_append(lists, 0, 0, out_state, EAR_GOOD_ADDS, i, want[0])
+        tail_append(lists, n, 0, out_state, EAR_THIN_ADDS, i, want[1])
+        adds += want
+    adds = block_sum(adds)
+    good_length = adds[0]
+    thin_length = adds[1]
+    good_stale = wp.int32(0)
+    thin_stale = wp.int32(0)
+    thin_graded = wp.int32(0)
+    if lane == 0:
+        out_state[EAR_GOOD_ADDS] = wp.int32(0)
+        out_state[EAR_THIN_ADDS] = wp.int32(0)
+    block_barrier()
+    while clipped_total < target and rounds < max_rounds:
+        # Grading: a class the corner alone decides is its grade; an open one waits in ``is_ear``
+        # for its walk, the first ``EAR_TAIL_COOP_MAX`` also in the queue (read only by a round
+        # with no more, so which ones it holds past that does not matter). A thin list graded last
+        # round and not this one is reset to ``EAR_NONE``.
+        open_count = wp.int32(0)
+        for k in range(lane, good_length, lanes):
+            i = lists[k]
+            corner = EAR_NONE
+            if tail_entry_valid(corners, active, i, EAR_IN_GOOD):
+                corner = corners[i] & EAR_CLASS_MASK
+                is_ear[i] = corner
+            open_corner = wp.where(corner == EAR_TEST_GOOD, 1, 0)
+            open_count += open_corner
+            slot = append_slot_if(out_state, EAR_QUEUE_COUNT, open_corner)
+            if open_corner != 0 and slot < EAR_TAIL_COOP_MAX:
+                out_state[EAR_QUEUE + slot] = i
+                out_state[EAR_QUEUE_BLOCKED + slot] = wp.int32(0)
+        if check_thin != 0 or thin_graded != 0:
+            for k in range(lane, thin_length, lanes):
+                i = lists[n + k]
+                open_corner = wp.int32(0)
+                if tail_entry_valid(corners, active, i, EAR_IN_THIN):
+                    open_corner = check_thin
+                    is_ear[i] = wp.where(open_corner != 0, EAR_TEST_THIN, EAR_NONE)
+                open_count += open_corner
+                slot = append_slot_if(out_state, EAR_QUEUE_COUNT, open_corner)
+                if open_corner != 0 and slot < EAR_TAIL_COOP_MAX:
+                    out_state[EAR_QUEUE + slot] = i
+                    out_state[EAR_QUEUE_BLOCKED + slot] = wp.int32(0)
+        thin_graded = check_thin
+        n_open = block_sum(open_count)
+        if n_open * EAR_TAIL_HANDBACK > lanes:
+            # A round with more walks than the block takes in a few passes (thin corners walked
+            # after a round without a good ear, and the bursts that follow) goes back to the round
+            # loop, as from a round boundary: the grades just written are the loop's to redo.
+            if lane == 0:
+                out_state[LOOP_ROUND] = rounds
+                out_state[EAR_CHECK_THIN] = check_thin
+                out_state[EAR_ANY_GOOD] = wp.int32(0)
+                out_state[EAR_LAST_COUNT] = clipped_total
+                out_state[LOOP_CONDITION] = wp.int32(1)
+                out_state[EAR_TAIL_HOLD] = rounds + EAR_TAIL_HOLD_ROUNDS
+            return
+        good = wp.int32(0)
+        if n_open <= EAR_TAIL_COOP_MAX:
+            # Every queued corner's walk at once, ``lanes // n_open`` lanes a corner, each lane
+            # flagging its corner blocked when its share finds a vertex; then a lane a corner.
+            if n_open > 0:
+                parts = lanes // n_open
+                q = lane // parts
+                if q < n_open:
+                    if (
+                        tail_ear_blocker(
+                            points2d,
+                            left,
+                            right,
+                            active,
+                            out_state[EAR_QUEUE + q],
+                            mirror,
+                            cell_starts,
+                            cell_points,
+                            shift,
+                            inv_cell,
+                            dims,
+                            lane % parts,
+                            parts,
+                        )
+                        >= 0
+                    ):
+                        out_state[EAR_QUEUE_BLOCKED + q] = wp.int32(1)
+                block_barrier()
+                if lane < n_open:
+                    i = out_state[EAR_QUEUE + lane]
+                    grade = wp.where(
+                        out_state[EAR_QUEUE_BLOCKED + lane] != 0,
+                        EAR_NONE,
+                        unblocked_grade(is_ear[i]),
+                    )
+                    is_ear[i] = grade
+                    good = wp.where(grade == EAR_GOOD, 1, 0)
+        else:
+            for k in range(lane, good_length, lanes):
+                i = lists[k]
+                if is_ear[i] == EAR_TEST_GOOD and tail_entry_valid(corners, active, i, EAR_IN_GOOD):
+                    good = wp.max(
+                        good,
+                        tail_open_grade(
+                            points2d,
+                            left,
+                            right,
+                            active,
+                            i,
+                            mirror,
+                            cell_starts,
+                            cell_points,
+                            shift,
+                            inv_cell,
+                            dims,
+                            is_ear,
+                        ),
+                    )
+            if check_thin != 0:
+                for k in range(lane, thin_length, lanes):
+                    i = lists[n + k]
+                    if is_ear[i] == EAR_TEST_THIN and tail_entry_valid(
+                        corners, active, i, EAR_IN_THIN
+                    ):
+                        tail_open_grade(
+                            points2d,
+                            left,
+                            right,
+                            active,
+                            i,
+                            mirror,
+                            cell_starts,
+                            cell_points,
+                            shift,
+                            inv_cell,
+                            dims,
+                            is_ear,
+                        )
+        # The barrier after the grading, and the round's "some ear is good" for every lane.
+        any_good = wp.where(block_sum(good) > 0, wp.int32(1), wp.int32(0))
+        # Selection over the graded lists; the selected ears are queued for the clip pass.
+        selected = wp.int32(0)
+        for k in range(lane, good_length, lanes):
+            i = lists[k]
+            pick = wp.int32(0)
+            if tail_entry_valid(corners, active, i, EAR_IN_GOOD):
+                pick = ear_selected(is_ear, left, right, i, any_good, 0)
+            tail_append(clips, 0, 0, out_state, EAR_CLIP_ADDS, i, pick)
+            selected += pick
+        if check_thin != 0:
+            for k in range(lane, thin_length, lanes):
+                i = lists[n + k]
+                pick = wp.int32(0)
+                if tail_entry_valid(corners, active, i, EAR_IN_THIN):
+                    pick = ear_selected(is_ear, left, right, i, any_good, 0)
+                tail_append(clips, 0, 0, out_state, EAR_CLIP_ADDS, i, pick)
+                selected += pick
+        if lane == 0:
+            out_state[EAR_QUEUE_COUNT] = wp.int32(0)
+        n_clips = block_sum(selected)
+        # The clips; each reclasses its two neighbours, which no other clip of the round touches
+        # (selected ears are at least three apart), so their new classes read settled links.
+        adds = wp.vec2i(0, 0)
+        for k in range(lane, n_clips, lanes):
+            i = clips[k]
+            a = left[i]
+            b = right[i]
+            clip_ear(left, right, active, i, out_state, EAR_COUNT, out_faces)
+            is_ear[i] = EAR_NONE
+            is_ear[a] = EAR_NONE
+            is_ear[b] = EAR_NONE
+            want_a = tail_classify(points2d, left, right, a, mirror, corners, corners[a])
+            want_b = tail_classify(points2d, left, right, b, mirror, corners, corners[b])
+            tail_append(lists, 0, good_length, out_state, EAR_GOOD_ADDS, a, want_a[0])
+            tail_append(lists, 0, good_length, out_state, EAR_GOOD_ADDS, b, want_b[0])
+            tail_append(lists, n, thin_length, out_state, EAR_THIN_ADDS, a, want_a[1])
+            tail_append(lists, n, thin_length, out_state, EAR_THIN_ADDS, b, want_b[1])
+            adds += want_a + want_b
+        if lane == 0:
+            out_state[EAR_CLIP_ADDS] = wp.int32(0)
+        adds = block_sum(adds)
+        # The list counters are zeroed only past the barrier that ends the clips appending
+        # through them; the next appends come a round later, several barriers on.
+        if lane == 0:
+            out_state[EAR_GOOD_ADDS] = wp.int32(0)
+            out_state[EAR_THIN_ADDS] = wp.int32(0)
+        good_length += adds[0]
+        thin_length += adds[1]
+        clipped_total += n_clips
+        rounds += 1
+        check_thin = 1 - any_good
+        # A clip leaves up to three stale entries (the clipped corner and a reclassed neighbour's
+        # old entry, in either list); a list longer than one pass of the lanes is compacted once
+        # that bound passes half its length (a shorter one costs a lane one entry either way).
+        good_stale += 3 * n_clips
+        thin_stale += 3 * n_clips
+        if good_length > lanes and 2 * good_stale > good_length:
+            good_length = tail_compact(lists, 0, good_length, EAR_IN_GOOD, corners, active, lane)
+            good_stale = wp.int32(0)
+        if thin_length > lanes and 2 * thin_stale > thin_length:
+            thin_length = tail_compact(lists, n, thin_length, EAR_IN_THIN, corners, active, lane)
+            thin_stale = wp.int32(0)
+    if lane == 0:
+        out_state[LOOP_ROUND] = rounds
 
 
 # Rings up to this length are clipped by ``ear_clip_block`` -- the whole round loop as one block --

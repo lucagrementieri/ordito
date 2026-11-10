@@ -47,6 +47,7 @@ from ordito import _launch
 from ordito._common import (
     read_scalar,
     read_values,
+    record_device_loop,
     require_same_device,
     run_device_loop,
     scan_count,
@@ -2069,6 +2070,8 @@ def _triangulate_ring(
             device=device,
         )
     else:
+        # When the loop hands the ring to the one-block tail (``kernels/polyline.EAR_TAIL_RATIO``).
+        tail = wp.vec2i(kernel_polyline.EAR_TAIL_RATIO, kernel_polyline.EAR_TAIL_FACES)
 
         def clip_round() -> None:
             _launch.launch(
@@ -2085,6 +2088,8 @@ def _triangulate_ring(
                     shift,
                     inv_cell,
                     dims_wp,
+                    wp.int32(n_ring - 2),
+                    tail,
                     state,
                     is_ear,
                 ],
@@ -2109,7 +2114,52 @@ def _triangulate_ring(
         # 2 rounds 0.96-1.00x on star and noisy rings of 1 024-16 384 vertices, the benchmark's
         # 1 024-vertex star at par; 4 rounds 0.98-1.01x.
         condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
-        run_device_loop(device, condition, clip_round)
+        run_loop = record_device_loop(device, condition, clip_round)
+        while True:
+            run_loop()
+            # The face count, read with the round that ran last: a loop that stopped short of
+            # both the faces and the round cap was handed to the one-block tail
+            # (``compute_ears``), which runs the rest of the rounds, or hands a round too wide
+            # for one block back to the loop with its condition raised.
+            rounds, _, count = (
+                int(value) for value in read_values(state, int(kernel_array.LOOP_ROUND), 3)
+            )
+            if count >= n_ring - 2 or rounds >= n_ring:
+                break
+            # The tail's two candidate lists take the grid sort's spent keys (a half each), its
+            # corner classes the spent second half of the sorted points, and its clip queue the
+            # selection flags.
+            _launch.launch_tiled(
+                kernel_polyline.ear_clip_tail,
+                dim=1,
+                inputs=[
+                    points2d,
+                    left,
+                    right,
+                    active,
+                    mirror,
+                    cell_starts,
+                    cell_points,
+                    shift,
+                    inv_cell,
+                    dims_wp,
+                    is_ear,
+                    selected,
+                    cell_keys,
+                    cell_points[n_ring:],
+                    wp.int32(n_ring - 2),
+                    wp.int32(n_ring),
+                ],
+                outputs=[out_faces, state],
+                block_dim=kernel_polyline.EAR_TAIL_BLOCK_DIM,
+                device=device,
+            )
+            handed_back, count = (
+                int(value) for value in read_values(state, int(kernel_array.LOOP_CONDITION), 2)
+            )
+            if not handed_back:
+                break
+        return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
     return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
