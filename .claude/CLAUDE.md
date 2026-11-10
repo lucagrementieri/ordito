@@ -1228,6 +1228,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
+- **`query_nearest(k=1)`'s default search** (2026-11-10 `neighbors` sweep): with no `backend`
+  passed it runs the grid (bounds, radius estimate, grid build, deferral read). The point tree's
+  descent took jittered queries 0.72-0.74x to 36 k points, 0.66x on scrambled dragon, par on
+  dragon and 0.94-0.95x at 1-2 M, but `equality`'s exact self-match measured the grid at 0.36x
+  the descent at 2 M. A default change under `_DESCENT_MAX_POINTS_CUDA` alters documented
+  behaviour and tied neighbours' identity: needs the user's choice.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

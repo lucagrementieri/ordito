@@ -1772,6 +1772,20 @@ def test_query_weighted_nearest_conventions(device: str) -> None:
         )
 
 
+@pytest.fixture(params=["descent", "grid"])
+def nearest_search(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Run a test once over each nearest search a cloud's own size picks between.
+
+    ``nearest_neighbor_distance``, ``closest_pair`` and ``mutual_nearest`` descend point trees
+    below a size gate and take the grid's searches past it (``mutual_nearest`` on CUDA only);
+    ``"grid"`` forces the second on the test's small clouds, on either device.
+    """
+    if request.param == "grid":
+        monkeypatch.setattr(od.neighbors, "_nearest_descends", lambda *_args: False)
+
+
+@pytest.mark.usefixtures("nearest_search")
 @pytest.mark.parity("nearest_neighbor_distance", "open3d", "meshlib")
 def test_nearest_neighbor_distance_matches_open3d_and_meshlib(device: str) -> None:
     """
@@ -1779,9 +1793,10 @@ def test_nearest_neighbor_distance_matches_open3d_and_meshlib(device: str) -> No
 
     The distance to the nearest *other* point, so the self-match in slot 0 of the k-NN table must be
     skipped -- an implementation returning column 0 would report all zeros, which is what the
-    strictly-positive assert below excludes. It also pins the strided-column read: column 1 of an
-    ``(n, 2)`` table is a non-contiguous view, and the value comparison here is the check that the
-    copy out of it is the column and not the buffer's leading entries.
+    strictly-positive assert below excludes, and the descent that never accepts the point itself
+    must still accept everything else. On the grid search it also pins the strided-column read:
+    column 1 of an ``(n, 2)`` table is a non-contiguous view, and the value comparison here is the
+    check that the copy out of it is the column and not the buffer's leading entries.
 
     Also asserted, since no reference has an opinion on it: the mean of this array is a *scale*, so
     scaling the cloud must scale it by the same factor (both ``reconstruction`` call sites divide a
@@ -1827,6 +1842,7 @@ def test_nearest_neighbor_distance_matches_open3d_and_meshlib(device: str) -> No
     assert np.allclose(scaled_distance_wp.numpy(), 3.0 * distance_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.usefixtures("nearest_search")
 def test_nearest_neighbor_distance_coincident_and_degenerate(device: str) -> None:
     """
     Not a library comparison: the two cases Open3D answers differently, plus the exact-zero one.
@@ -1850,6 +1866,7 @@ def test_nearest_neighbor_distance_coincident_and_degenerate(device: str) -> Non
         assert np.all(np.isinf(answer_wp))
 
 
+@pytest.mark.usefixtures("nearest_search")
 @pytest.mark.parity("closest_pair", "meshlib", "scipy")
 def test_closest_pair_matches_meshlib(device: str) -> None:
     """
@@ -1899,6 +1916,7 @@ def test_closest_pair_matches_meshlib(device: str) -> None:
     assert np.isclose(float(distances_np[nearest_np, 1]), distance_wp, rtol=1e-6, atol=1e-6)
 
 
+@pytest.mark.usefixtures("nearest_search")
 def test_closest_pair_ties_and_degenerate(device: str) -> None:
     """
     Not a library comparison: the tie rule and the ``n < 2`` guard.
@@ -1934,6 +1952,7 @@ def _mutual_nearest_scipy(
     return a_indices_np, nearest_in_b_np[a_indices_np], distances_np[a_indices_np]
 
 
+@pytest.mark.usefixtures("nearest_search")
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_mutual_nearest_matches_scipy(mesh_name: str, request: pytest.FixtureRequest) -> None:
     """

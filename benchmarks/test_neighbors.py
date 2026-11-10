@@ -1044,19 +1044,15 @@ def test_edge_path_ball_walk(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="closest_pair")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.censuskeep(
-    "sphere_med",
-    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
-)
 @pytest.mark.benchlibs("ordito", "meshlib", "scipy")
 def test_closest_pair(bench_case: BenchCase) -> None:
     """
-    The cloud's *minimum* spacing: the same ``k=2`` self-query, reduced to one pair.
+    The cloud's *minimum* spacing: the same per-point search, reduced to one pair.
 
-    Read next to ``nearest_neighbor_distance``, which is the same query returning the whole column:
-    the difference between the two rows is one ``int64`` key pass, one device reduction and two
-    single-element readbacks, so the pair prices what reducing on the device costs against handing
-    the array back.
+    Read next to ``nearest_neighbor_distance``, which is the same search returning the whole array:
+    the difference between the two rows is one ``int64`` key reduction (with one more descent for
+    the winner's partner) and one two-element readback, so the pair prices what reducing on the
+    device costs against handing the array back.
 
     meshlib's ``findTwoClosestPoints`` is the same answer and is batched and callback-free. Its
     point tree is cached on the cloud, so the row drops it per round exactly as the
@@ -1106,7 +1102,7 @@ def test_closest_pair(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito")
 def test_mutual_nearest(bench_case: BenchCase) -> None:
     """
-    The vertices against a jittered copy of themselves: two nearest queries and one compaction.
+    The vertices against a jittered copy of themselves: both nearest searches and one compaction.
 
     The jitter is a tenth of the mean spacing, so most vertices pair with their own copy and the
     rest exercise the rejection. No reference row: SciPy's answer is the two ``KDTree`` queries the
@@ -1125,19 +1121,17 @@ def test_mutual_nearest(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="nearest_neighbor_distance")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.censuskeep(
-    "sphere_med",
-    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
-)
 @pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 def test_nearest_neighbor_distance(bench_case: BenchCase) -> None:
     """
-    The cloud's own spacing: a ``k=2`` self-query, keeping the second column.
+    The cloud's own spacing: each point's distance to its nearest other point.
 
     A *self*-query, so unlike every group above the query count is the cloud size rather than
     ``_N_QUERIES`` -- which is the point, since this is what ``reconstruction`` calls once on the
-    whole input before it can pick a radius or an octree depth. Everything past the k-NN search is a
-    strided column copy, so the ratio against ``query_nearest_bvh_k1`` prices that tail.
+    whole input before it can pick a radius or an octree depth. Below its size gate it is one
+    self-excluding descent a point over a point tree, ``query_nearest_bvh_k1``'s search with the
+    point itself never accepted; past the gate the grid's ``k=2`` search and a strided column
+    copy.
 
     open3d's ``compute_nearest_neighbor_distance`` builds a ``KDTreeFlann`` and then searches one
     point at a time in C++ -- so it is serial, but not the Python-per-query loop the legacy tree

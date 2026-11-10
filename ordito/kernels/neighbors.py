@@ -924,6 +924,49 @@ def bvh_nearest_point(
     return index, distance
 
 
+# ``bvh_nearest_index`` with one item never accepted: the nearest *other* point of a cloud, its
+# ``skip`` the query's own index, so a self-query needs no second slot to step past itself. Every
+# other line is the shared descent's; a duplicate of the query (another index, distance zero) is
+# accepted like any point.
+_BVH_NEAREST_OTHER_POINT = _BVH_NEAREST_POINT.replace(
+    "if (d < best_sq) {", "if (d < best_sq && item != skip) {"
+)
+assert _BVH_NEAREST_OTHER_POINT != _BVH_NEAREST_POINT, "the leaf test's spelling moved"
+
+
+@wp.func_native(_BVH_NEAREST_OTHER_POINT)
+def bvh_nearest_other_index(
+    bvh_id: wp.uint64, points: wp.array[wp.vec3], q: wp.vec3, skip: wp.int32, max_dist: wp.float32
+) -> wp.int32: ...
+
+
+@wp.func
+def nearest_other_point(
+    bvh_id: wp.uint64, points: wp.array[wp.vec3], i: wp.int32
+) -> tuple[wp.int32, wp.float32]:
+    # Point ``i``'s nearest other point of ``points`` (the point tree ``bvh_id`` built over them)
+    # and its ``wp.length`` distance, ``(-1, inf)`` in a one-point cloud: a ``k = 2`` self-query's
+    # second column in one unbounded descent. ``nearest_other_distances`` and
+    # ``closest_pair_key`` both read it, the second twice for its winner.
+    q = points[i]
+    index = bvh_nearest_other_index(bvh_id, points, q, i, wp.float32(FLOAT32_INF_CONSTANT))
+    distance = wp.float32(FLOAT32_INF_CONSTANT)
+    if index >= 0:
+        distance = wp.length(points[index] - q)
+    return index, distance
+
+
+# Its own module for ``descent_block_dim``'s wide launch, as ``query_nearest_via_bvh``.
+@wp.kernel(module="unique")
+def nearest_other_distances(
+    bvh_id: wp.uint64, points: wp.array[wp.vec3], out_distances: wp.array[wp.float32]
+) -> None:
+    # ``neighbors.nearest_neighbor_distance``: each point's distance to its nearest other point.
+    i = wp.int32(wp.tid())
+    _index, distance = nearest_other_point(bvh_id, points, i)
+    out_distances[i] = distance
+
+
 # ---------------------------------------------------------------------------------------------
 # Register-row k-NN kernel factories.
 #
@@ -1494,7 +1537,8 @@ def nearest_points_both_ways(
     # against each other (``metrics``' symmetric cloud distances): thread ``t`` below
     # ``first_points``' length finds its point's nearest in ``second_points`` (``second_tree``
     # built over them), the rest find ``second_points``' nearest in ``first_points``, writing one
-    # concatenated row; each side's rows are taken in its ``_common.search_order``. Differs from
+    # concatenated row (also ``neighbors.mutual_nearest``'s two directions); each side's rows are
+    # taken in its ``_common.search_order``. Differs from
     # ``query_nearest_via_bvh`` only in that choice of side and in having no radius;
     # ``proximity.closest_faces_both_ways`` is the mesh pair's counterpart.
     tid = wp.int32(wp.tid())
@@ -1591,6 +1635,23 @@ def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp
     return block_min(best)
 
 
+@wp.func
+def commit_nearest_key(
+    out_result: wp.array[wp.int64], block_best: wp.int64, n_blocks: wp.int32
+) -> wp.int64:
+    # One block's smallest key into ``out_result[0]`` and its ticket from ``out_result[2]``; the
+    # block drawing the last ticket gets the winning key back, every other ``NO_NEAREST_KEY``.
+    # The commit of ``nearest_key_pair`` and ``closest_pair_key``, run by lane 0.
+    wp.atomic_min(out_result, 0, block_best)
+    thread_fence()
+    ticket = wp.atomic_add(out_result, 2, wp.int64(-1))
+    key = NO_NEAREST_KEY
+    if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
+        thread_fence()
+        key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
+    return key
+
+
 @wp.kernel
 def nearest_key_pair(
     distances: wp.array[wp.float32],
@@ -1602,9 +1663,9 @@ def nearest_key_pair(
     # ``pack_nearest_key(distances[i], i)`` -- which element carries the smallest distance, lowest
     # index on a tie, with that distance's own float32 bits in the high half -- into
     # ``out_result[0]``, and ``partners`` of its winner into ``out_result[1]``, so the pair comes
-    # back in one readback. Shared by ``neighbors.closest_pair`` (column 1 of a ``k=2`` self-query,
-    # both strided views, only ever indexed) and ``proximity.mesh_to_mesh_distance`` (per-face
-    # squared distances and witnesses).
+    # back in one readback. Shared by ``neighbors.closest_pair`` past its descent's size (column 1
+    # of a ``k=2`` self-query, both strided views, only ever indexed) and
+    # ``proximity.mesh_to_mesh_distance`` (per-face squared distances and witnesses).
     #
     # The block that draws the last ticket (``out_result[2]``, counting down from ``INT64_MAX``;
     # all three slots arrive seeded at ``INT64_MAX``) has seen every block's ``atomic_min`` land, so
@@ -1616,13 +1677,32 @@ def nearest_key_pair(
     chunk, lane = wp.tid()
     block_best = block_nearest_key(distances, chunk, lane)
     if lane == 0:
-        wp.atomic_min(out_result, 0, block_best)
-        thread_fence()
-        ticket = wp.atomic_add(out_result, 2, wp.int64(-1))
-        if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
-            thread_fence()
-            key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
+        key = commit_nearest_key(out_result, block_best, n_blocks)
+        if key != NO_NEAREST_KEY:
             out_result[1] = wp.int64(partners[kernel_array.unpack_nearest_index(key)])
+
+
+@wp.kernel
+def closest_pair_key(
+    bvh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    distances: wp.array[wp.float32],
+    n_blocks: wp.int32,
+    out_result: wp.array[wp.int64],
+) -> None:
+    # ``neighbors.closest_pair``'s reduction over ``nearest_other_distances``' answer:
+    # ``nearest_key_pair`` with the partner recomputed by one more descent from the winner, in the
+    # block drawing the last ticket, rather than read from a table of partners the descent would
+    # have to write. Launched as ``nearest_key_pair``.
+    chunk, lane = wp.tid()
+    block_best = block_nearest_key(distances, chunk, lane)
+    if lane == 0:
+        key = commit_nearest_key(out_result, block_best, n_blocks)
+        if key != NO_NEAREST_KEY:
+            partner, _distance = nearest_other_point(
+                bvh_id, points, kernel_array.unpack_nearest_index(key)
+            )
+            out_result[1] = wp.int64(partner)
 
 
 @wp.kernel

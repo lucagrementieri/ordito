@@ -124,6 +124,22 @@ _BALL_LEAF_SIZE = 1
 _NEAREST_LEAF_SIZES = ((100_000, 16), (2_000_000, 32))
 _NEAREST_LEAF_SIZE_LARGE = 64
 
+# Cloud size from which ``nearest_neighbor_distance`` and ``closest_pair`` take the grid's ``k=2``
+# self-query on CUDA rather than one self-excluding descent a point over a one-point-a-leaf tree,
+# and ``mutual_nearest`` its two grid searches rather than one two-way descent. Self-query CUDA
+# call time descent / grid: 0.83-0.85x at 8 k points, 0.67-0.74x at 36 k, 0.74-0.79x on
+# dragon (437 k) and 0.50-0.52x on it scrambled, 0.81-0.88x at 0.5-1 M (happy_buddha, a lucy
+# stride), then 1.05-1.08x at 2 M and 1.26x on lucy (14 M), where the tree's build alone is the
+# grid's whole call. ``mutual_nearest`` against a jittered copy: 0.67-0.75x up to 36 k points and
+# on scrambled dragon, 0.94x on dragon, at par at 1-2 M, 1.16x on lucy.
+_DESCENT_MAX_POINTS_CUDA = 1 << 20
+# The CPU's self-query gate: descent / grid 0.51-0.54x at 8 k points, 0.72-0.78x at 36 k,
+# 0.74-0.85x on scrambled dragon, 0.77-0.80x on happy_buddha (543 k), then 1.04-1.10x at 1 M and
+# 1.09-1.12x at 2 M. ``mutual_nearest`` keeps the grid on the CPU, whose threads run in turn so
+# one two-way launch buys nothing: 0.61x at 8 k points but 1.23x on bunny and 1.31x on scrambled
+# dragon.
+_SELF_DESCENT_MAX_POINTS_CPU = 3 << 18
+
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     """
@@ -1939,9 +1955,8 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     The standard scale estimate for an unstructured cloud, and what a sampling-driven parameter is
     normally derived from: the mean of this array is the cloud's mean spacing, which is how
     [`ball_pivoting`][ordito.reconstruction.ball_pivoting] guesses its ball radius and how
-    [`screened_poisson`][ordito.reconstruction.screened_poisson] caps its octree depth. A
-    self-query for two neighbours, keeping the second — the first is the point itself, at distance
-    zero.
+    [`screened_poisson`][ordito.reconstruction.screened_poisson] caps its octree depth. The
+    ``k=2`` self-query's second column: each point's nearest neighbour other than itself.
 
     Parameters
     ----------
@@ -1988,6 +2003,9 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     if n < 2:
         return _launch.full(n, math.inf, dtype=wp.float32, device=device)
 
+    if _nearest_descends(points, _SELF_DESCENT_MAX_POINTS_CPU):
+        distances, _tree = _nearest_other_distances(points)
+        return distances
     _indices, distances = query_nearest(points, points, k=2)
     # Column 1 of the ``(n, 2)`` table, which is a *strided* view -- so it is copied into a dense
     # buffer rather than returned, both because callers expect a plain ``wp.array`` and because a
@@ -2003,7 +2021,7 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
 
     The global minimum of
     [`nearest_neighbor_distance`][ordito.neighbors.nearest_neighbor_distance], with the partner
-    recovered -- so it is the same ``k=2`` self-query, reduced instead of returned.
+    recovered: the same per-point search, reduced instead of returned.
     Answers "does this cloud contain a near-duplicate, and where" in one call, which is the question
     a tolerance for
     [`ordito.points.point_duplicate_mask`][ordito.points.point_duplicate_mask] is normally chosen
@@ -2032,9 +2050,9 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
     wins and an equal distance defers to the smaller index. Exact duplicates therefore report the
     first duplicated point at distance ``0.0``.
 
-    One host readback, of two elements: the reduction's result and ``index_b`` from the query
-    table. Everything up to it stays on the device, so this does not move the ``(n, 2)`` table
-    across the bus.
+    One host readback, of two elements: the reduction's result and ``index_b``. No per-point
+    table is written or moved across the bus. ``index_b`` differs from ``index_a`` even where
+    the two coincide.
 
     See Also
     --------
@@ -2061,22 +2079,47 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
         raise ValueError("closest_pair needs at least two points")
 
     device = points.device
-    indices, distances = query_nearest(points, points, k=2)
-    # Column 1 of the table, as strided views -- column 0 is each point itself. The kernel only
-    # indexes them, so neither needs a dense copy.
     n_blocks = kernel_reduce.blocks_1d(n)
     result = _launch.full(3, INT64_MAX, dtype=wp.int64, device=device)
+    if _nearest_descends(points, _SELF_DESCENT_MAX_POINTS_CPU):
+        distances, tree = _nearest_other_distances(points)
+        kernel = kernel_neighbors.closest_pair_key
+        inputs = [tree.id, points, distances]
+    else:
+        indices, distances = query_nearest(points, points, k=2)
+        # Column 1 of the table, as strided views -- column 0 is each point itself. The kernel
+        # only indexes them, so neither needs a dense copy.
+        kernel = kernel_neighbors.nearest_key_pair
+        inputs = [distances[:, 1], indices[:, 1]]
     _launch.launch_tiled(
-        kernel_neighbors.nearest_key_pair,
-        dim=n_blocks,
-        inputs=[distances[:, 1], indices[:, 1], n_blocks, result],
-        block_dim=TILE_1D,
-        device=device,
+        kernel, dim=n_blocks, inputs=[*inputs, n_blocks, result], block_dim=TILE_1D, device=device
     )
     key, index_b = (int(value) for value in read_values(result, 0, 2))
     # The key's high half is the distance's own float32 bits, so it decodes on the host for free.
     distance = float(np.array([key >> 32], dtype=np.uint32).view(np.float32)[0])
     return key & 0xFFFFFFFF, index_b, distance
+
+
+def _nearest_other_distances(points: wp.array[wp.vec3]) -> tuple[wp.array[wp.float32], wp.Bvh]:
+    """
+    Each point's distance to its nearest other point, and the point tree that answered it.
+
+    One descent a point over a tree with one point a leaf, never accepting the point itself: a
+    ``k=2`` self-query's second column without the first, the table or the grid search's sizing.
+    """
+    device = points.device
+    n = points.size
+    tree = bvh_from_points(points, leaf_size=1)
+    distances = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_neighbors.nearest_other_distances,
+        dim=n,
+        inputs=[tree.id, points],
+        outputs=[distances],
+        device=device,
+        block_dim=kernel_neighbors.descent_block_dim(n, device),
+    )
+    return distances, tree
 
 
 def mutual_nearest(
@@ -2112,8 +2155,8 @@ def mutual_nearest(
 
     Notes
     -----
-    Two nearest-neighbour queries, one each way
-    ([`query_nearest`][ordito.neighbors.query_nearest]), then one pass keeping the pairs that
+    Two nearest-neighbour searches, one each way (the ``k=1`` search of
+    [`query_nearest`][ordito.neighbors.query_nearest]), then one pass keeping the pairs that
     agree. Where a point's nearest neighbour is tied, the query's choice among the tied points
     decides whether it pairs.
 
@@ -2147,8 +2190,30 @@ def mutual_nearest(
             _launch.empty(0, dtype=wp.int32, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
         )
-    nearest_in_b, distances = query_nearest(b, a)
-    nearest_in_a, _ = query_nearest(a, b)
+    if _nearest_descends(a, 0) and _nearest_descends(b, 0):
+        # Both directions in one launch over two point trees, ``a``'s rows first: two nearest
+        # searches launched apart are each too few threads to fill the device. The leading rows
+        # serve as ``a``'s answer as they stand, the kernels reading only their own index.
+        # The orders are chosen before the trees are built, as ``metrics``' pairs choose them.
+        order_a, order_b = search_order(a), search_order(b)
+        tree_a = bvh_from_points(a, leaf_size=1)
+        tree_b = bvh_from_points(b, leaf_size=1)
+        n_rows = n_a + b.size
+        nearest_in_b = _launch.empty(n_rows, dtype=wp.int32, device=device)
+        distances = _launch.empty(n_rows, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_neighbors.nearest_points_both_ways,
+            dim=n_rows,
+            inputs=[tree_a.id, a, tree_b.id, b, order_a, order_b],
+            outputs=[nearest_in_b, distances],
+            device=device,
+            block_dim=kernel_neighbors.descent_block_dim(n_rows, device),
+        )
+        nearest_in_a = _launch.view(nearest_in_b, n_a, n_rows)
+    else:
+        # Past the size where the trees' builds are the call, the grid's two searches.
+        nearest_in_b, distances = query_nearest(b, a)
+        nearest_in_a, _ = query_nearest(a, b)
     flags = _launch.empty(n_a, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_neighbors.mutual_nearest_flags,
@@ -2168,6 +2233,19 @@ def mutual_nearest(
             device=device,
         )
     return a_indices, b_indices, pair_distances
+
+
+def _nearest_descends(points: wp.array[wp.vec3], max_points_cpu: int) -> bool:
+    """
+    Whether a nearest search over ``points`` built by the call descends a point tree.
+
+    Below ``_DESCENT_MAX_POINTS_CUDA`` on CUDA, or ``max_points_cpu`` on the CPU, a tree with one
+    point a leaf and one descent a query beat the grid's search; past it the tree's build is the
+    call.
+    """
+    device = wp.get_device(points.device)
+    limit = _DESCENT_MAX_POINTS_CUDA if device.is_cuda else max_points_cpu
+    return points.size < limit
 
 
 def geodesic_ball(

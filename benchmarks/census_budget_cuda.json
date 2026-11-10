@@ -4688,20 +4688,12 @@
  "benchmarks/test_neighbors.py::test_bvh_from_points[sphere_small-ordito-cuda-4]": {
   "counts": {}
  },
- "benchmarks/test_neighbors.py::test_closest_pair[sphere_med-ordito-cuda]": {
-  "counts": {
-   "launch": 3,
-   "alloc": 5,
-   "memset": 3,
-   "d2h": 3
-  }
- },
  "benchmarks/test_neighbors.py::test_closest_pair[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
-   "memset": 2,
-   "d2h": 2
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_neighbors.py::test_edge_path_ball_walk[sphere_small-ordito-cuda]": {
@@ -4740,27 +4732,16 @@
  },
  "benchmarks/test_neighbors.py::test_mutual_nearest[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 12,
-   "memset": 4,
-   "d2h": 5,
+   "launch": 3,
+   "alloc": 6,
+   "d2h": 1,
    "scan": 1
-  }
- },
- "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_med-ordito-cuda]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 5,
-   "memset": 2,
-   "d2h": 2
   }
  },
  "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 4,
-   "memset": 1,
-   "d2h": 1
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_neighbors.py::test_query_ball[sphere_small-ordito-cuda-2.0]": {
