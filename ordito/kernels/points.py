@@ -1348,33 +1348,36 @@ def support_indices(
 
 @wp.kernel
 def shell_bounds(shell_vertices: wp.indexedarray[wp.vec3], out_shell: wp.array[wp.vec4]) -> None:
-    # One thread: the shell has a few hundred vertices at most, and reducing on device keeps the
+    # One block: the shell has a few hundred vertices at most, and reducing on device keeps the
     # support sweep and the tetrahedron build in one launch chain with no host readback between.
     # ``shell_vertices`` is the points gathered through the support indices as a Python-scope
     # ``wp.indexedarray`` view, so neither this kernel nor ``tetrahedron_planes`` needs a copy.
     #
+    # Lane ``t`` sums the vertices ``t, t + block_dim, ...`` and the block adds the lanes' sums in
+    # its fixed tree, so the centroid repeats run to run; on the CPU device the one lane sums in
+    # index order. One thread walking the gathers in turn took ~75 us at subdivisions 3.
+    #
     # Forming the centroid in every ``tetrahedron_planes`` thread instead (broadcast loads, thread 0
     # publishing the radius) was measured and declined: ``convex_superset_mask`` 1.00-1.05x from
     # ``bunny_decimated`` to ``lucy`` at subdivisions 2 and 3, flat at most cells.
-    #
-    # Its ~75 us at subdivisions 3 (1 284 gathers through the support indices, one at a time) is a
-    # third of the call on ``sphere_small``. Declined: loading four vertices before folding them, in
-    # index order and so bit for bit, took it to 70 us only (2026-11-10); a block-wide sum would
-    # be fast but changes the centroid's bits, and with them the planes.
+    _block, lane = wp.tid()
     n = shell_vertices.shape[0]
+    stride = wp.block_dim()
     total = wp.vec3(0.0, 0.0, 0.0)
-    for i in range(n):
+    for i in range(lane, n, stride):
         total = total + shell_vertices[i]
-    center = total / wp.float32(n)
+    center = block_sum(total) / wp.float32(n)
 
     # The radius is the length scale the interior margin is measured against, so that the margin is
     # a fraction of the construction's own size rather than of a tetrahedron's aspect ratio.
     radius = wp.float32(0.0)
-    for i in range(n):
+    for i in range(lane, n, stride):
         radius = wp.max(radius, wp.length(shell_vertices[i] - center))
+    radius = block_max(radius)
 
     # Centroid and radius in one word, which the two kernels after this one read.
-    out_shell[0] = wp.vec4(center[0], center[1], center[2], radius)
+    if lane == 0:
+        out_shell[0] = wp.vec4(center[0], center[1], center[2], radius)
 
 
 @wp.func

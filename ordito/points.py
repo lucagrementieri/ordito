@@ -2794,7 +2794,13 @@ def convex_superset_mask(
     shell_vertices = points[support]
     # The shell's centroid and radius, packed in one ``wp.vec4``.
     shell = _launch.empty(1, dtype=wp.vec4, device=device)
-    _launch.launch(kernel_points.shell_bounds, dim=1, inputs=[shell_vertices, shell], device=device)
+    _launch.launch_tiled(
+        kernel_points.shell_bounds,
+        dim=[1],
+        inputs=[shell_vertices, shell],
+        block_dim=TILE_1D,
+        device=device,
+    )
 
     # `wp.empty`: a flat tetrahedron writes no planes, and `mark_hull_superset` reads a row
     # only where `valid` is set.

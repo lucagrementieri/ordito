@@ -1227,11 +1227,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `points` sweep (2026-11-10): `farthest_point_sample` left its one persistent block for a
   multi-block launch a round, replayed eight a body, once a round outgrew one SM (0.03-0.32x);
   an iteration's correspondence search could take the same shape on a large source.
-- **`convex_superset_mask`'s `shell_bounds` sums the shell in one thread** (2026-11-10): ~75 us
-  of 0.25 ms on `sphere_small` at subdivisions 3 (1 284 serial gathers through the support
-  indices). A block-wide sum would take it to a few microseconds but rounds the centroid
-  differently, which moves every plane and may change which points the margin keeps: needs the
-  user's choice.
 - **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
   (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
   0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the
