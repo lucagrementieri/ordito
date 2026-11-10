@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Required, TypedDict
+from typing import TYPE_CHECKING, Any, NamedTuple, Required, TypedDict
 
 import numpy as np
 import warp as wp
@@ -88,8 +88,8 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
         - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.
         - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).
         - ``corner_uv`` : ``(3 * n_faces,)`` ``wp.array[wp.vec2]``, one texcoord per face corner,
-          from an OBJ file's ``vt`` indices -- the form of a UV atlas, whose seams give one vertex
-          several texcoords.
+          from an OBJ file's ``vt`` indices or a PLY file's ``texcoord`` face list -- the form of
+          a UV atlas, whose seams give one vertex several texcoords.
           [`split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values]
           turns it into per-vertex ``uv``.
         - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``
@@ -99,7 +99,8 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     Raises
     ------
     ValueError
-        If an OBJ file's face names a vertex or a texcoord it does not define.
+        If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with
+        per-corner texcoords is malformed or names a vertex it does not define.
 
     See Also
     --------
@@ -113,7 +114,9 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
 
     An OBJ file is read here rather than by ``meshio``, which refuses one whose ``vt`` count
     differs from its ``v`` count -- every UV-mapped OBJ with a seam. Its positions, triangles and
-    ``corner_uv`` are returned; polygons with more than three corners are ignored as above.
+    ``corner_uv`` are returned; polygons with more than three corners are ignored as above. A PLY
+    file whose faces carry a ``texcoord`` (or ``texcoords``) list, which ``meshio`` cannot decode,
+    is read here too, ASCII or binary, with every attribute above.
 
     Examples
     --------
@@ -144,18 +147,44 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     """
     if Path(path).suffix.lower() == ".obj":
         return _load_obj_data(path, device)
+    if _is_ply_with_corner_texcoords(path):
+        ply = _read_ply(path)
+        if ply.faces.size > 0:
+            _require_valid_faces_host(ply.faces, len(ply.points), "load_mesh_data")
+        return _mesh_data(
+            ply.points, ply.faces, ply.point_data, ply.face_normals, ply.corner_uv, device
+        )
     meshio = _import_meshio()
     mesh = meshio.read(path)
+    return _mesh_data(
+        mesh.points,
+        mesh.cells_dict.get("triangle"),
+        mesh.point_data,
+        _face_normals_from_cell_data(mesh),
+        None,
+        device,
+    )
 
-    points = np.ascontiguousarray(mesh.points, dtype=np.float32)
+
+def _mesh_data(
+    points: np.ndarray,
+    faces_np: np.ndarray | None,
+    point_data: dict[str, np.ndarray],
+    face_normals: np.ndarray | None,
+    corner_uv: np.ndarray | None,
+    device: wp.DeviceLike,
+) -> MeshData:
+    """Return ``load_mesh_data``'s dictionary from a decoded file's host arrays."""
+    points = np.ascontiguousarray(points, dtype=np.float32)
     result: MeshData = {"vertices": _launch.array(points, dtype=wp.vec3, device=device)}
 
-    faces_np = mesh.cells_dict.get("triangle")
     if faces_np is not None and len(faces_np) > 0:
         faces_flat = np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32)
         result["faces"] = _launch.array(faces_flat, dtype=wp.int32, device=device)
-
-    point_data = mesh.point_data
+        if corner_uv is not None:
+            result["corner_uv"] = _launch.array(
+                np.ascontiguousarray(corner_uv, dtype=np.float32), dtype=wp.vec2, device=device
+            )
 
     normals = _stack_columns(point_data, _NORMAL_COLUMNS)
     if normals is not None:
@@ -186,7 +215,6 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
             else _launch.array(colors, dtype=wp.vec3, device=device)
         )
 
-    face_normals = _face_normals_from_cell_data(mesh)
     if face_normals is not None:
         result["face_normals"] = _launch.array(
             np.ascontiguousarray(face_normals, dtype=np.float32), dtype=wp.vec3, device=device
@@ -251,6 +279,264 @@ def _read_obj(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | No
     return points, faces, corner_uv
 
 
+class _PlyProperty(NamedTuple):
+    """One PLY property: its name, NumPy value type, and NumPy count type (``None``: a scalar)."""
+
+    name: str
+    dtype: str
+    count_dtype: str | None
+
+
+class _PlyElement(NamedTuple):
+    """One PLY element: its name, row count and properties in file order."""
+
+    name: str
+    n_rows: int
+    properties: list[_PlyProperty]
+
+
+class _PlyMesh(NamedTuple):
+    """A PLY file's triangles and attributes, as ``_mesh_data`` takes them."""
+
+    points: np.ndarray
+    faces: np.ndarray
+    point_data: dict[str, np.ndarray]
+    face_normals: np.ndarray | None
+    corner_uv: np.ndarray | None
+
+
+# PLY scalar types by every name the format allows, as NumPy type codes (byte order added per file).
+_PLY_TYPES = {
+    "char": "i1",
+    "int8": "i1",
+    "uchar": "u1",
+    "uint8": "u1",
+    "short": "i2",
+    "int16": "i2",
+    "ushort": "u2",
+    "uint16": "u2",
+    "int": "i4",
+    "int32": "i4",
+    "uint": "u4",
+    "uint32": "u4",
+    "float": "f4",
+    "float32": "f4",
+    "double": "f8",
+    "float64": "f8",
+}
+# The face list properties that hold one texcoord pair per corner.
+_PLY_TEXCOORD_LISTS = ("texcoord", "texcoords")
+
+
+def _is_ply_with_corner_texcoords(path: str | Path) -> bool:
+    """Whether ``path`` is a PLY file whose faces carry a per-corner texcoord list."""
+    if Path(path).suffix.lower() != ".ply":
+        return False
+    try:
+        _, elements, _ = _read_ply_header(path)
+    except (ValueError, OSError):
+        return False  # a header this reader does not understand is left to ``meshio``
+    return any(
+        prop.name in _PLY_TEXCOORD_LISTS and prop.count_dtype is not None
+        for element in elements
+        if element.name == "face"
+        for prop in element.properties
+    )
+
+
+def _read_ply_header(path: str | Path) -> tuple[str, list[_PlyElement], int]:
+    """Return a PLY file's ``(format, elements, body offset)``, reading its header alone."""
+    elements: list[_PlyElement] = []
+    file_format = ""
+    with open(path, "rb") as handle:
+        if handle.readline().strip() != b"ply":
+            raise ValueError(f"PLY file {path!r} does not start with 'ply'")
+        for line in handle:
+            tokens = line.decode("ascii", errors="replace").split()
+            if not tokens or tokens[0] in ("comment", "obj_info"):
+                continue
+            if tokens[0] == "end_header":
+                return file_format, elements, handle.tell()
+            if tokens[0] == "format" and len(tokens) == 3:
+                file_format = tokens[1]
+            elif tokens[0] == "element" and len(tokens) == 3:
+                elements.append(_PlyElement(tokens[1], int(tokens[2]), []))
+            elif tokens[0] == "property" and elements and len(tokens) in (3, 5):
+                if len(tokens) == 5 and tokens[1] == "list":
+                    prop = _PlyProperty(tokens[4], _ply_type(tokens[3]), _ply_type(tokens[2]))
+                else:
+                    prop = _PlyProperty(tokens[-1], _ply_type(tokens[1]), None)
+                elements[-1].properties.append(prop)
+            else:
+                raise ValueError(f"PLY file {path!r} has a malformed header line {line!r}")
+    raise ValueError(f"PLY file {path!r} has no end_header")
+
+
+def _ply_type(name: str) -> str:
+    """Return a PLY scalar type's NumPy type code."""
+    if name not in _PLY_TYPES:
+        raise ValueError(f"unknown PLY type {name!r}")
+    return _PLY_TYPES[name]
+
+
+def _read_ply(path: str | Path) -> _PlyMesh:
+    """
+    Read a PLY file on the host: positions, triangles, vertex columns, face normals, texcoords.
+
+    ASCII and binary of either byte order. Only faces of three corners are kept, as for OBJ, and
+    ``corner_uv`` is ``None`` unless every kept face carries three texcoord pairs. The face
+    indices are returned unvalidated.
+    """
+    file_format, elements, offset = _read_ply_header(path)
+    with open(path, "rb") as handle:
+        handle.seek(offset)
+        body = handle.read()
+    if file_format == "ascii":
+        columns = _ply_ascii_columns(path, body, elements)
+    elif file_format in ("binary_little_endian", "binary_big_endian"):
+        order = "<" if file_format == "binary_little_endian" else ">"
+        columns = _ply_binary_columns(path, body, elements, order)
+    else:
+        raise ValueError(f"PLY file {path!r} has an unknown format {file_format!r}")
+
+    vertex = columns.get("vertex", {})
+    if not all(name in vertex for name in "xyz"):
+        raise ValueError(f"PLY file {path!r} has no vertex x, y and z")
+    points = np.column_stack([vertex[name] for name in "xyz"]).astype(np.float32)
+    point_data = {
+        name: values
+        for name, values in vertex.items()
+        if name not in "xyz" and isinstance(values, np.ndarray)
+    }
+    face = columns.get("face", {})
+    corners: list[np.ndarray] = face.get("vertex_indices", face.get("vertex_index", []))
+    triangle = np.array([row.size == 3 for row in corners], dtype=bool)
+    faces = np.zeros(0, dtype=np.int64)
+    if triangle.any():
+        faces = np.concatenate([row for row, kept in zip(corners, triangle, strict=True) if kept])
+        faces = faces.astype(np.int64)
+    face_normals = None
+    if all(name in face for name in ("nx", "ny", "nz")):
+        face_normals = np.column_stack([face[name][triangle] for name in ("nx", "ny", "nz")])
+    corner_uv = None
+    texcoords = next((face[name] for name in _PLY_TEXCOORD_LISTS if name in face), None)
+    if texcoords is not None and triangle.any():
+        kept_texcoords = [row for row, kept in zip(texcoords, triangle, strict=True) if kept]
+        if all(row.size == 6 for row in kept_texcoords):
+            corner_uv = np.concatenate(kept_texcoords).astype(np.float32).reshape(-1, 2)
+    return _PlyMesh(points, faces, point_data, face_normals, corner_uv)
+
+
+def _ply_ascii_columns(
+    path: str | Path, body: bytes, elements: list[_PlyElement]
+) -> dict[str, dict[str, Any]]:
+    """
+    Decode an ASCII PLY body into ``{element: {property: values}}``.
+
+    A scalar property is a ``(count,)`` array, a list property a list of one array a row.
+    """
+    lines = [line for line in body.decode("ascii", errors="replace").splitlines() if line.strip()]
+    columns: dict[str, dict[str, Any]] = {}
+    start = 0
+    for element in elements:
+        rows = lines[start : start + element.n_rows]
+        start += element.n_rows
+        if len(rows) != element.n_rows:
+            raise ValueError(f"PLY file {path!r} ends inside element {element.name!r}")
+        values: dict[str, list[Any]] = {prop.name: [] for prop in element.properties}
+        for row in rows:
+            tokens = row.split()
+            column = 0
+            for prop in element.properties:
+                if prop.count_dtype is None:
+                    values[prop.name].append(float(tokens[column]))
+                    column += 1
+                    continue
+                width = int(tokens[column])
+                items = np.asarray(tokens[column + 1 : column + 1 + width], dtype=np.float64)
+                values[prop.name].append(items.astype(prop.dtype))
+                column += 1 + width
+            if column != len(tokens):
+                raise ValueError(f"PLY file {path!r} has a malformed {element.name!r} row")
+        columns[element.name] = {
+            prop.name: values[prop.name]
+            if prop.count_dtype is not None
+            else np.asarray(values[prop.name]).astype(prop.dtype)
+            for prop in element.properties
+        }
+    return columns
+
+
+def _ply_binary_columns(
+    path: str | Path, body: bytes, elements: list[_PlyElement], order: str
+) -> dict[str, dict[str, Any]]:
+    """
+    Decode a binary PLY body into ``{element: {property: values}}``, as ``_ply_ascii_columns``.
+
+    An element whose lists all keep their first row's length is read as one structured array;
+    any other is walked row by row.
+    """
+    columns: dict[str, dict[str, Any]] = {}
+    position = 0
+    for element in elements:
+        fields: list[Any] = []
+        cursor = position
+        for k, prop in enumerate(element.properties):
+            item = np.dtype(order + prop.dtype)
+            if prop.count_dtype is None:
+                fields.append((f"v{k}", item))
+                cursor += item.itemsize
+                continue
+            count_type = np.dtype(order + prop.count_dtype)
+            width = 0
+            if element.n_rows > 0 and cursor + count_type.itemsize <= len(body):
+                width = int(np.frombuffer(body, count_type, 1, cursor)[0])
+            fields.extend([(f"c{k}", count_type), (f"v{k}", item, (width,))])
+            cursor += count_type.itemsize + width * item.itemsize
+        row_type = np.dtype(fields)
+        table = None
+        if position + element.n_rows * row_type.itemsize <= len(body):
+            table = np.frombuffer(body, row_type, element.n_rows, position)
+            uniform = all(
+                (table[f"c{k}"] == table[f"c{k}"][:1]).all()
+                for k, prop in enumerate(element.properties)
+                if prop.count_dtype is not None
+            )
+            table = table if uniform else None
+        if table is not None:
+            columns[element.name] = {
+                prop.name: table[f"v{k}"].copy()
+                if prop.count_dtype is None
+                else list(table[f"v{k}"].copy())
+                for k, prop in enumerate(element.properties)
+            }
+            position += element.n_rows * row_type.itemsize
+            continue
+        values: dict[str, list[Any]] = {prop.name: [] for prop in element.properties}
+        for _ in range(element.n_rows):
+            for prop in element.properties:
+                item = np.dtype(order + prop.dtype)
+                width = 1
+                if prop.count_dtype is not None:
+                    count_type = np.dtype(order + prop.count_dtype)
+                    if position + count_type.itemsize > len(body):
+                        raise ValueError(f"PLY file {path!r} ends inside {element.name!r}")
+                    width = int(np.frombuffer(body, count_type, 1, position)[0])
+                    position += count_type.itemsize
+                if position + width * item.itemsize > len(body):
+                    raise ValueError(f"PLY file {path!r} ends inside {element.name!r}")
+                read = np.frombuffer(body, item, width, position)
+                values[prop.name].append(read if prop.count_dtype is not None else read[0])
+                position += width * item.itemsize
+        columns[element.name] = {
+            prop.name: values[prop.name]
+            if prop.count_dtype is not None
+            else np.asarray(values[prop.name])
+            for prop in element.properties
+        }
+    return columns
+
+
 def _stack_columns(data: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
     """Stack scalar ``point_data``/``cell_data`` columns into ``(n, len(names))`` or ``None``."""
     if not all(name in data for name in names):
@@ -308,8 +594,8 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     ------
     ValueError
         If the file contains no triangle faces (e.g. a point cloud or a triangle-strip
-        PLY that ``meshio`` cannot decode), or if a face references a vertex index the file's own
-        vertex count does not cover.
+        PLY that ``meshio`` cannot decode), if a face references a vertex index the file's own
+        vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.
 
     See Also
     --------
@@ -345,18 +631,22 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
             points=_launch.array(points, dtype=wp.vec3, device=device),
             indices=_launch.array(faces_np.astype(np.int32), dtype=wp.int32, device=device),
         )
-    meshio = _import_meshio()
-    mesh = meshio.read(path)
-    faces_np = mesh.cells_dict.get("triangle")
+    if _is_ply_with_corner_texcoords(path):
+        ply = _read_ply(path)
+        points_np, faces_np = ply.points, ply.faces
+    else:
+        meshio = _import_meshio()
+        mesh = meshio.read(path)
+        points_np, faces_np = mesh.points, mesh.cells_dict.get("triangle")
     if faces_np is None or len(faces_np) == 0:
         raise ValueError(f"Mesh file {path!r} has no triangle faces; cannot build a wp.Mesh.")
     # A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer
     # doesn't cover; this is the trust boundary where that first enters ordito. The check reads
     # the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or
     # above ``2**31`` into range.
-    _require_valid_faces_host(faces_np, len(mesh.points), "load_mesh")
+    _require_valid_faces_host(faces_np, len(points_np), "load_mesh")
     vertices_wp = _launch.array(
-        np.ascontiguousarray(mesh.points, dtype=np.float32), dtype=wp.vec3, device=device
+        np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec3, device=device
     )
     faces_wp = _launch.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device

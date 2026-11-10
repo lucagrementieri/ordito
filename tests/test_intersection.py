@@ -31,7 +31,7 @@ from tests.comparisons import (
     hausdorff_two_sided,
     lexsort_rows,
 )
-from tests.conftest import MESHES, OPEN_MESHES
+from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -2353,6 +2353,54 @@ def test_clip_mesh_with_field_reproduces_slice_mesh_with_plane(
     assert sliced_f.size > 0
     assert np.array_equal(clipped_f.numpy(), sliced_f.numpy())
     assert np.allclose(clipped_v.numpy(), sliced_v.numpy(), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("cap", [False, True])
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_clips_report_provenance(mesh_name: str, cap: bool, request: pytest.FixtureRequest) -> None:
+    """
+    Not a library comparison: no reference reports where a clip's crossings came from.
+
+    Each crossing is carried by its edge's endpoints at its parameter along the edge, which
+    reproduces its position, each kept vertex is a copy, every cut face lies in the face it was cut
+    from, and a cap face has no source. A field carried through the clip reads the isovalue at
+    every crossing. The provenance changes nothing else: both arms return the same mesh.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.points.device
+    heights_np = (mesh_wp.points.numpy() - mesh_tm.centroid) @ np.array([0.3, 0.2, 1.0])
+    heights_wp = wp.array(heights_np.astype(np.float32), dtype=wp.float32, device=device)
+    new_v, new_f, provenance = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, heights_wp, 0.05, cap=cap, return_provenance=True
+    )
+    plain_v, plain_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, heights_wp, 0.05, cap=cap
+    )
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+    copied_np = np.all(
+        new_v.numpy() == mesh_wp.points.numpy()[provenance.vertex_index.numpy()], axis=1
+    )
+    assert not copied_np.all()  # the clip really cut
+    carried_np = provenance.vertex_values(heights_wp).numpy()
+    assert np.allclose(carried_np[~copied_np], 0.05, rtol=0.0, atol=1e-5)
+    assert (carried_np[copied_np] >= 0.05 - 1e-5).all()
+    face_index_np = provenance.face_index.numpy()
+    if cap and mesh_name in CLOSED_MESHES:
+        assert (face_index_np == -1).any()  # the cap's faces have no source
+    else:
+        assert (face_index_np >= 0).all()
+
+    sliced_v, sliced_f, sliced = od.intersection.slice_mesh_with_plane(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.vec3(0.3, 0.2, 1.0),
+        wp.vec3(*mesh_tm.centroid.tolist()),
+        return_provenance=True,
+    )
+    assert sliced_f.size > 0
+    assert_provenance_describes(sliced, mesh_wp.points, mesh_wp.indices, sliced_v, sliced_f)
 
 
 def test_clip_mesh_with_field_through_a_saddle_vertex_reuses_it(device: str) -> None:

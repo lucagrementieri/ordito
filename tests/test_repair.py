@@ -399,7 +399,8 @@ def test_remove_unreferenced_vertices_matches_igl(
     vertices appended the compaction is real. The forward map and the inverse map are both compared,
     not just the compacted buffers: a compaction that dropped the right vertices but numbered them
     differently would pass on the first two returns alone, and every caller that keeps per-vertex
-    data alongside relies on the maps.
+    data alongside relies on the maps. The inverse map is the provenance's ``vertex_index``, and
+    the provenance describes the compaction.
     """
     if case == "fully_referenced":
         mesh_tm, _mesh_wp = request.getfixturevalue("sphere_irregular")
@@ -412,8 +413,8 @@ def test_remove_unreferenced_vertices_matches_igl(
         faces_np = np.array([[0, 1, 2]], dtype=np.int32)
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    nv_wp, nf_wp, remap_wp, inverse_wp = od.repair.remove_unreferenced_vertices(
-        vertices_wp, faces_wp, return_inverse=True
+    nv_wp, nf_wp, remap_wp, provenance = od.repair.remove_unreferenced_vertices(
+        vertices_wp, faces_wp, return_provenance=True
     )
 
     nv_igl, nf_igl, remap_igl, inverse_igl = igl.remove_unreferenced(vertices_np, faces_np)
@@ -421,7 +422,8 @@ def test_remove_unreferenced_vertices_matches_igl(
     assert np.allclose(nv_wp.numpy(), nv_igl, rtol=1e-5, atol=1e-5)
     assert np.array_equal(nf_wp.numpy().reshape(-1, 3), nf_igl)
     assert np.array_equal(remap_wp.numpy(), np.asarray(remap_igl).ravel())
-    assert np.array_equal(inverse_wp.numpy(), np.asarray(inverse_igl).ravel())
+    assert np.array_equal(provenance.vertex_index.numpy(), np.asarray(inverse_igl).ravel())
+    assert_provenance_describes(provenance, vertices_wp, faces_wp, nv_wp, nf_wp)
 
 
 @pytest.mark.parity("remove_unreferenced_vertices", "open3d")

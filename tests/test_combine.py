@@ -15,7 +15,7 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
 import ordito as od
-from tests.comparisons import same_partition
+from tests.comparisons import assert_provenance_describes, same_partition
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -380,6 +380,34 @@ def test_split_copies_equal_their_views(device: str, n_components: int) -> None:
         assert copy_vertices_wp.ptr != view_vertices_wp.ptr
         assert copy_vertices_wp._ref is None  # pyright: ignore[reportPrivateUsage]
         assert copy_faces_wp._ref is None  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("copy", [False, True])
+@pytest.mark.parametrize("n_parts", [1, 3])
+def test_split_reports_provenance(three_parts: list[MeshPair], n_parts: int, copy: bool) -> None:
+    """
+    Not a library comparison: no reference reports which input elements a component came from.
+
+    Each component's provenance describes it -- every vertex a copy of the input vertex it names,
+    every face lying in the input face it names -- and the components' face maps partition the
+    input's faces. One part takes the single-component path, three the batched one; both arms
+    return the same components.
+    """
+    vertices_wp, faces_wp = _concatenate_parts(three_parts[:n_parts])
+    parts = od.combine.split(vertices_wp, faces_wp, copy=copy, return_provenance=True)
+    plain = od.combine.split(vertices_wp, faces_wp, copy=copy)
+    assert len(parts) == len(plain) == n_parts
+    covered_np = []
+    for (part_vertices_wp, part_faces_wp, provenance), (plain_vertices_wp, plain_faces_wp) in zip(
+        parts, plain, strict=True
+    ):
+        assert np.array_equal(part_vertices_wp.numpy(), plain_vertices_wp.numpy())
+        assert np.array_equal(part_faces_wp.numpy(), plain_faces_wp.numpy())
+        assert_provenance_describes(
+            provenance, vertices_wp, faces_wp, part_vertices_wp, part_faces_wp
+        )
+        covered_np.append(provenance.face_index.numpy())
+    assert np.array_equal(np.sort(np.concatenate(covered_np)), np.arange(faces_wp.size // 3))
 
 
 def test_concatenate_and_split_empty(device: str) -> None:

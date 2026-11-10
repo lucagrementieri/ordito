@@ -786,7 +786,8 @@ def assert_provenance_describes(
 
     Its counts match both meshes, every source is in range, and the face map is the stronger of
     two claims: each output face lies inside the input face it names (its centroid's barycentric
-    coordinates there are all non-negative, its corners on the face's plane). With
+    coordinates there are all non-negative, its corners on the face's plane); a face naming ``-1``
+    has no source and is not tested. With
     ``positions_reproduce`` the input positions carried through it are the output positions -- the
     claim that a float field follows the edit by the weights it was formed with; a decimation that
     places vertices by its own rule passes ``False``, and an edit that moves faces off their sources
@@ -805,9 +806,8 @@ def assert_provenance_describes(
     assert vertex_index_np.size == 0 or (
         lowest <= vertex_index_np.min() and vertex_index_np.max() < n_vertices
     )
-    assert face_index_np.size == 0 or (
-        lowest <= face_index_np.min() and face_index_np.max() < n_faces
-    )
+    # A face with no source (a patch that fills a hole or caps a cut) reads ``-1``.
+    assert face_index_np.size == 0 or (-1 <= face_index_np.min() and face_index_np.max() < n_faces)
     sourced = vertex_index_np >= 0
     if provenance.vertex_operator is not None:
         operator = provenance.vertex_operator

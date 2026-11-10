@@ -80,10 +80,13 @@ def compact_referenced(
     out_vertices: wp.array[wp.vec3],
     out_inverse: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
+    out_face_index: wp.array[wp.int32],
 ) -> None:
     # The old-to-new map, the compacted positions, the new-to-old map and the remapped faces from
     # the in-place scan of the referenced flags, in one pass: ``flatnonzero``, the ``-1`` fill, the
     # index scatter, the position gather and ``array.remap_indices`` would be one launch each.
+    # ``out_face_index`` is optional (``None``): the provenance's identity face map, written here
+    # rather than by an ``arange`` launch of its own.
     # Launched over ``max(n_vertices, len(faces))``. A face entry reads the scan rather than
     # ``out_remap``, which another thread of this launch writes: every vertex a face names was
     # marked, so its new index is its exclusive scan value, which is what ``out_remap`` holds. A
@@ -94,6 +97,8 @@ def compact_referenced(
         if index >= 0:
             index = inclusive[index] - 1
         out_faces[t] = index
+    if t < out_face_index.shape[0]:
+        out_face_index[t] = t
     if t >= vertices.shape[0]:
         return
     slot, referenced = scanned_count(inclusive, t)
