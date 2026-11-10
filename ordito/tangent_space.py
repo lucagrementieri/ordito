@@ -30,7 +30,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_same_device
+from ordito._common import long_rings, require_same_device
 from ordito.halfedge import halfedge_twins, require_matching_twins, vertex_one_rings
 from ordito.kernels import tangent_space as kernel_tangent_space
 
@@ -122,33 +122,45 @@ def vertex_tangent_frames(
     if rings is None:
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, is_boundary = rings
-
+    # Rings the walk listed as long are skipped by the thread-a-vertex kernel and laid out a block
+    # a ring after it; with none known (none exists, or none was read back), every ring is a
+    # thread's.
+    listed = long_rings(ring_offsets)
+    gather = normals is None
     if normals is not None:
+        kernel = kernel_tangent_space.vertex_tangent_frames
+        if listed is not None:
+            kernel = kernel_tangent_space.vertex_tangent_frames_short
         _launch.launch(
-            kernel_tangent_space.vertex_tangent_frames,
+            kernel,
             dim=n,
-            inputs=[
-                vertices,
-                faces,
-                normals,
-                ring_offsets,
-                ring_halfedges,
-                is_boundary,
-                basis_x,
-                basis_y,
-            ],
+            inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, is_boundary],
+            outputs=[basis_x, basis_y],
             device=device,
         )
-        return basis_x, basis_y, normals
-
-    normals = _launch.empty(n, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_tangent_space.vertex_tangent_frames_gathered,
-        dim=n,
-        inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary],
-        outputs=[basis_x, basis_y, normals],
-        device=device,
-    )
+    else:
+        kernel = kernel_tangent_space.vertex_tangent_frames_gathered
+        if listed is not None:
+            kernel = kernel_tangent_space.vertex_tangent_frames_gathered_short
+        normals = _launch.empty(n, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel,
+            dim=n,
+            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary],
+            outputs=[basis_x, basis_y, normals],
+            device=device,
+        )
+    if listed is not None:
+        _launch.launch_tiled(
+            kernel_tangent_space.vertex_tangent_frames_long,
+            dim=listed.size,
+            inputs=[
+                vertices, faces, normals, ring_offsets, ring_halfedges, is_boundary, listed, gather,
+            ],
+            outputs=[basis_x, basis_y, normals],
+            device=device,
+            block_dim=kernel_tangent_space.FRAME_LONG_LANES,
+        )  # fmt: skip
     return basis_x, basis_y, normals
 
 

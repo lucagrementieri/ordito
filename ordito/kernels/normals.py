@@ -127,6 +127,21 @@ def gathered_angle_weighted_normal(
 
 
 @wp.func
+def halfedge_angle_weighted_term(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+) -> tuple[wp.vec3d, wp.float32]:
+    # One ring entry of ``gathered_angle_weighted_sums``: the ``float32`` product of face
+    # ``h // 3``'s unit normal and its corner angle at the origin of ``h`` (corner ``h % 3``),
+    # widened, and that angle. Shared with ``tangent_space.long_ring_frame``, which sums the same
+    # terms a hub's ring at a time by the whole block.
+    f = h // wp.int32(3)
+    normal, _area = face_normals_and_area(vertices, faces, f)
+    a0, a1, a2 = face_corner_angles(vertices, faces, f)
+    angle = wp.vec3(a0, a1, a2)[h % wp.int32(3)]
+    return wp.vec3d(normal * angle), angle
+
+
+@wp.func
 def gathered_angle_weighted_sums(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -148,12 +163,8 @@ def gathered_angle_weighted_sums(
     total = wp.vec3d()
     angle_total = wp.float32(0.0)
     for slot in range(ring_offsets[vertex], ring_offsets[vertex + 1]):
-        h = ring_halfedges[slot]
-        f = h // wp.int32(3)
-        normal, _area = face_normals_and_area(vertices, faces, f)
-        a0, a1, a2 = face_corner_angles(vertices, faces, f)
-        angle = wp.vec3(a0, a1, a2)[h % wp.int32(3)]
-        total += wp.vec3d(normal * angle)
+        term, angle = halfedge_angle_weighted_term(vertices, faces, ring_halfedges[slot])
+        total += term
         angle_total += angle
     return total, angle_total
 

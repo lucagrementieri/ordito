@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import weakref
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar, cast
 
@@ -880,3 +881,35 @@ def search_order(queries: wp.array[wp.vec3]) -> wp.array[wp.int32] | None:
         if read_scalar(count, index=0) < SEARCH_ORDER_LONG_FRACTION * SEARCH_ORDER_SAMPLES:
             return None
     return space_filling_order(queries)
+
+
+# The long rings ``halfedge.vertex_one_rings`` read back, keyed by the rings' offsets (each
+# call's own array, which every caller passes on unchanged): the vertices whose ring has
+# ``kernels/halfedge.ring_long_from`` halfedges or more. An entry lives as long as the offsets do,
+# and is a view of the allocation they are a view of, so it keeps no memory alive of its own.
+_LONG_RINGS: weakref.WeakKeyDictionary[wp.array[wp.int32], wp.array[wp.int32]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def note_long_rings(offsets: wp.array[wp.int32], listed: wp.array[wp.int32]) -> None:
+    """
+    Record that the rings with CSR ``offsets`` hold the long rings ``listed``.
+
+    ``listed`` is every vertex whose ring has ``kernels/halfedge.ring_long_from`` halfedges or
+    more, a nonempty list a call read back the length of (``halfedge.vertex_one_rings`` on a CUDA
+    device). A ring kernel that walks a ring in one thread can then skip those rings and leave
+    them to a kernel launched over ``listed`` alone, where it could not otherwise tell whether any
+    exists without a readback of its own. [`long_rings`][ordito._common.long_rings] reads it.
+    """
+    _LONG_RINGS[offsets] = listed
+
+
+def long_rings(offsets: wp.array[wp.int32]) -> wp.array[wp.int32] | None:
+    """
+    Return the long rings noted for the rings with CSR ``offsets``, or ``None``.
+
+    ``None`` means no long ring is known: none exists, or the rings came from a call that did not
+    read their count back (the CPU device, or ``vertex_one_rings`` with nothing to check).
+    """
+    return _LONG_RINGS.get(offsets)
