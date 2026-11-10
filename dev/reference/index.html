@@ -6426,6 +6426,10 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="query_nearest" href="../api/ordito/neighbors/#ordito.neighbors.query_nearest"><code>neighbors.query_nearest</code></a>, <a class="autorefs autorefs-internal" title="query_ball" href="../api/ordito/neighbors/#ordito.neighbors.query_ball"><code>query_ball</code></a></td>
 </tr>
 <tr>
+<td>one-to-one matches between two clouds (mutual nearest neighbours)</td>
+<td><a class="autorefs autorefs-internal" title="mutual_nearest" href="../api/ordito/neighbors/#ordito.neighbors.mutual_nearest"><code>neighbors.mutual_nearest</code></a></td>
+</tr>
+<tr>
 <td>Chamfer and Hausdorff distances</td>
 <td><a class="autorefs autorefs-internal" title="ordito.metrics" href="../api/ordito/metrics/#ordito.metrics"><code>metrics</code></a>: <a class="autorefs autorefs-internal" title="chamfer_mesh_to_mesh" href="../api/ordito/metrics/#ordito.metrics.chamfer_mesh_to_mesh"><code>chamfer_mesh_to_mesh</code></a>, <a class="autorefs autorefs-internal" title="hausdorff_mesh_to_mesh" href="../api/ordito/metrics/#ordito.metrics.hausdorff_mesh_to_mesh"><code>hausdorff_mesh_to_mesh</code></a></td>
 </tr>
@@ -6448,6 +6452,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td>down-sample</td>
 <td><a class="autorefs autorefs-internal" title="voxel_down_sample" href="../api/ordito/voxels/#ordito.voxels.voxel_down_sample"><code>voxels.voxel_down_sample</code></a>, <a class="autorefs autorefs-internal" title="farthest_point_sample" href="../api/ordito/points/#ordito.points.farthest_point_sample"><code>points.farthest_point_sample</code></a></td>
+</tr>
+<tr>
+<td>order points or cells along a Hilbert or Morton curve</td>
+<td><a class="autorefs autorefs-internal" title="space_filling_order" href="../api/ordito/points/#ordito.points.space_filling_order"><code>points.space_filling_order</code></a>, <a class="autorefs autorefs-internal" title="space_filling_codes" href="../api/ordito/voxels/#ordito.voxels.space_filling_codes"><code>voxels.space_filling_codes</code></a></td>
 </tr>
 <tr>
 <td>remove outliers</td>
@@ -6508,6 +6516,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td>per-group sums (<code>bincount</code> with weights, <code>add.reduceat</code>), reproducible under the deterministic setting</td>
 <td><a class="autorefs autorefs-internal" title="scatter_sum" href="../api/ordito/reduce/#ordito.reduce.scatter_sum"><code>reduce.scatter_sum</code></a>, <a class="autorefs autorefs-internal" title="segment_sum" href="../api/ordito/reduce/#ordito.reduce.segment_sum"><code>reduce.segment_sum</code></a></td>
+</tr>
+<tr>
+<td>per-group means, minima and maxima (<code>minimum.at</code>, <code>maximum.reduceat</code>)</td>
+<td><a class="autorefs autorefs-internal" title="scatter_mean" href="../api/ordito/reduce/#ordito.reduce.scatter_mean"><code>reduce.scatter_mean</code></a>, <a class="autorefs autorefs-internal" title="scatter_min" href="../api/ordito/reduce/#ordito.reduce.scatter_min"><code>scatter_min</code></a>, <a class="autorefs autorefs-internal" title="scatter_max" href="../api/ordito/reduce/#ordito.reduce.scatter_max"><code>scatter_max</code></a>, <a class="autorefs autorefs-internal" title="segment_mean" href="../api/ordito/reduce/#ordito.reduce.segment_mean"><code>segment_mean</code></a>, <a class="autorefs autorefs-internal" title="segment_min" href="../api/ordito/reduce/#ordito.reduce.segment_min"><code>segment_min</code></a>, <a class="autorefs autorefs-internal" title="segment_max" href="../api/ordito/reduce/#ordito.reduce.segment_max"><code>segment_max</code></a></td>
 </tr>
 </tbody>
 </table>
