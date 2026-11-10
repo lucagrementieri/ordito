@@ -979,7 +979,7 @@ def _edge_buckets(
     cursors = _launch.view(counters, n_vertices, 2 * n_vertices + 1)
     _launch.launch(
         kernel_halfedge.count_edge_buckets,
-        dim=n_halfedges,
+        dim=n_halfedges // 3,
         inputs=[faces, degrees, cursors],
         device=device,
     )

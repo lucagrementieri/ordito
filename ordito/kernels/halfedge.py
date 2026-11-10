@@ -136,17 +136,22 @@ def halfedge_vertex_pairs(
 
 
 @wp.func
-def edge_bucket_owner(degrees: wp.array[wp.int32], a: wp.int32, b: wp.int32) -> wp.int32:
-    # The endpoint whose bucket holds the undirected edge ``{a, b}``: the one with fewer incident
-    # corners, ties to the lower index, so both halfedges of an edge agree on it. Bucketing under
-    # the *lower-degree* end is what keeps a hub's bucket small -- a valence-``d`` hub's edges go to
-    # its spokes -- where Warp's ``tri_tri_adjacency`` buckets under the lower *index* and a hub
-    # numbered below its spokes holds every one of its ``2d`` halfedges.
-    da = degrees[a]
-    db = degrees[b]
+def lower_degree_end(da: wp.int32, db: wp.int32, a: wp.int32, b: wp.int32) -> wp.int32:
+    # The endpoint whose bucket holds the undirected edge ``{a, b}``, given their corner counts:
+    # the one with fewer incident corners, ties to the lower index, so both halfedges of an edge
+    # agree on it. Bucketing under the *lower-degree* end is what keeps a hub's bucket small -- a
+    # valence-``d`` hub's edges go to its spokes -- where Warp's ``tri_tri_adjacency`` buckets
+    # under the lower *index* and a hub numbered below its spokes holds every one of its ``2d``
+    # halfedges.
     if da < db or (da == db and a < b):
         return a
     return b
+
+
+@wp.func
+def edge_bucket_owner(degrees: wp.array[wp.int32], a: wp.int32, b: wp.int32) -> wp.int32:
+    # ``lower_degree_end`` of the undirected edge ``{a, b}``, reading the corner counts.
+    return lower_degree_end(degrees[a], degrees[b], a, b)
 
 
 @wp.kernel
@@ -156,9 +161,29 @@ def count_edge_buckets(
     # Bucket sizes of ``pair_bucketed_halfedges``, counted into ``out_ends[owner + 1]`` so an
     # inclusive scan over ``out_ends[1:]`` leaves ``out_ends[v]`` / ``out_ends[v + 1]`` as bucket
     # ``v``'s bounds.
-    h = wp.int32(wp.tid())
-    a, b = halfedge_endpoints(faces, h)
-    wp.atomic_add(out_ends, edge_bucket_owner(degrees, a, b) + 1, 1)
+    #
+    # A thread a face, its three corners' counts read once for its three edges, where a thread a
+    # halfedge read each twice: CUDA kernel 0.86 -> 0.82 ms on ``lucy``, 21 -> 18 us on ``dragon``.
+    # The scatter and the pairing keep a thread a halfedge: a thread a face serialized each
+    # halfedge's atomic and store (scatter 1.30 -> 1.82 ms on ``lucy``, 44 -> 57 us on ``dragon``)
+    # and its three bucket scans (pairing 1.26 -> 1.43 ms, 34 -> 43 us).
+    #
+    # Declined (2026-11-10): no count at all, each bucket given twice its owner's corner count
+    # (it holds at most an incoming and an outgoing halfedge a corner), so the corner counts' scan
+    # places it and the scatter's cursor counts its fill. It drops this launch, but the buckets
+    # take twice the slots, half of them unwritten, and the scatter's stores land in partly
+    # written sectors: scatter 1.30 -> 3.17 ms and pairing 1.26 -> 1.47 ms on ``lucy``, mates
+    # 1.34x and component labels 1.20x; ``dragon`` 0.95x / 0.97x, where the buckets stay in L2.
+    f = wp.int32(wp.tid())
+    i0 = faces[3 * f]
+    i1 = faces[3 * f + 1]
+    i2 = faces[3 * f + 2]
+    d0 = degrees[i0]
+    d1 = degrees[i1]
+    d2 = degrees[i2]
+    wp.atomic_add(out_ends, lower_degree_end(d0, d1, i0, i1) + 1, 1)
+    wp.atomic_add(out_ends, lower_degree_end(d1, d2, i1, i2) + 1, 1)
+    wp.atomic_add(out_ends, lower_degree_end(d2, d0, i2, i0) + 1, 1)
 
 
 @wp.kernel
