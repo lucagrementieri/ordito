@@ -1378,6 +1378,38 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     assert edge_loop_np.size > rim_vertices_np.size  # the rim grew rather than vanished
 
 
+def test_delete_region_keep_boundary_reports_provenance(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: no reference reports where the survivor's elements came from.
+
+    The provenance describes the surviving submesh -- each vertex a copy of the input vertex it
+    names, each face the input face it names, which are exactly the undeleted faces in order --
+    and both arms return the same survivor and loops.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    device = mesh_wp.points.device
+    rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    touches_rim_np = np.asarray(np.isin(mesh_tm.faces, rim_vertices_np).any(axis=1))
+    mask_np = _grown_region(mesh_tm, int(np.flatnonzero(~touches_rim_np)[0]), 5, ~touches_rim_np)
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    new_v, new_f, loops, provenance = od.selection.delete_region_keep_boundary(
+        mesh_wp.points, mesh_wp.indices, mask_wp, return_provenance=True
+    )
+    plain_v, plain_f, plain_loops = od.selection.delete_region_keep_boundary(
+        mesh_wp.points, mesh_wp.indices, mask_wp
+    )
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert [loop.numpy().tolist() for loop in loops] == [
+        loop.numpy().tolist() for loop in plain_loops
+    ]
+    assert len(loops) == 1
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+    assert np.array_equal(provenance.face_index.numpy(), np.flatnonzero(~mask_np))
+
+
 @pytest.mark.parametrize("region", ["interior", "two_interior", "on_rim", "pinched"])
 def test_delete_region_keep_boundary_is_its_packed_form_split(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], region: str

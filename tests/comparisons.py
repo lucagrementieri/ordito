@@ -785,7 +785,8 @@ def assert_provenance_describes(
 
     Its counts match both meshes, every source is in range, and the face map is the stronger of
     two claims: each output face lies inside the input face it names (its centroid's barycentric
-    coordinates there are all non-negative, its corners on the face's plane). With
+    coordinates there are all non-negative, its corners on the face's plane); a face naming ``-1``
+    has no source and is not tested. With
     ``positions_reproduce`` the input positions carried through it are the output positions -- the
     claim that a float field follows the edit by the weights it was formed with; a decimation that
     places vertices by its own rule passes ``False``, and an edit that moves faces off their sources
@@ -801,7 +802,8 @@ def assert_provenance_describes(
     assert vertex_index_np.size == 0 or (
         0 <= vertex_index_np.min() and vertex_index_np.max() < n_vertices
     )
-    assert face_index_np.size == 0 or (0 <= face_index_np.min() and face_index_np.max() < n_faces)
+    # A face with no source (a patch that fills a hole or caps a cut) reads ``-1``.
+    assert face_index_np.size == 0 or (-1 <= face_index_np.min() and face_index_np.max() < n_faces)
     if provenance.vertex_operator is not None:
         operator = provenance.vertex_operator
         assert (int(operator.nrow), int(operator.ncol)) == (n_out_vertices, n_vertices)
@@ -810,10 +812,13 @@ def assert_provenance_describes(
     if positions_reproduce:
         carried_np = provenance.vertex_values(vertices_wp).numpy()
         assert np.allclose(carried_np, new_vertices_wp.numpy(), rtol=0.0, atol=atol)
-    if faces_inside_sources and n_out_faces > 0:
+    sourced = face_index_np >= 0
+    if faces_inside_sources and sourced.any():
         points_np = vertices_wp.numpy().astype(np.float64)
-        sources_np = points_np[faces_wp.numpy().reshape(-1, 3)[face_index_np]]
-        corners_np = new_vertices_wp.numpy().astype(np.float64)[new_faces_wp.numpy().reshape(-1, 3)]
+        sources_np = points_np[faces_wp.numpy().reshape(-1, 3)[face_index_np[sourced]]]
+        corners_np = new_vertices_wp.numpy().astype(np.float64)[
+            new_faces_wp.numpy().reshape(-1, 3)[sourced]
+        ]
         normals_np = np.cross(
             sources_np[:, 1] - sources_np[:, 0], sources_np[:, 2] - sources_np[:, 0]
         )

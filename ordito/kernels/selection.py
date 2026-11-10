@@ -101,11 +101,13 @@ def decode_group_vertex_keys(
     out_slot_groups: wp.array[wp.int32],
     out_vertex_offsets: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
+    out_vertex_index: wp.array[wp.int32],
 ) -> None:
     # One launch over ``max(n_slots, k + 1)`` threads. Slot ``t`` of the sorted unique
     # ``(group, vertex)`` keys records its group and gathers the source position it names -- the
-    # two things the slot's key is needed for, read off one decode; the vertex id itself is never
-    # stored, since the position gather is its only consumer. Thread ``t <= k`` writes group
+    # two things the slot's key is needed for, read off one decode; the vertex id itself is stored
+    # only into the optional ``out_vertex_index`` (``None`` unless a caller reports provenance),
+    # since otherwise the position gather is its only consumer. Thread ``t <= k`` writes group
     # ``t``'s start: the keys ascend by group, so it is the first slot whose key reaches
     # ``t * radix``, which also gives an empty group its zero-length entry and ``k`` the slot
     # count: the total-terminated vertex offsets, every entry written.
@@ -114,7 +116,10 @@ def decode_group_vertex_keys(
         key = unique_keys[t]
         # The inverse of ``pack_group_vertex_keys``: one divmod.
         out_slot_groups[t] = wp.int32(key // radix)
-        out_vertices[t] = vertices[wp.int32(key % radix)]
+        vertex = wp.int32(key % radix)
+        out_vertices[t] = vertices[vertex]
+        if out_vertex_index.shape[0] > 0:
+            out_vertex_index[t] = vertex
     if t < out_vertex_offsets.shape[0]:
         out_vertex_offsets[t] = binary_search_index_left(unique_keys, wp.int64(t) * radix)
 
@@ -192,11 +197,13 @@ def compact_submesh(
     out_vertices: wp.array[wp.vec3],
     out_vertex_index: wp.array[wp.int32],
     out_dropped_keys: wp.array[wp.uint64],
+    out_face_index: wp.array[wp.int32],
 ) -> None:
     # Both halves of the extraction in one launch over ``max(n_faces, n_vertices)`` threads: thread
     # ``t`` compacts face ``t`` and vertex ``t`` where each exists. The two halves read the same
     # finished scan and write disjoint outputs, so nothing orders them.
-    # ``out_vertex_index`` is optional (``None``), as in ``compact_indexed_submesh``.
+    # ``out_vertex_index`` and ``out_face_index`` (each kept face's input face) are optional
+    # (``None``), as in ``compact_indexed_submesh``.
     #
     # ``out_dropped_keys`` is optional too: when passed, a face that is *not* kept writes its three
     # undirected edge keys (against ``key_base``) at three times its rank among the dropped faces
@@ -214,6 +221,8 @@ def compact_submesh(
         out_faces[slot] = ranks[n_faces + a] - offset
         out_faces[slot + 1] = ranks[n_faces + b] - offset
         out_faces[slot + 2] = ranks[n_faces + c] - offset
+        if out_face_index.shape[0] > 0:
+            out_face_index[ranks[t] - 1] = t
     if t < vertices.shape[0]:
         # A vertex is kept when its inclusive rank steps up; for vertex 0 the step is taken from the
         # face half's total, which is exactly the vertex half's baseline.

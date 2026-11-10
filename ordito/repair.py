@@ -374,17 +374,19 @@ def remove_unreferenced_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    return_inverse: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
 @overload
 def remove_unreferenced_vertices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_inverse: Literal[True]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_provenance: Literal[True]
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], od.interpolation.Provenance
+]: ...
 def remove_unreferenced_vertices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_inverse: bool = False
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_provenance: bool = False
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
     Remove vertices not referenced by any face and remap face indices.
@@ -395,9 +397,9 @@ def remove_unreferenced_vertices(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
-    return_inverse
-        If ``True``, also return ``inverse`` with ``new_vertices[inverse]`` sourcing
-        ``vertices``.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -407,9 +409,9 @@ def remove_unreferenced_vertices(
         ``(3 * n_faces,)`` face buffer with indices remapped into ``new_vertices``.
     remap : wp.array[wp.int32]
         ``(n_vertices,)`` old-to-new map (``-1`` when unreferenced).
-    inverse : wp.array[wp.int32], optional
-        ``(n_referenced,)`` source index of each new vertex. Present when
-        ``return_inverse=True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex its ``vertex_index`` names (the new-to-old map), and every face keeps its index.
 
     Raises
     ------
@@ -431,20 +433,29 @@ def remove_unreferenced_vertices(
     new_vertices, new_faces, remap = od.repair.remove_unreferenced_vertices(padded, faces)
     print(padded.shape, new_vertices.shape)  # (9,) (8,)
     print(remap.numpy().tolist())  # [0, 1, 2, 3, 4, 5, 6, 7, -1]
+    _, _, _, provenance = od.repair.remove_unreferenced_vertices(
+        padded, faces, return_provenance=True
+    )
+    print(provenance.vertex_index.numpy().tolist())  # [0, 1, 2, 3, 4, 5, 6, 7]
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
     n_vertices = vertices.size
+    n_faces = faces.size // 3
 
     # The referenced flags are marked as ``int32`` and scanned in place, and one pass reads the scan
     # to write all three maps and the remapped faces: the tail of the scan is the referenced count,
-    # which sizes the outputs and is the one readback.
+    # which sizes the outputs and is the one readback. The provenance's identity face map is
+    # written by the same pass, into the new-to-old map's allocation.
     remap = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    face_index = None
     if n_vertices == 0:
         new_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
         inverse = _launch.empty(0, dtype=wp.int32, device=device)
         new_faces = od.array.remap_indices(faces, remap)
+        if return_provenance:
+            face_index = od.array.arange(n_faces, device=device)
     else:
         inclusive = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
         n_indices = faces.size
@@ -458,18 +469,31 @@ def remove_unreferenced_vertices(
         # The referenced count sizes the outputs.
         n_referenced = scan_count(inclusive)
         new_vertices = _launch.empty(n_referenced, dtype=wp.vec3, device=device)
-        inverse = _launch.empty(n_referenced, dtype=wp.int32, device=device)
+        if return_provenance:
+            inverse, face_index = _launch.carve(wp.int32, (n_referenced, n_faces), device)
+        else:
+            inverse = _launch.empty(n_referenced, dtype=wp.int32, device=device)
         new_faces = _launch.empty(n_indices, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_repair.compact_referenced,
             dim=max(n_vertices, n_indices),
-            inputs=[vertices, faces, inclusive, remap, new_vertices, inverse, new_faces],
+            inputs=[
+                vertices,
+                faces,
+                inclusive,
+                remap,
+                new_vertices,
+                inverse,
+                new_faces,
+                face_index,
+            ],
             device=device,
         )
 
-    if return_inverse:
-        return new_vertices, new_faces, remap, inverse
-    return new_vertices, new_faces, remap
+    if face_index is None:
+        return new_vertices, new_faces, remap
+    provenance = od.interpolation.Provenance(inverse, face_index, None, n_vertices, n_faces)
+    return new_vertices, new_faces, remap, provenance
 
 
 def remove_duplicated_vertices(

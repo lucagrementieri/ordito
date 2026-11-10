@@ -775,16 +775,15 @@ def compact_crossing_slots(
 
 
 @wp.func
-def edge_level_crossing(
-    origin: wp.vec3, dest: wp.vec3, value_origin: wp.float32, value_dest: wp.float32
-) -> wp.vec3:
-    # Where the field crosses zero along one edge, from the two endpoint values. For a plane's
-    # signed distance this is ``edge_plane_intersection``'s algebra with the dot products already
-    # taken: ``dot(o - a, n) / dot(b - a, n)`` is ``va / (va - vb)``.
+def edge_level_parameter(value_origin: wp.float32, value_dest: wp.float32) -> wp.float32:
+    # Where the field crosses zero along one edge, as the fraction of the way from origin to
+    # destination, from the two endpoint values. For a plane's signed distance this is
+    # ``edge_plane_intersection``'s algebra with the dot products already taken:
+    # ``dot(o - a, n) / dot(b - a, n)`` is ``va / (va - vb)``.
     denominator = value_origin - value_dest
     if denominator == wp.float32(0.0):
         denominator = EDGE_DENOM_EPSILON
-    return origin + (dest - origin) * (value_origin / denominator)
+    return value_origin / denominator
 
 
 # How a face meets the level set. The three kept classes are numbered in the order the fused
@@ -985,20 +984,22 @@ def classify_clip_faces(
 
 
 @wp.func
-def canonical_edge_crossing_at(
+def canonical_edge_crossing_row(
     vertices: wp.array[wp.vec3],
     values: wp.array[wp.float32],
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
     i: wp.int32,
     j: wp.int32,
-) -> wp.vec3:
-    # Always interpolate from the endpoint that comes first by *position* (lexicographic, the
-    # index breaking a tie between coincident endpoints), so every face that sees an edge -- the two
-    # faces sharing it, and the faces of a coincident duplicate of it whose vertices were never
-    # welded -- evaluates the identical expression and lands on a **bitwise equal** point. That is
-    # what lets ``clip_mesh_with_field(cap=True)`` merge the section rim's crossings exactly, as
-    # VTK's ``vtkClipClosedSurface`` merges its new points by position, without merging the input.
+) -> tuple[wp.int32, wp.int32, wp.float32]:
+    # The level set's crossing on edge ``(i, j)`` as ``(a, b, s)``: the point lies at
+    # ``a + (b - a) * s``. Always interpolate from the endpoint that comes first by *position*
+    # (lexicographic, the index breaking a tie between coincident endpoints), so every face that
+    # sees an edge -- the two faces sharing it, and the faces of a coincident duplicate of it whose
+    # vertices were never welded -- evaluates the identical expression and lands on a **bitwise
+    # equal** point. That is what lets ``clip_mesh_with_field(cap=True)`` merge the section rim's
+    # crossings exactly, as VTK's ``vtkClipClosedSurface`` merges its new points by position,
+    # without merging the input. The clip's provenance rows are this triple.
     a = i
     b = j
     pa = vertices[i]
@@ -1010,12 +1011,26 @@ def canonical_edge_crossing_at(
     if swap:
         a = j
         b = i
-    return edge_level_crossing(
-        vertices[a],
-        vertices[b],
+    s = edge_level_parameter(
         vertex_level(vertices, values, plane_normal, plane_origin, a),
         vertex_level(vertices, values, plane_normal, plane_origin, b),
     )
+    return a, b, s
+
+
+@wp.func
+def canonical_edge_crossing_at(
+    vertices: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    i: wp.int32,
+    j: wp.int32,
+) -> wp.vec3:
+    # The point of ``canonical_edge_crossing_row``.
+    a, b, s = canonical_edge_crossing_row(vertices, values, plane_normal, plane_origin, i, j)
+    origin = vertices[a]
+    return origin + (vertices[b] - origin) * s
 
 
 @wp.func
@@ -1027,13 +1042,13 @@ def face_edge_crossing(
     plane_origin: wp.vec3,
     face_index: wp.int32,
     edge: wp.int32,
-) -> wp.vec3:
-    # Where the level set crosses edge ``edge`` of a face, from the per-vertex field the classifier
-    # already signed -- so the plane case reuses those dot products rather than recomputing them.
-    # Edge ``e`` joins corner ``e`` to corner ``e + 1``, which is the numbering the two emit
-    # kernels' ``edge_a`` / ``edge_b`` are expressed in.
+) -> tuple[wp.int32, wp.int32, wp.float32]:
+    # Where the level set crosses edge ``edge`` of a face (``canonical_edge_crossing_row``), from
+    # the per-vertex field the classifier already signed -- so the plane case reuses those dot
+    # products rather than recomputing them. Edge ``e`` joins corner ``e`` to corner ``e + 1``,
+    # which is the numbering the two emit kernels' ``edge_a`` / ``edge_b`` are expressed in.
     base = face_index * wp.int32(3)
-    return canonical_edge_crossing_at(
+    return canonical_edge_crossing_row(
         vertices,
         vertex_values,
         plane_normal,
@@ -1041,6 +1056,24 @@ def face_edge_crossing(
         faces[base + edge],
         faces[base + (edge + wp.int32(1)) % 3],
     )
+
+
+@wp.func
+def write_provenance_row(
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
+    row: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+    weight_a: wp.float32,
+    weight_b: wp.float32,
+) -> None:
+    # One two-slot row of a clip's provenance (``interpolation.Provenance.from_rows``): a copied
+    # input vertex is ``(v, -1)`` at ``(1, 0)``, a crossing its edge's endpoints.
+    out_sources[row, 0] = a
+    out_sources[row, 1] = b
+    out_weights[row, 0] = weight_a
+    out_weights[row, 1] = weight_b
 
 
 @wp.func
@@ -1063,13 +1096,19 @@ def write_clip_crossing(
     edge: wp.int32,
     index: wp.int32,
     out_vertices: wp.array[wp.vec3],
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
 ) -> wp.int32:
     # Write the level set's crossing on edge ``edge`` of face ``f`` at output vertex ``index`` and
     # return the index. Computed where the face is emitted rather than tabulated by a pass of its
-    # own: ``canonical_edge_crossing_at`` makes every evaluation of an edge bitwise equal.
-    out_vertices[index] = face_edge_crossing(
-        vertices, faces, vertex_dots, plane_normal, plane_origin, f, edge
-    )
+    # own: ``canonical_edge_crossing_row`` makes every evaluation of an edge bitwise equal. With
+    # provenance rows (``out_sources`` non-empty) the crossing's row holds its edge's endpoints and
+    # their weights, which carry the input positions onto the point within rounding.
+    a, b, s = face_edge_crossing(vertices, faces, vertex_dots, plane_normal, plane_origin, f, edge)
+    origin = vertices[a]
+    out_vertices[index] = origin + (vertices[b] - origin) * s
+    if out_sources.shape[0] > 0:
+        write_provenance_row(out_sources, out_weights, index, a, b, wp.float32(1.0) - s, s)
     return index
 
 
@@ -1087,6 +1126,9 @@ def emit_clip_faces(
     compact: wp.bool,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array2d[wp.int32],
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
+    out_face_index: wp.array[wp.int32],
 ) -> None:
     # The whole clip output in one launch over ``max(n_faces, n_vertices)`` threads, from
     # ``classify_clip_faces``' flags scanned in place: thread ``t`` writes input vertex ``t`` at its
@@ -1096,7 +1138,9 @@ def emit_clip_faces(
     # before triangles. Without ``compact`` every crossing is written and a triangle cut's corner
     # on the level set leaves one unreferenced, for the cap's exact merge to compact.
     # ``out_vertices`` is empty when the caller keeps the input buffer itself (the cap with
-    # nothing crossed).
+    # nothing crossed). ``out_sources``, ``out_weights`` and ``out_face_index`` are the
+    # provenance's rows and face map, ``None`` without it: an output vertex's row (a copied input
+    # vertex, or a crossing's edge, ``write_provenance_row``) and each output face's source face.
     t = wp.int32(wp.tid())
     n_faces = faces.shape[0] // 3
     # Entry ``t``'s exclusive ranks (``start``) and own flags, for vertex ``t`` and face ``t`` both.
@@ -1106,12 +1150,23 @@ def emit_clip_faces(
     own = ClipRanks()
     if t < ranks.shape[0]:
         own = ranks[t] - start
+    with_rows = out_sources.shape[0] > 0
     if t < vertices.shape[0] and out_vertices.shape[0] > 0:
+        slot = t
         if compact:
-            if own[CLIP_KEPT_VERTEX] != 0:
-                out_vertices[start[CLIP_KEPT_VERTEX]] = vertices[t]
-        else:
-            out_vertices[t] = vertices[t]
+            slot = wp.where(own[CLIP_KEPT_VERTEX] != 0, start[CLIP_KEPT_VERTEX], wp.int32(-1))
+        if slot >= 0:
+            out_vertices[slot] = vertices[t]
+            if with_rows:
+                write_provenance_row(
+                    out_sources,
+                    out_weights,
+                    slot,
+                    t,
+                    wp.int32(-1),
+                    wp.float32(1.0),
+                    wp.float32(0.0),
+                )
     if t >= n_faces:
         return
     i0, i1, i2 = kernel_triangles.corner_triple(faces, t)
@@ -1120,6 +1175,8 @@ def emit_clip_faces(
         out_faces[row, 0] = clip_vertex_index(ranks, compact, i0)
         out_faces[row, 1] = clip_vertex_index(ranks, compact, i1)
         out_faces[row, 2] = clip_vertex_index(ranks, compact, i2)
+        if out_face_index.shape[0] > 0:
+            out_face_index[row] = t
         return
     # A dropped face reads its corner signs before it finds it writes nothing; returning first
     # was bit-identical and 0.99-1.01x on a 13 M-face clip through the middle (2026-11-01):
@@ -1144,6 +1201,8 @@ def emit_clip_faces(
             corner_b,
             slot,
             out_vertices,
+            out_sources,
+            out_weights,
         )
         new_1 = write_clip_crossing(
             vertices,
@@ -1155,6 +1214,8 @@ def emit_clip_faces(
             outside,
             slot + wp.int32(1),
             out_vertices,
+            out_sources,
+            out_weights,
         )
         # The quad becomes two triangles, in the same pair of rows its two points went into.
         out_row = n_inside + wp.int32(2) * q
@@ -1164,6 +1225,9 @@ def emit_clip_faces(
         out_faces[out_row + wp.int32(1), 0] = new_0
         out_faces[out_row + wp.int32(1), 1] = new_1
         out_faces[out_row + wp.int32(1), 2] = v_a
+        if out_face_index.shape[0] > 0:
+            out_face_index[out_row] = t
+            out_face_index[out_row + wp.int32(1)] = t
         return
     if own[SLICE_CLASS_CUT_TRI - 1] == 0:
         return
@@ -1176,6 +1240,8 @@ def emit_clip_faces(
     # reused as it is, and the crossing on its edge is written only when every crossing is kept.
     out_row = n_inside + wp.int32(2) * n_quad + k
     out_faces[out_row, 0] = clip_vertex_index(ranks, compact, faces[base + inside_corner])
+    if out_face_index.shape[0] > 0:
+        out_face_index[out_row] = t
     if level_corner < wp.int32(0) or not compact:
         new_0 = write_clip_crossing(
             vertices,
@@ -1187,6 +1253,8 @@ def emit_clip_faces(
             inside_corner,
             slot,
             out_vertices,
+            out_sources,
+            out_weights,
         )
         new_1 = write_clip_crossing(
             vertices,
@@ -1198,6 +1266,8 @@ def emit_clip_faces(
             corner_b,
             slot + wp.int32(1),
             out_vertices,
+            out_sources,
+            out_weights,
         )
         out_faces[out_row, 1] = new_0
         out_faces[out_row, 2] = new_1
@@ -1216,6 +1286,8 @@ def emit_clip_faces(
             inside_corner,
             slot,
             out_vertices,
+            out_sources,
+            out_weights,
         )
         out_faces[out_row, 2] = clip_vertex_index(ranks, compact, faces[base + corner_b])
     else:
@@ -1230,6 +1302,8 @@ def emit_clip_faces(
             corner_b,
             slot,
             out_vertices,
+            out_sources,
+            out_weights,
         )
 
 

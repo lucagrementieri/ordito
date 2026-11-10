@@ -1606,12 +1606,35 @@ def _face_box_candidates(
     return targets, counts, stride, (tail_targets, tail_queries)
 
 
+@overload
 def slice_mesh_with_plane(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def slice_mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def slice_mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Slice a mesh with a plane, returning the portion on the positive normal side.
 
@@ -1629,13 +1652,20 @@ def slice_mesh_with_plane(
         Normal vector of the plane.
     plane_origin
         Point on the plane.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    new_vertices
+    new_vertices : wp.array[wp.vec3]
         ``(n_new_vertices,)`` vertices of the sliced mesh.
-    new_faces
+    new_faces : wp.array[wp.int32]
         ``(3 * m,)`` flat triangle index buffer for the sliced mesh, ``m`` its face count.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each kept input vertex is a copy, each
+        crossing interpolates the endpoints of the edge it lies on at its position along the edge,
+        and each output face comes from the input face it was cut from.
 
     Raises
     ------
@@ -1683,20 +1713,20 @@ def slice_mesh_with_plane(
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
     n_vertices = vertices.size
-    if n_vertices == 0:
-        return vertices, faces
-    if faces.size == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
+    if n_vertices == 0 or faces.size == 0:
+        new_vertices, new_faces, provenance = _empty_clip(vertices, faces, return_provenance)
+    else:
+        # No field: the kernels form each vertex's plane dot where they read it.
+        new_vertices, new_faces, provenance = _clip_with_vertex_field(
+            vertices,
+            faces,
+            _launch.empty(0, dtype=wp.float32, device=device),
+            plane=(plane_normal, plane_origin),
+            with_provenance=return_provenance,
         )
-
-    # No field: the kernels form each vertex's plane dot where they read it.
-    return _clip_with_vertex_field(
-        vertices,
-        faces,
-        _launch.empty(0, dtype=wp.float32, device=device),
-        plane=(plane_normal, plane_origin),
-    )
+    if provenance is None:
+        return new_vertices, new_faces
+    return new_vertices, new_faces, provenance
 
 
 @overload
@@ -1989,6 +2019,7 @@ def split_mesh_with_plane(
     return new_vertices, new_faces, above
 
 
+@overload
 def clip_mesh_with_field(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1996,7 +2027,30 @@ def clip_mesh_with_field(
     isovalue: float = 0.0,
     *,
     cap: bool = False,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def clip_mesh_with_field(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float = 0.0,
+    *,
+    cap: bool = False,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def clip_mesh_with_field(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float = 0.0,
+    *,
+    cap: bool = False,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Keep the ``values >= isovalue`` region of the mesh, cutting faces the level set crosses.
 
@@ -2032,13 +2086,21 @@ def clip_mesh_with_field(
         are not merged); only the crossing points the cut appends are shared. Use
         [`fill_min_weight`][ordito.holes.fill_min_weight] on the result to close every hole
         instead.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    new_vertices
+    new_vertices : wp.array[wp.vec3]
         ``(n_new_vertices,)`` vertices of the clipped region, with the crossing points appended.
-    new_faces
+    new_faces : wp.array[wp.int32]
         ``(3 * m,)`` flat triangle index buffer for the clipped region, ``m`` its face count.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each kept input vertex is a copy, each
+        crossing interpolates the endpoints of the edge it lies on at its position along the edge,
+        so a field carried through it reads ``isovalue`` on the section, and each output face comes
+        from the input face it was cut from. A cap face has no source (``-1``).
 
     Raises
     ------
@@ -2109,27 +2171,69 @@ def clip_mesh_with_field(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
-    device = vertices.device
-    n_vertices = vertices.size
-    if n_vertices == 0:
-        return vertices, faces
-    if faces.size == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
+    if vertices.size == 0 or faces.size == 0:
+        new_vertices, new_faces, provenance = _empty_clip(vertices, faces, return_provenance)
+    elif not cap:
+        new_vertices, new_faces, provenance = _clip_with_vertex_field(
+            vertices, faces, _shifted_field(values, isovalue), with_provenance=return_provenance
         )
+    else:
+        new_vertices, new_faces, provenance = _capped_clip(
+            vertices, faces, _shifted_field(values, isovalue), return_provenance
+        )
+    if provenance is None:
+        return new_vertices, new_faces
+    return new_vertices, new_faces, provenance
 
-    shifted = _shifted_field(values, isovalue)
-    if not cap:
-        return _clip_with_vertex_field(vertices, faces, shifted)
+
+def _empty_clip(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], with_provenance: bool
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance | None]:
+    """
+    Clip a mesh with no vertex or no face: ``(vertices, faces, provenance)``.
+
+    No vertex returns the input buffers themselves, no face empty buffers. The provenance is
+    ``None`` unless ``with_provenance``.
+    """
+    device = vertices.device
+    n_vertices, n_faces = vertices.size, faces.size // 3
+    if n_vertices > 0:
+        vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        faces = _launch.empty(0, dtype=wp.int32, device=device)
+    if not with_provenance:
+        return vertices, faces, None
+    provenance = od.interpolation.Provenance(
+        _launch.empty(0, dtype=wp.int32, device=device),
+        od.array.arange(faces.size // 3, device=device),
+        None,
+        n_vertices,
+        n_faces,
+    )
+    return vertices, faces, provenance
+
+
+def _capped_clip(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    shifted: wp.array[wp.float32],
+    with_provenance: bool,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance | None]:
+    """
+    ``clip_mesh_with_field(cap=True)`` of a non-empty mesh over the re-zeroed field ``shifted``.
+
+    The provenance is ``None`` unless ``with_provenance``; its cap faces, appended after the cut's,
+    have no source.
+    """
+    device = vertices.device
     # The cut writes its crossing points per face, so a rim edge shared by two cut faces arrives as
     # two bitwise-equal vertices; merging those (and only those -- the input vertices are kept as
     # given) turns the section into real boundary loops.
-    new_vertices, new_faces, source = _clip_with_sources(
-        vertices, faces, shifted, merge_crossings=True
+    new_vertices, new_faces, source, provenance = _clip_with_sources(
+        vertices, faces, shifted, merge_crossings=True, with_provenance=with_provenance
     )
     assert source is not None
     if new_faces.size == 0:
-        return new_vertices, new_faces
+        return new_vertices, new_faces, provenance
     # The cap closes the section and nothing else, as VTK caps the cut's own polylines: the boundary
     # edges with both ends on the level set (a crossing point, or an input vertex the classifier
     # reads as on it, within its tolerance), chained into cycles. Any other boundary edge was the
@@ -2148,7 +2252,7 @@ def clip_mesh_with_field(
     # Readback: the touching-face count sizes their buffer.
     n_touching = scan_count(scanned)
     if n_touching == 0:
-        return new_vertices, new_faces
+        return new_vertices, new_faces, provenance
     touching = _launch.empty(3 * n_touching, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.emit_section_faces,
@@ -2159,7 +2263,7 @@ def clip_mesh_with_field(
     rim = od.boundary.oriented_boundary_edges(new_vertices, touching)
     n_rim = int(rim.shape[0])
     if n_rim == 0:
-        return new_vertices, new_faces
+        return new_vertices, new_faces, provenance
     # The rim's section edges, chained in the vertex numbering: a non-section row reads
     # ``(-1, -1)`` and the chaining drops it, so nothing is read back before the cycles' totals.
     edges = odt.empty_2d((n_rim, 2), wp.int32, device=device)
@@ -2183,14 +2287,29 @@ def clip_mesh_with_field(
         capped = _cap_section_loops(new_vertices, new_faces, cycles, offsets, n_section)
     # Readback, where no cycle came out: whether there was a section at all.
     elif int(read_scalar(n_section)) == 0:
-        return new_vertices, new_faces
+        return new_vertices, new_faces, provenance
     if capped is None:
         cycles, offsets = _section_cycles_on_host(edges)
         if cycles.size == 0:
-            return new_vertices, new_faces
+            return new_vertices, new_faces, provenance
         capped = _cap_section_loops(new_vertices, new_faces, cycles, offsets)
         assert capped is not None
-    return new_vertices, capped
+    if provenance is not None:
+        provenance = _with_sourceless_faces(provenance, capped.size // 3)
+    return new_vertices, capped, provenance
+
+
+def _with_sourceless_faces(
+    provenance: od.interpolation.Provenance, n_out_faces: int
+) -> od.interpolation.Provenance:
+    """Return ``provenance`` with its face map extended to ``n_out_faces`` by sourceless faces."""
+    n_kept = provenance.face_index.size
+    if n_out_faces == n_kept:
+        return provenance
+    face_index = _launch.full(n_out_faces, -1, dtype=wp.int32, device=provenance.face_index.device)
+    if n_kept > 0:
+        _launch.copy(face_index, provenance.face_index, count=n_kept)
+    return provenance._replace(face_index=face_index)
 
 
 def _section_cycles_on_host(
@@ -2731,17 +2850,22 @@ def _clip_with_vertex_field(
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
     plane: tuple[wp.vec3, wp.vec3] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    with_provenance: bool = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance | None]:
     """
     Keep the ``vertex_dots >= 0`` region, the engine behind both public clippers.
 
     ``plane`` is the plane clip's ``(normal, origin)``: the field is then its signed distance,
     formed in the kernels where an empty ``vertex_dots`` leaves it to them, and the normal is the
     tie-break for a face lying in the level set -- the *only* other difference between the two: a
-    general field has no orientation to compare, so such a face is dropped.
+    general field has no orientation to compare, so such a face is dropped. The provenance is
+    ``None`` unless ``with_provenance``.
     """
-    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane)
-    return new_vertices, new_faces
+    new_vertices, new_faces, _, provenance = _clip_with_sources(
+        vertices, faces, vertex_dots, plane, with_provenance=with_provenance
+    )
+    return new_vertices, new_faces, provenance
 
 
 def _clip_with_sources(
@@ -2751,7 +2875,13 @@ def _clip_with_sources(
     plane: tuple[wp.vec3, wp.vec3] | None = None,
     *,
     merge_crossings: bool = False,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
+    with_provenance: bool = False,
+) -> tuple[
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+    wp.array[wp.int32] | None,
+    od.interpolation.Provenance | None,
+]:
     """
     ``_clip_with_vertex_field``, plus each output vertex's source when ``merge_crossings`` is set.
 
@@ -2759,7 +2889,9 @@ def _clip_with_sources(
     of every rim edge's crossing, evaluated from its lower-numbered endpoint on both sides -- become
     one vertex, while the input vertices are left exactly as given; and the third return maps every
     output vertex to its input vertex, or to an index ``>= vertices.size`` for a crossing point.
-    Without it the third return is ``None``.
+    Without it the third return is ``None``. The fourth is the provenance under
+    ``with_provenance``, else ``None``: the emit writes each output vertex's row (a copy, or its
+    crossing's edge at the crossing's parameter) and each face's source face.
 
     One classifying launch writes every flag one inclusive scan needs to rank the kept faces within
     their class, the crossing points and the referenced input vertices
@@ -2798,21 +2930,27 @@ def _clip_with_sources(
     n_in, n_quad, n_tri, n_tri_crossings, n_kept = (int(c) for c in read_scalar(ranks))
     n_rows = n_in + 2 * n_quad + n_tri
     if n_rows == 0:
+        empty_index = _launch.empty(0, dtype=wp.int32, device=device)
         return (
             _launch.empty(0, dtype=wp.vec3, device=device),
             _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.empty(0, dtype=wp.int32, device=device) if merge_crossings else None,
+            empty_index if merge_crossings else None,
+            od.interpolation.Provenance(empty_index, empty_index, None, n_vertices, n_faces)
+            if with_provenance
+            else None,
         )
     n_crossings = 2 * n_quad + n_tri_crossings
     if merge_crossings:
         n_kept = n_vertices
     out_faces = _launch.empty(3 * n_rows, dtype=wp.int32, device=device)
     # With nothing crossed the cap compacts the input buffer itself, so none is copied here.
-    out_vertices = _launch.empty(
-        0 if merge_crossings and n_crossings == 0 else n_kept + n_crossings,
-        dtype=wp.vec3,
-        device=device,
-    )
+    n_out = 0 if merge_crossings and n_crossings == 0 else n_kept + n_crossings
+    out_vertices = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    sources = weights = face_index = None
+    if with_provenance:
+        sources = odt.empty_2d((n_out, 2), wp.int32, device=device)
+        weights = odt.empty_2d((n_out, 2), wp.float32, device=device)
+        face_index = _launch.empty(n_rows, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.emit_clip_faces,
         dim=max(n_faces, n_vertices),
@@ -2829,16 +2967,29 @@ def _clip_with_sources(
             not merge_crossings,
             out_vertices,
             out_faces.reshape((n_rows, 3)),
+            sources,
+            weights,
+            face_index,
         ],
         device=device,
     )
-    if not merge_crossings:
-        return out_vertices, out_faces, None
-    if n_crossings == 0:
-        new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
-            vertices, out_faces, return_inverse=True
+    provenance = None
+    if face_index is not None and n_out > 0:
+        assert sources is not None
+        assert weights is not None
+        provenance = od.interpolation.Provenance.from_rows(
+            sources, weights, face_index, n_vertices, n_faces
         )
-        return new_vertices, new_faces, source
+    if not merge_crossings:
+        return out_vertices, out_faces, None, provenance
+    if n_crossings == 0:
+        new_vertices, new_faces, _, compaction = od.repair.remove_unreferenced_vertices(
+            vertices, out_faces, return_provenance=True
+        )
+        if face_index is not None:
+            # The compaction keeps every face where it was, so the faces' sources are the emit's.
+            provenance = compaction._replace(face_index=face_index, n_faces=n_faces)
+        return new_vertices, new_faces, compaction.vertex_index, provenance
     # Each crossing's class is found among the crossings alone (an exact-equality table, the
     # ``points.point_duplicate_mask`` one) and every face index into the crossings is pointed at
     # its class's first member; the copies are then unreferenced and the compaction drops them.
@@ -2859,10 +3010,12 @@ def _clip_with_sources(
         inputs=[first, slot, wp.int32(n_vertices), out_faces],
         device=device,
     )
-    new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
-        out_vertices, out_faces, return_inverse=True
+    new_vertices, new_faces, _, compaction = od.repair.remove_unreferenced_vertices(
+        out_vertices, out_faces, return_provenance=True
     )
-    return new_vertices, new_faces, source
+    if provenance is not None:
+        provenance = provenance.then(compaction)
+    return new_vertices, new_faces, compaction.vertex_index, provenance
 
 
 # The cut faces of a plane or level set are flagged as a counted bit a face rather than a 0 / 1

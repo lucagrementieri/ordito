@@ -905,7 +905,7 @@ def submeshes_from_face_groups(
             f"submeshes_from_face_groups cannot pack {k} groups x {radix} vertices into int64"
         )
     vertex_offsets = _launch.empty(k + 1, dtype=wp.int32, device=device)
-    vertices_all, faces_all = _submeshes_from_face_groups(
+    vertices_all, faces_all, _ = _submeshes_from_face_groups(
         vertices, faces, group_face_indices, group_offsets, vertex_offsets
     )
     return vertices_all, vertex_offsets, faces_all
@@ -917,13 +917,17 @@ def _submeshes_from_face_groups(
     group_face_indices: wp.array[wp.int32],
     group_offsets: wp.array[wp.int32],
     vertex_offsets: wp.array[wp.int32],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    with_index: bool = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     ``submeshes_from_face_groups`` past its checks, writing the vertex offsets into a held buffer.
 
     ``vertex_offsets`` is any ``(k + 1,)`` contiguous ``int32`` buffer, so a caller can place it
     beside offsets of its own and read both back at once (``combine.split``). ``k`` and the
-    selection are non-empty and the keys fit ``int64``, as the public form checks.
+    selection are non-empty and the keys fit ``int64``, as the public form checks. The third
+    return is the ``(vertex_offsets[-1],)`` input vertex of every output vertex under
+    ``with_index`` (``combine.split``'s provenance), else ``None``.
     """
     device = vertices.device
     k = group_offsets.size - 1
@@ -953,10 +957,19 @@ def _submeshes_from_face_groups(
     # to size it.
     slot_groups = _launch.empty(n_slots, dtype=wp.int32, device=device)
     vertices_all = _launch.empty(n_slots, dtype=wp.vec3, device=device)
+    vertex_index = _launch.empty(n_slots, dtype=wp.int32, device=device) if with_index else None
     _launch.launch(
         kernel_selection.decode_group_vertex_keys,
         dim=max(n_slots, k + 1),
-        inputs=[unique_keys, wp.int64(radix), vertices, slot_groups, vertex_offsets, vertices_all],
+        inputs=[
+            unique_keys,
+            wp.int64(radix),
+            vertices,
+            slot_groups,
+            vertex_offsets,
+            vertices_all,
+            vertex_index,
+        ],
         device=device,
     )
 
@@ -967,7 +980,7 @@ def _submeshes_from_face_groups(
         inputs=[inverse, slot_groups, vertex_offsets, faces_all],
         device=device,
     )
-    return vertices_all, faces_all
+    return vertices_all, faces_all, vertex_index
 
 
 @overload
@@ -1066,9 +1079,36 @@ def submesh_from_face_mask(
     return sub_vertices, sub_faces, provenance
 
 
+@overload
 def delete_region_keep_boundary(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_mask: wp.array[wp.bool]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]: ...
+@overload
+def delete_region_keep_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]], od.interpolation.Provenance
+]: ...
+def delete_region_keep_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]
+    | tuple[
+        wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]], od.interpolation.Provenance
+    ]
+):
     """
     Remove a face region and report the boundary loops the removal opened.
 
@@ -1089,6 +1129,9 @@ def delete_region_keep_boundary(
         ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
         ``(n_faces,)`` mask, ``True`` for each face to **delete**.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the surviving submesh.
 
     Returns
     -------
@@ -1100,6 +1143,10 @@ def delete_region_keep_boundary(
         The boundary loops the deletion opened, as vertex-index cycles **into** ``kept_vertices`` --
         the same form [`ordito.boundary.boundary_loops`][ordito.boundary.boundary_loops] returns.
         A loop the input already had is excluded, so an open input's original rims do not appear.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each surviving vertex is a copy of the input
+        vertex its ``vertex_index`` names, and each surviving face the input face its
+        ``face_index`` names.
 
     Raises
     ------
@@ -1151,13 +1198,23 @@ def delete_region_keep_boundary(
     )
     print(kept_vertices.shape, kept_faces.shape)  # (8,) (30,)
     print([loop.shape for loop in new_loops])  # [(4,)]
+    *_, provenance = od.selection.delete_region_keep_boundary(
+        vertices, faces, side, return_provenance=True
+    )
+    print(provenance.face_index.shape)  # (10,)
     ```
     """
-    kept_vertices, kept_faces, _, _, views = _delete_region_loops(
-        vertices, faces, face_mask, host_bounds=True
+    face_index: list[wp.array[wp.int32]] | None = [] if return_provenance else None
+    kept_vertices, kept_faces, _, _, views, vertex_index = _delete_region_loops(
+        vertices, faces, face_mask, host_bounds=True, face_index=face_index
     )
     assert views is not None
-    return kept_vertices, kept_faces, views
+    if face_index is None:
+        return kept_vertices, kept_faces, views
+    provenance = od.interpolation.Provenance(
+        vertex_index, face_index[0], None, vertices.size, faces.size // 3
+    )
+    return kept_vertices, kept_faces, views, provenance
 
 
 def delete_region_keep_boundary_with_offsets(
@@ -1233,7 +1290,7 @@ def delete_region_keep_boundary_with_offsets(
     print(loop_offsets.numpy().tolist())  # [0, 4]
     ```
     """
-    kept_vertices, kept_faces, loops, loop_offsets, _ = _delete_region_loops(
+    kept_vertices, kept_faces, loops, loop_offsets, _, _ = _delete_region_loops(
         vertices, faces, face_mask, host_bounds=False
     )
     return kept_vertices, kept_faces, loops, loop_offsets
@@ -1245,22 +1302,25 @@ def _delete_region_loops(
     face_mask: wp.array[wp.bool],
     *,
     host_bounds: bool,
+    face_index: list[wp.array[wp.int32]] | None = None,
 ) -> tuple[
     wp.array[wp.vec3],
     wp.array[wp.int32],
     wp.array[wp.int32],
     wp.array[wp.int32],
     list[wp.array[wp.int32]] | None,
+    wp.array[wp.int32],
 ]:
     """
-    Both ``delete_region_keep_boundary`` forms: ``(vertices, faces, loops, offsets, views)``.
+    Both ``delete_region_keep_boundary`` forms: ``(vertices, faces, loops, offsets, views, index)``.
 
     With ``host_bounds`` the one readback is every loop's verdict and extent, and ``views`` cuts
     the kept loops straight out of the traced ones (``loops`` / ``offsets`` are then the traced,
     unfiltered pair and not an answer). Without it the verdicts are scanned on the device, the kept
     loops compacted into ``loops`` / ``offsets``, the one readback is the scan's tail, and
     ``views`` is ``None``. Both forms share the classification, so they cannot disagree about
-    which loops are new.
+    which loops are new. ``index`` is each surviving vertex's input vertex, and a ``face_index``
+    list receives each surviving face's input face (``_submesh_from_mask``).
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     device = vertices.device
@@ -1274,7 +1334,7 @@ def _delete_region_loops(
     # into the leading half of a radix sort's double-width scratch, in the pass that visits them.
     base = wp.uint64(vertices.size)
     kept_vertices, kept_faces, vertex_index, key_buffer = _submesh_from_mask(
-        vertices, faces, face_mask, keep_masked=False, dropped_key_base=base
+        vertices, faces, face_mask, keep_masked=False, dropped_key_base=base, face_index=face_index
     )
 
     def no_loops() -> tuple[
@@ -1283,6 +1343,7 @@ def _delete_region_loops(
         wp.array[wp.int32],
         wp.array[wp.int32],
         list[wp.array[wp.int32]] | None,
+        wp.array[wp.int32],
     ]:
         # Built only when returned: two allocations the common path must not pay.
         return (
@@ -1290,6 +1351,7 @@ def _delete_region_loops(
             kept_faces,
             *_launch.empty_packed(wp.int32, device),
             [] if host_bounds else None,
+            vertex_index,
         )
 
     if kept_faces.size == 0:
@@ -1337,7 +1399,7 @@ def _delete_region_loops(
             for kept, size, start in counts_np
             if kept
         ]
-        return kept_vertices, kept_faces, flat_loops, loop_offsets, views
+        return kept_vertices, kept_faces, flat_loops, loop_offsets, views, vertex_index
     _launch.array_scan(kept_counts, out_array=kept_counts, inclusive=True)
     # The packed form's one readback: the scan's tail sizes the kept loops.
     tail = read_scalar(kept_counts)
@@ -1352,7 +1414,7 @@ def _delete_region_loops(
         inputs=[flat_loops, loop_offsets, kept_counts, loops, offsets],
         device=device,
     )
-    return kept_vertices, kept_faces, loops, offsets, None
+    return kept_vertices, kept_faces, loops, offsets, None, vertex_index
 
 
 def _submesh_from_mask(
@@ -1363,6 +1425,7 @@ def _submesh_from_mask(
     keep_masked: bool,
     with_index: bool = True,
     dropped_key_base: wp.uint64 | None = None,
+    face_index: list[wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.uint64] | None]:
     """
     Extract the faces whose mask entry equals ``keep_masked``, reindexed from zero.
@@ -1374,13 +1437,16 @@ def _submesh_from_mask(
     written. With ``dropped_key_base``, ``dropped_keys`` is a ``(6 * n_dropped,)`` buffer whose
     first half holds the dropped faces' undirected edge keys, three a face in face order -- a
     radix sort's double-width scratch -- written by the compaction itself; it is ``None`` without
-    it, or when no face is kept or none dropped.
+    it, or when no face is kept or none dropped. A ``face_index`` list receives the
+    ``(n_kept_faces,)`` input face of every kept face, written by the compaction itself.
     """
     device = vertices.device
     n_faces = face_mask.size
     n_vertices = vertices.size
     if n_faces == 0:
         empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+        if face_index is not None:
+            face_index.append(empty_index)
         return _launch.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, None
 
     ranks = _launch.zeros(n_faces + n_vertices, dtype=wp.int32, device=device)
@@ -1391,7 +1457,7 @@ def _submesh_from_mask(
         device=device,
     )
     return _compact_submesh_core(
-        vertices, faces, face_mask, ranks, keep_masked, with_index, dropped_key_base
+        vertices, faces, face_mask, ranks, keep_masked, with_index, dropped_key_base, face_index
     )
 
 
@@ -1681,6 +1747,7 @@ def _compact_submesh_core(
     keep_masked: bool,
     with_index: bool,
     dropped_key_base: wp.uint64 | None,
+    face_index: list[wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.uint64] | None]:
     """``_compact_marked_submesh``'s body, returning ``_submesh_from_mask``'s four values."""
     device = vertices.device
@@ -1699,6 +1766,10 @@ def _compact_submesh_core(
     vertex_index = _launch.empty(
         n_kept_vertices if with_index else 0, dtype=wp.int32, device=device
     )
+    kept_face_index = None
+    if face_index is not None:
+        kept_face_index = _launch.empty(n_kept_faces, dtype=wp.int32, device=device)
+        face_index.append(kept_face_index)
     dropped_keys = None
     if dropped_key_base is not None and 0 < n_kept_faces < n_faces:
         dropped_keys = _launch.empty(6 * (n_faces - n_kept_faces), dtype=wp.uint64, device=device)
@@ -1717,6 +1788,7 @@ def _compact_submesh_core(
                 sub_vertices,
                 vertex_index if with_index else None,
                 dropped_keys,
+                kept_face_index,
             ],
             device=device,
         )

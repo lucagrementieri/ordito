@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Sequence
-from typing import cast
+from typing import Literal, cast, overload
 
 import numpy as np
 import warp as wp
@@ -207,13 +207,35 @@ def _pack_mesh_pieces(
     return concatenated_vertices, concatenated_faces
 
 
+@overload
 def split(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     copy: bool = False,
     labels: wp.array[wp.int32] | None = None,
-) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]:
+    return_provenance: Literal[False] = False,
+) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]: ...
+@overload
+def split(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    copy: bool = False,
+    labels: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]]: ...
+def split(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    copy: bool = False,
+    labels: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]
+    | list[tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]]
+):
     """
     Split a mesh into connected components by face adjacency.
 
@@ -245,12 +267,19 @@ def split(
     labels
         ``(n_faces,)`` face component labels, as
         [`split_with_offsets`][ordito.combine.split_with_offsets] takes them.
+    return_provenance
+        If ``True``, also return with each component the
+        [`Provenance`][ordito.interpolation.Provenance] that carries any per-vertex or per-face
+        field of the input onto it.
 
     Returns
     -------
     list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]
         One ``(vertices, faces)`` pair per face-connected component on
-        ``vertices.device``. Empty when ``n_faces == 0``.
+        ``vertices.device``. Empty when ``n_faces == 0``. With ``return_provenance`` each tuple
+        ends in the component's provenance: each of its vertices is a copy of the input vertex its
+        ``vertex_index`` names, and each of its faces the input face its ``face_index`` names,
+        viewed out of shared buffers unless ``copy``.
 
     Raises
     ------
@@ -282,24 +311,57 @@ def split(
     print(len(parts))  # 2
     part_vertices, part_faces = parts[1]
     print(part_vertices.size, part_faces.size // 3)  # 8 12
+    _, _, provenance = od.combine.split(vertices, faces, return_provenance=True)[1]
+    face_index = provenance.face_index.numpy()
+    print(face_index.min(), face_index.max())  # 12 23
     ```
     """
     require_same_device(vertices=vertices, faces=faces, labels=labels)
-    vertices_all, faces_all, offsets = _split_packed(vertices, faces, labels)
+    vertices_all, faces_all, offsets, maps = _split_packed(
+        vertices, faces, labels, with_index=return_provenance
+    )
     n_components = offsets.size // 2 - 1
     if n_components == 0:
         return []
     if n_components == 1:
         # One component is the whole of both buffers, so its offsets need no readback.
         if copy:
-            return [(_launch.clone(vertices_all), _launch.clone(faces_all))]
-        return [(vertices_all, faces_all)]
+            vertices_all, faces_all = _launch.clone(vertices_all), _launch.clone(faces_all)
+        if maps is None:
+            return [(vertices_all, faces_all)]
+        return [(vertices_all, faces_all, _component_provenance(vertices, faces, *maps))]
     # The one readback: both offsets share a buffer, so a second read is not needed.
     # Host bounds as array slices: a list round trip of the offsets cost more than the read saved.
     bounds = cast("Sequence[int]", read_array(offsets))
-    component_vertices = od.array.split(vertices_all, bounds[n_components + 1 :], copy=copy)
-    component_faces = od.array.split(faces_all, bounds[: n_components + 1], copy=copy, row_size=3)
-    return list(zip(component_vertices, component_faces, strict=True))
+    vertex_bounds, face_bounds = bounds[n_components + 1 :], bounds[: n_components + 1]
+    component_vertices = od.array.split(vertices_all, vertex_bounds, copy=copy)
+    component_faces = od.array.split(faces_all, face_bounds, copy=copy, row_size=3)
+    if maps is None:
+        return list(zip(component_vertices, component_faces, strict=True))
+    vertex_index = od.array.split(maps[0], vertex_bounds, copy=copy)
+    face_index = od.array.split(maps[1], face_bounds, copy=copy)
+    return [
+        (
+            part_vertices,
+            part_faces,
+            _component_provenance(vertices, faces, part_vertex_index, part_face_index),
+        )
+        for part_vertices, part_faces, part_vertex_index, part_face_index in zip(
+            component_vertices, component_faces, vertex_index, face_index, strict=True
+        )
+    ]
+
+
+def _component_provenance(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_index: wp.array[wp.int32],
+    face_index: wp.array[wp.int32],
+) -> od.interpolation.Provenance:
+    """Return one component's provenance: every vertex and face a copy of the one it names."""
+    return od.interpolation.Provenance(
+        vertex_index, face_index, None, vertices.size, faces.size // 3
+    )
 
 
 def split_with_offsets(
@@ -372,7 +434,7 @@ def split_with_offsets(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, labels=labels)
-    vertices_all, faces_all, offsets = _split_packed(vertices, faces, labels)
+    vertices_all, faces_all, offsets, _ = _split_packed(vertices, faces, labels)
     k = offsets.size // 2 - 1
     return (
         vertices_all,
@@ -383,20 +445,33 @@ def split_with_offsets(
 
 
 def _split_packed(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], labels: wp.array[wp.int32] | None
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32] | None,
+    *,
+    with_index: bool = False,
+) -> tuple[
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    tuple[wp.array[wp.int32], wp.array[wp.int32]] | None,
+]:
     """
     ``split_with_offsets`` with both offsets in one ``(2 * k + 2,)`` buffer, face offsets first.
 
-    One buffer is one readback for ``split``, which needs both on the host.
+    One buffer is one readback for ``split``, which needs both on the host. The fourth return is
+    the packed ``(vertex_index, face_index)``, the input vertex and face of every packed vertex and
+    face, under ``with_index``, else ``None``.
     """
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
+        empty_index = _launch.empty(0, dtype=wp.int32, device=device)
         return (
             _launch.empty(0, dtype=wp.vec3, device=device),
             _launch.empty(0, dtype=wp.int32, device=device),
             _launch.zeros(2, dtype=wp.int32, device=device),
+            (empty_index, empty_index) if with_index else None,
         )
 
     # The labels and the identity payload go straight into the sort's double-width buffers, with
@@ -423,13 +498,23 @@ def _split_packed(
         # One component is every face in its own order: no sort, and both offsets are known here.
         # The memset under the extraction stays: its vertex mask is scattered from the faces, so
         # an identity order still needs the zeros (about 1 % of the call on CUDA).
-        component_vertices, component_faces = od.selection.submesh_from_face_indices(
-            vertices, faces, _launch.view(order_buffer, 0, n_faces)
-        )
+        face_ids = _launch.view(order_buffer, 0, n_faces)
+        maps = None
+        if with_index:
+            component_vertices, component_faces, provenance = (
+                od.selection.submesh_from_face_indices(
+                    vertices, faces, face_ids, return_provenance=True
+                )
+            )
+            maps = (provenance.vertex_index, provenance.face_index)
+        else:
+            component_vertices, component_faces = od.selection.submesh_from_face_indices(
+                vertices, faces, face_ids
+            )
         offsets = _launch.array(
             [0, n_faces, 0, component_vertices.size], dtype=wp.int32, device=device
         )
-        return component_vertices, component_faces, offsets
+        return component_vertices, component_faces, offsets, maps
 
     # Sorting by component number rather than label orders ``key_bits(k)`` bits, not
     # ``key_bits(n_faces)``; the stable sort keeps each component's faces ascending.
@@ -447,11 +532,13 @@ def _split_packed(
         inputs=[sorted_components, face_offsets],
         device=device,
     )
-    vertices_all, faces_all = _submeshes_from_face_groups(
+    vertices_all, faces_all, vertex_index = _submeshes_from_face_groups(
         vertices,
         faces,
         sorted_face_ids,
         face_offsets,
         _launch.view(offsets, n_components + 1, 2 * n_components + 2),
+        with_index=with_index,
     )
-    return vertices_all, faces_all, offsets
+    maps = None if vertex_index is None else (vertex_index, sorted_face_ids)
+    return vertices_all, faces_all, offsets, maps

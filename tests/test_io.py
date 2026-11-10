@@ -106,6 +106,86 @@ def test_load_mesh_data_reads_obj_corner_texcoords(tmp_path: Path, device: str) 
         od.io.load_mesh_data(bad, device=device)
 
 
+def _write_ply_with_corner_texcoords(path: Path, binary: bool, *, quad: bool = True) -> None:
+    """
+    Write a square of two triangles, and one quad, whose faces carry a ``texcoord`` list.
+
+    The triangles' shared edge is a UV seam (vertex 1 and vertex 2 take two texcoords each), and
+    each vertex carries a ``nx, ny, nz`` normal.
+    """
+    vertices_np = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32
+    )
+    faces = [[0, 1, 2], [1, 3, 2], [0, 1, 3, 2]]
+    texcoords = [
+        [0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        [0.5, 0.5, 0.9, 0.9, 0.25, 0.75],
+        [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+    ]
+    if not quad:
+        faces, texcoords = faces[:2], texcoords[:2]
+    header = (
+        "ply\n"
+        f"format {'binary_little_endian' if binary else 'ascii'} 1.0\n"
+        "comment corner texcoords\n"
+        "element vertex 4\nproperty float x\nproperty float y\nproperty float z\n"
+        "property float nx\nproperty float ny\nproperty float nz\n"
+        f"element face {len(faces)}\nproperty list uchar int vertex_indices\n"
+        "property list uchar float texcoord\nend_header\n"
+    )
+    normal = [0.0, 0.0, 1.0]
+    if not binary:
+        lines = [" ".join(str(x) for x in [*vertex.tolist(), *normal]) for vertex in vertices_np]
+        for face, uv in zip(faces, texcoords, strict=True):
+            lines.append(" ".join(str(x) for x in [len(face), *face, len(uv), *uv]))
+        path.write_text(header + "\n".join(lines) + "\n")
+        return
+    body = b"".join(
+        np.array([*vertex.tolist(), *normal], dtype="<f4").tobytes() for vertex in vertices_np
+    )
+    for face, uv in zip(faces, texcoords, strict=True):
+        body += np.uint8(len(face)).tobytes() + np.array(face, dtype="<i4").tobytes()
+        body += np.uint8(len(uv)).tobytes() + np.array(uv, dtype="<f4").tobytes()
+    path.write_bytes(header.encode("ascii") + body)
+
+
+@pytest.mark.parametrize("binary", [False, True], ids=["ascii", "binary"])
+def test_load_mesh_data_reads_ply_corner_texcoords(
+    tmp_path: Path, device: str, binary: bool
+) -> None:
+    """
+    Class A against trimesh's PLY reader: one texcoord per face corner, seams kept.
+
+    ``meshio`` cannot decode a ``texcoord`` face list, so the file is read by ordito's own PLY
+    reader; the quad is ignored as for OBJ. trimesh, loading without merging, splits the seam
+    vertices and reports a texcoord per vertex; the corner texcoords here equal its texcoords at
+    its own corners, the positions and faces are the file's, and the per-vertex normals survive.
+    """
+    path = tmp_path / "square.ply"
+    _write_ply_with_corner_texcoords(path, binary)
+    data = od.io.load_mesh_data(path, device=device)
+    assert sorted(data) == ["corner_uv", "faces", "vertex_normals", "vertices"]
+    assert "faces" in data
+    assert "corner_uv" in data
+    faces_np = data["faces"].numpy()
+    assert faces_np.tolist() == [0, 1, 2, 1, 3, 2]
+    ascii_path = tmp_path / "square_ascii.ply"
+    _write_ply_with_corner_texcoords(ascii_path, False, quad=False)  # trimesh mixes no quad
+    mesh_tm = tm.load(ascii_path, process=False, force="mesh")
+    assert isinstance(mesh_tm, tm.Trimesh)
+    triangles_tm = mesh_tm.vertices[mesh_tm.faces].reshape(-1, 3)
+    uv_tm = np.asarray(getattr(mesh_tm.visual, "uv"))  # noqa: B009 - TextureVisuals is untyped
+    corner_uv_tm = uv_tm[mesh_tm.faces].reshape(-1, 2)
+    assert np.unique(corner_uv_tm, axis=0).shape[0] == 6  # four vertices: the seam is real
+    assert np.allclose(data["vertices"].numpy()[faces_np], triangles_tm)
+    assert np.allclose(data["corner_uv"].numpy(), corner_uv_tm, rtol=1e-6, atol=1e-6)
+    assert "vertex_normals" in data
+    assert np.allclose(data["vertex_normals"].numpy(), [[0.0, 0.0, 1.0]] * 4)
+
+    mesh_wp = od.io.load_mesh(path, device=device)
+    assert mesh_wp.indices.numpy().tolist() == faces_np.tolist()
+
+
 @pytest.mark.parity(
     "load_mesh",
     "pytorch3d",
