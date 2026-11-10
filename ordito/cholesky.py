@@ -2119,7 +2119,7 @@ def _nested_dissection(
     for depth in range(depths):
         split(depth, tables[depth % 2], segments[depth % 2],
               tables[(depth + 1) % 2], segments[(depth + 1) % 2])  # fmt: skip
-    # The long rows (``kernels/linalg.csr_row_long``), which no split saw, into a dense root
+    # The long rows (``kernels/array.csr_row_long``), which no split saw, into a dense root
     # eliminated last, a level above every tree: one launch over the rows, one over the nodes,
     # nothing read back. A pattern with no long row leaves the tree as it was.
     _launch.launch(

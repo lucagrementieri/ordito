@@ -26,7 +26,7 @@ from scipy.spatial import cKDTree
 import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
-from ordito.kernels import linalg as kernel_linalg
+from ordito.kernels import array as kernel_array
 from ordito.kernels import smoothing as kernel_smoothing
 from tests.comparisons import meshlab_umbrella
 from tests.conftest import (
@@ -524,7 +524,7 @@ def test_filter_laplacian_implicit_on_a_hub_matches_trimesh(device: str) -> None
     Class A: the implicit filter on a cone whose two hub rows are long, against trimesh.
 
     A cone of 1 100 sections has an apex and a base centre of valence 1 100, past
-    ``kernels/linalg.CSR_LONG_ROW_ENTRIES``: the norm pass flags the operator and each fixed-point
+    ``kernels/array.CSR_LONG_ROW_ENTRIES``: the norm pass flags the operator and each fixed-point
     step takes ``implicit_laplacian_step_long_rows``, which walks a hub row with a block's lanes.
     """
     mesh_tm = tm.creation.cone(radius=1.0, height=1.0, sections=1100)
@@ -533,7 +533,7 @@ def test_filter_laplacian_implicit_on_a_hub_matches_trimesh(device: str) -> None
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, mesh_tm.faces, device)
     operator = od.laplacian.laplacian(vertices_wp, faces_wp)
     row_lengths_np = np.diff(operator.offsets.numpy())
-    assert row_lengths_np.max() >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+    assert row_lengths_np.max() >= int(kernel_array.CSR_LONG_ROW_ENTRIES)
     smoothed_wp = od.smoothing.filter_laplacian(
         vertices_wp,
         faces_wp,
@@ -559,7 +559,7 @@ def test_explicit_filters_on_a_hub_match_their_references(device: str, filter_na
     """
     Class A: each explicit filter whose pass walks a long row as a warp, against its reference.
 
-    A cone of 1 100 sections has hub rows past ``kernels/linalg.CSR_LONG_ROW_ENTRIES``, which the
+    A cone of 1 100 sections has hub rows past ``kernels/array.CSR_LONG_ROW_ENTRIES``, which the
     pass kernels hand to the warp (``kernels/smoothing.warp_long_operator_row``): the diffuse kind
     (``filter_laplacian``, ``filter_taubin``), the neighbourhood average and the graph sharpen
     (``vec3_pass_rows``), both Humphrey passes and the MUT/DIF pass. References as in each
@@ -579,7 +579,7 @@ def test_explicit_filters_on_a_hub_match_their_references(device: str, filter_na
     mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     degrees_np = np.bincount(mesh_tm.edges_unique.ravel(), minlength=len(vertices_np))
-    assert degrees_np.max() >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+    assert degrees_np.max() >= int(kernel_array.CSR_LONG_ROW_ENTRIES)
 
     mesh_ref = mesh_tm.copy()
     if filter_name == "laplacian":
@@ -616,7 +616,7 @@ def test_explicit_filters_on_a_hub_match_their_references(device: str, filter_na
         tms.filter_mut_dif_laplacian(mesh_ref, lamb=0.5, iterations=4, volume_constraint=False)
         reference_np = mesh_ref.vertices
 
-    hubs_np = np.flatnonzero(degrees_np >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES))
+    hubs_np = np.flatnonzero(degrees_np >= int(kernel_array.CSR_LONG_ROW_ENTRIES))
     # Non-vacuity: the filter moves the hubs, whose rows the warp walks.
     assert np.abs(reference_np[hubs_np] - vertices_np[hubs_np]).max() > 1e-4
     assert np.allclose(smoothed_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
@@ -2079,7 +2079,7 @@ def test_filter_implicit_fairing_on_a_hub_matches_igl(device: str, shape: str) -
     """
     Class A against libigl's operators stepped by a direct solve, on fans whose hub row is long.
 
-    A hub of 1 100 spokes has a long row (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), which
+    A hub of 1 100 spokes has a long row (``kernels/array.CSR_LONG_ROW_ENTRIES``), which
     ``fairing_system_rows`` forms with a whole block: ``cone`` (closed, every vertex free),
     ``disk_pinned_ring`` (one ring, pinned: the hub's every neighbour is subtracted into its
     right-hand side) and ``disk_free_ring`` (two rings, the outer pinned: the hub's entries are

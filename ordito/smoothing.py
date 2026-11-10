@@ -434,7 +434,7 @@ def _implicit_fixed_point_steps(
     """
     Count the steps of ``x' = (b + lamb L x) / (1 + lamb)`` bounding the error at the tolerance.
 
-    Returned with whether ``L`` has a long row (``kernels/linalg.csr_row_long``), which the same
+    Returned with whether ``L`` has a long row (``kernels/array.csr_row_long``), which the same
     pass over the rows finds and which picks the step kernel.
 
     The iteration contracts by ``q = lamb ||L||_inf / (1 + lamb)`` in the infinity norm, and

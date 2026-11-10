@@ -34,7 +34,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
-from ordito.kernels.array import OverloadTable, inverse_or_one
+from ordito.kernels.array import OverloadTable, csr_row_long, inverse_or_one
 from ordito.kernels.reduce import block_chunk, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
@@ -603,31 +603,11 @@ def stacked_positions(
         out_positions[2 * n + k * n + v] = position
 
 
-# Entries from which a CSR row is *long*: on CUDA the row-a-thread solver kernels (Chebyshev steps,
-# the conjugate-gradient mat-vec) skip it under a nonzero ``skip_long`` and blocks sum it instead, a
-# piece of ``CSR_LONG_ROW_PIECE`` entries each (``long_row_piece_total``). A row a thread is one
-# thread's chain of dependent loads, so a hub row (a fan's apex, 41 k entries) held every step for
-# as long as the rest of the step by a factor of ~1 000. Mesh and ``warp.fem`` rows stay far below
-# it, so the threshold was not swept. ``linalg._LongRows`` decides on the host, from one count read
-# per listing, whether a round launches the long-row kernels; launching them every step with no read
-# instead (their blocks returning at once with none listed) cost 1.0-1.31x where no row is long
-# (geomean 1.09-1.12 over 13 meshes and the solver rows of six benchmark files) against the read's
-# 0.98-1.13x (geomean 1.01-1.02; the worst a 1.7 ms call on 1 024 components): a small solve is
-# mostly steps, and the read is once a solve.
-# ``heat_geodesic`` on ``fan_hub``: 0.009x, the same 1 005 rounds.
-CSR_LONG_ROW_ENTRIES = wp.int32(1024)
-
-
 # Entries of a long row one block sums: its piece. A row a block put a 41 k-entry hub row's
 # 820 KB of values, columns and gathers through one SM, which held a launch at 49-55 us (the
 # thread-a-row step beside it: 5.5 us), and four interleaved accumulators a lane took it only to
 # 37 us; pieces spread the row over SMs and a ticket folds them.
 CSR_LONG_ROW_PIECE = wp.int32(1024)
-
-
-@wp.func
-def csr_row_long(offsets: wp.array[wp.int32], row: wp.int32) -> wp.bool:
-    return offsets[row + 1] - offsets[row] >= CSR_LONG_ROW_ENTRIES
 
 
 @wp.func

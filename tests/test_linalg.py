@@ -19,6 +19,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import array as kernel_array
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels.algorithms import multigrid as kernel_mg
 from tests.comparisons import assert_nonconstant
@@ -254,7 +255,7 @@ def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(
     Class A, against ``scipy.sparse.linalg.spsolve`` of the interior block, on a hub's long row.
 
     The graph Laplacian (plus a unit diagonal) of a 1 500-spoke wheel: the hub's row is long
-    (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), so the extraction counts, emits and moves its
+    (``kernels/array.CSR_LONG_ROW_ENTRIES``), so the extraction counts, emits and moves its
     pinned columns to the right-hand side with a whole block, keeping the surviving entries in
     order (an exclusive scan per chunk). Every third rim vertex is pinned, so the hub row loses
     columns; with ``pin_hub`` the hub is pinned too and its column moves out of every rim row.
@@ -659,7 +660,7 @@ def test_solve_spd_columns_with_hub_rows(device: str, preconditioner: str) -> No
     Class A, against ``scipy.sparse.linalg.spsolve``, on a system with two hub rows.
 
     Every vertex of a 3 000-vertex ring also neighbours two hubs, so the hubs' rows hold 3 000
-    entries, past ``kernels/linalg.CSR_LONG_ROW_ENTRIES``: on CUDA the thread-a-row mat-vec and
+    entries, past ``kernels/array.CSR_LONG_ROW_ENTRIES``: on CUDA the thread-a-row mat-vec and
     Chebyshev steps skip them and a block a row sums them (``linalg._LongRows``). A long row that
     was skipped and never summed, or summed into another row or column, would leave a wrong
     solution; the CPU device sums every row in its one-launch round and is the same comparison.
@@ -673,7 +674,7 @@ def test_solve_spd_columns_with_hub_rows(device: str, preconditioner: str) -> No
     adjacency = sp.csr_matrix(upper + upper.T)
     degrees = np.asarray(adjacency.sum(axis=1)).ravel()
     system = sp.csr_matrix(sp.diags(degrees + 0.1) - adjacency)
-    assert np.diff(system.indptr).max() > int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+    assert np.diff(system.indptr).max() > int(kernel_array.CSR_LONG_ROW_ENTRIES)
     matrix_wp = scipy_to_bsr(system.tocoo(), device)
     rng = np.random.default_rng(7)
     rhs_np = rng.standard_normal((3, n))

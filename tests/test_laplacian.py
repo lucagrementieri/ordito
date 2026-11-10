@@ -21,6 +21,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from ordito.constants import TOLERANCE_MOLLIFY
+from ordito.kernels import array as kernel_array
 from ordito.kernels import laplacian as kernel_laplacian
 from tests.comparisons import assert_nonconstant, meshlab_umbrella, sparse_allclose
 from tests.conftest import MESHES
@@ -1566,6 +1567,75 @@ def test_operators_float64_match_float32(request: pytest.FixtureRequest, mesh_na
         matrix_f64 = builder(points, indices, dtype=wp.float64)
         assert matrix_f64.values.dtype == wp.float64
         assert sparse_allclose(bsr_to_csr(matrix_f64), bsr_to_csr(matrix_f32), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64], ids=["float32", "float64"])
+def test_operators_on_a_hub_match_their_references(device: str, dtype: type) -> None:
+    """
+    Class A: every row builder on a cone whose two hub rows are long, against its reference.
+
+    A cone of 1 100 sections has an apex and a base centre of valence 1 100, past
+    ``kernels/array.CSR_LONG_ROW_ENTRIES``, so on CUDA each builder's hub rows are walked by a warp
+    (``kernels/laplacian.signed_cotmatrix_rows`` and its siblings), the row sums -- the
+    normalization, the diagonal -- taken over the lanes. ``laplacian`` (both weightings) against
+    ``trimesh.smoothing``, ``cotmatrix`` against ``igl.cotmatrix``, ``graph_laplacian`` against
+    ``igl.adjacency_matrix`` less its degrees, ``face_weighted_laplacian`` against MeshLab's
+    fitted stencil and ``connection_laplacian`` against potpourri3d's. The hub rows themselves are
+    asserted to agree, so a wrong lane stride, a sum one lane misses or a diagonal written from a
+    partial sum fails here (each changes a hub entry by far more than ``1e-5``).
+    """
+    mesh_tm = tm.creation.cone(radius=1.0, height=1.0, sections=1100)
+    vertices_np = mesh_tm.vertices.astype(np.float32).astype(np.float64)
+    faces_np = np.asarray(mesh_tm.faces)
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    n_vertices = vertices_np.shape[0]
+    adjacency_igl = igl.adjacency_matrix(faces_np).tocsr()
+    degrees_np = np.diff(adjacency_igl.indptr)
+    hubs_np = np.flatnonzero(degrees_np >= int(kernel_array.CSR_LONG_ROW_ENTRIES))
+    # Non-vacuity: the apex and the base centre are long rows.
+    assert hubs_np.shape[0] == 2
+
+    def assert_rows_match(operator: odt.BsrMatrix[wp.float32], expected_csr: sp.csr_matrix) -> None:
+        operator_wp = bsr_to_csr(operator)
+        assert sparse_allclose(operator_wp, expected_csr, rtol=1e-5, atol=1e-5)
+        hub_rows_wp = operator_wp[hubs_np].toarray()
+        hub_rows_ref = expected_csr[hubs_np].toarray()
+        assert np.abs(hub_rows_ref).max() > 1e-6
+        assert np.allclose(hub_rows_wp, hub_rows_ref, rtol=1e-5, atol=1e-7)
+
+    for equal_weight in (True, False):
+        operator_coo_tm = tms.laplacian_calculation(mesh_tm, equal_weight=equal_weight)
+        assert operator_coo_tm is not None
+        assert_rows_match(
+            od.laplacian.laplacian(vertices_wp, faces_wp, equal_weight=equal_weight, dtype=dtype),
+            operator_coo_tm.tocsr(),
+        )
+    assert_rows_match(
+        od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=dtype),
+        igl.cotmatrix(vertices_np, faces_np).tocsr(),
+    )
+    assert_rows_match(
+        od.laplacian.graph_laplacian(vertices_wp, faces_wp, dtype=dtype),
+        cast("sp.csr_matrix", adjacency_igl - sp.diags(degrees_np.astype(np.float64))),
+    )
+    assert_rows_match(
+        od.laplacian.face_weighted_laplacian(vertices_wp, faces_wp, dtype=dtype),
+        meshlab_umbrella(faces_np, n_vertices).tocsr(),
+    )
+
+    connection = od.laplacian.connection_laplacian(vertices_wp, faces_wp)
+    connection_wp = _connection_complex(connection, n_vertices)
+    connection_pp = sp.csr_matrix(
+        pp3d.MeshVectorHeatSolver(
+            vertices_np,
+            np.ascontiguousarray(faces_np, dtype=np.int32),
+            use_intrinsic_delaunay=False,
+        ).get_connection_laplacian()
+    )
+    assert sparse_allclose(connection_wp, connection_pp, rtol=1e-5, atol=1e-5)
+    hub_diagonal_wp = connection_wp.diagonal()[hubs_np]
+    assert np.allclose(hub_diagonal_wp, connection_pp.diagonal()[hubs_np], rtol=1e-5, atol=1e-7)
 
 
 def test_operators_on_a_faceless_mesh(device: str) -> None:

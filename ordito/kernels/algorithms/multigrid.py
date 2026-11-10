@@ -52,6 +52,7 @@ from ordito.constants import TILE_1D
 from ordito.kernels.array import (
     OverloadTable,
     csr_key_nonzero,
+    csr_row_long,
     element_priority,
     inverse_or_one,
     sqrt_abs,
@@ -60,7 +61,6 @@ from ordito.kernels.linalg import (
     csr_row_diagonal,
     csr_row_diagonal_block,
     csr_row_dot,
-    csr_row_long,
     listed_long_pieces,
     long_row_piece_total,
 )
@@ -190,7 +190,7 @@ def mis_ball_max(
 
 
 # Rows a block of a multigrid level's setup kernels holds, a row a lane on CUDA: a lane takes its
-# rows in order, and a long row (``linalg.csr_row_long``, a fan's hub) is left to the whole block
+# rows in order, and a long row (``array.csr_row_long``, a fan's hub) is left to the whole block
 # after, its lanes striding the row, so a block without one pays one reduction. On the CPU device
 # the block's one lane walks them all.
 MG_ROWS_PER_BLOCK = 256

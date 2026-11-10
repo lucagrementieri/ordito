@@ -354,7 +354,7 @@ def test_biharmonic_on_a_hub_matches_a_direct_solve(device: str):
     """
     Class B against ``_polyharmonic_reference`` on a planar disk fan whose centre is a hub.
 
-    The hub's 1 100-entry Laplacian row is long (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), so on
+    The hub's 1 100-entry Laplacian row is long (``kernels/array.CSR_LONG_ROW_ENTRIES``), so on
     CUDA the squared-Laplacian polynomial steps it by pieces, and the sandwich assembling the
     biharmonic system writes a 1.2 M-triplet row; 1 101 free rows keep the solve off the
     one-block path. The named transform is the mass, as in ``test_polyharmonic_matches_reference``.

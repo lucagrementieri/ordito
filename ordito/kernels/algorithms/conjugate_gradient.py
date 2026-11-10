@@ -49,8 +49,8 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels.algorithms.multigrid import chebyshev_polynomial_column, chebyshev_update
-from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable
-from ordito.kernels.linalg import csr_row_dot, csr_row_long, jacobi_row
+from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable, csr_row_long
+from ordito.kernels.linalg import csr_row_dot, jacobi_row
 from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -133,7 +133,7 @@ def cg_initial_block(
     out_partials: wp.array3d[wp.float64],
 ) -> None:
     # Block ``(c, blk)`` of ``cg_initial``, lane ``t``. Block-collective. A long row
-    # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after the lanes' pass, its
+    # (``array.csr_row_long``, a fan's hub) is left to the whole block after the lanes' pass, its
     # lanes striding the row's dot and the block summing it in a fixed tree, so a block without
     # one pays one reduction.
     acc = wp.float64(0.0)

@@ -35,11 +35,12 @@ import warp as wp
 from ordito.kernels.array import (
     binary_search_index,
     binary_search_index_left,
+    csr_row_long,
     lower_triangle_pair,
     ordered_float_bits,
     scanned_count,
 )
-from ordito.kernels.linalg import csr_row_long, residual_and_scale
+from ordito.kernels.linalg import residual_and_scale
 from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
 
 wp.set_module_options({"enable_backward": False})
@@ -1601,7 +1602,7 @@ def dissection_sides(
 ) -> None:
     # Each sorted vertex's side of its segment's median, as ``base + 2 segment + upper`` with
     # ``base`` the depth times twice the segment slots: tags of earlier depths are all below it, so
-    # the array needs no reset between depths. A long row (``linalg.csr_row_long``, a fan's hub)
+    # the array needs no reset between depths. A long row (``array.csr_row_long``, a fan's hub)
     # takes ``DISSECTION_DENSE_TAG`` instead, which no side's tag equals: its edges cross no split
     # and it is never a separator's, so it rides its half to a leaf, from which
     # ``dissection_long_rows`` moves it into the dense root.

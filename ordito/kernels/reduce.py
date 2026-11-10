@@ -15,7 +15,14 @@ import warp as wp
 from warp._src.context import builtin_functions as _warp_builtins
 
 from ordito.constants import INT32_MAX_CONSTANT, TILE_1D, TILE_2D, TILES_PER_BLOCK_1D
-from ordito.kernels.array import KernelTable, atomic_min_packed_box, is_close_scalar, is_close_vec3
+from ordito.kernels.array import (
+    KernelTable,
+    atomic_min_packed_box,
+    csr_row_long,
+    is_close_scalar,
+    is_close_vec3,
+    popcount32,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -877,7 +884,7 @@ def warp_lanes_sum_float(lanes: wp.int32, value: wp.float64) -> wp.float64: ...
 def warp_lane_leads(lanes: wp.int32) -> wp.int32: ...
 
 
-# A warp sharing one long walk (a CSR row ``linalg.csr_row_long`` names) among its active lanes,
+# A warp sharing one long walk (a CSR row ``array.csr_row_long`` names) among its active lanes,
 # in a thread-a-row launch with no block barrier: ``warp_active_lanes`` is the converged lanes'
 # mask, ``warp_ballot`` the lanes of a mask whose ``flag`` is set, ``warp_lane_rank`` a
 # lane's rank in a mask and ``array.popcount32`` its size (the walk's start and stride),
@@ -943,6 +950,45 @@ def warp_lowest_lane(lanes: wp.int32) -> wp.int32: ...
 
 @wp.func_native(_WARP_BROADCAST)
 def warp_broadcast(lanes: wp.int32, value: wp.int32, source: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_BROADCAST)
+def warp_broadcast_float(lanes: wp.int32, value: wp.float64, source: wp.int32) -> wp.float64: ...
+
+
+@wp.func
+def warp_walk(lanes: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # A walk's first entry and stride: a lane's rank among the lanes of ``lanes`` and their count
+    # (``warp_lane_rank``, ``array.popcount32``), every one of which must walk, or ``(0, 1)`` for
+    # one thread walking alone (``lanes == 0``, as on the CPU device).
+    if lanes == 0:
+        return 0, 1
+    return warp_lane_rank(lanes), popcount32(wp.uint32(lanes))
+
+
+@wp.func
+def warp_walk_total(lanes: wp.int32, value: wp.float64) -> wp.float64:
+    # The sum of ``value`` over the lanes of a ``warp_walk`` (``warp_lanes_sum_float``'s fixed
+    # tree), to every one of them: a row a warp walks that is then rescaled or closed by its sum.
+    # ``value`` itself for one thread (``lanes == 0``).
+    if lanes == 0:
+        return value
+    return warp_broadcast_float(lanes, warp_lanes_sum_float(lanes, value), warp_lowest_lane(lanes))
+
+
+@wp.func
+def warp_long_rows(offsets: wp.array[wp.int32], i: wp.int32, lanes: wp.int32) -> wp.int32:
+    # The lanes of ``lanes`` whose CSR row ``i`` is long (``array.csr_row_long``): 0 on the CPU
+    # device and wherever none is. A thread-a-row kernel writes its short rows as before and walks
+    # each of these with the warp in turn, lowest first (``warp_lowest_row``), clearing it with
+    # ``long_rows & (long_rows - 1)``.
+    return warp_ballot(lanes, wp.where(csr_row_long(offsets, i), 1, 0))
+
+
+@wp.func
+def warp_lowest_row(lanes: wp.int32, long_rows: wp.int32, i: wp.int32) -> wp.int32:
+    # The row of the lowest lane of ``long_rows``, to every lane of ``lanes``.
+    return warp_broadcast(lanes, i, warp_lowest_lane(long_rows))
 
 
 # The largest non-negative ``value`` over the lanes in the ``lanes`` mask (from
