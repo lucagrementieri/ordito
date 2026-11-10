@@ -46,6 +46,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    bounds_and_search_order,
     offsets_buffer,
     read_array,
     read_scalar,
@@ -146,6 +147,18 @@ _SELF_DESCENT_MAX_POINTS_CPU = 3 << 18
 # 0.68x at 8 k, then 1.25-1.75x from 36 k to 1 M (the grid's one-ring walk is cheap there and the
 # CPU gains nothing from the descent's occupancy).
 _NEAREST_DESCENT_MAX_POINTS_CPU = 1 << 14
+# ``_common.search_order``'s gates for ``query_nearest``'s cell walks and ball searches (every
+# path but the ``k = 1`` descent, which keeps the module's), whose test rides on the box's
+# readback (``_common.bounds_and_search_order``). CUDA calls new/old, sort included, jittered
+# vertices (0.3 of the spacing) at ``k`` 7 and 16 and ``k = 7`` under ``backend="bvh"``: a
+# scrambled order 0.67-0.78x at 64 k queries, 0.17-0.57x from 128 k to dragon, happy_buddha and an
+# icosphere of 655 k, 0.08-0.24x on lucy (its ``k = 1`` grid 249 -> 19 ms); a scan's own order
+# 0.73-0.90x from 2^18 (dragon, happy_buddha, a 384 k stretch of lucy; 0.88-1.03x at 256 k) and
+# 0.83-0.97x on lucy, so CUDA orders every query set from there. Between the gates a coherent
+# order pays the test alone (1.00-1.04x); below the floor nothing pays (32 k: a scrambled lucy
+# stretch 0.8x, a scrambled icosphere of 41 k 1.09x).
+_KNN_ORDER_MIN_QUERIES = 1 << 16
+_KNN_ORDER_ALWAYS_QUERIES_CUDA = 1 << 18
 
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
@@ -1416,8 +1429,15 @@ def query_nearest(
         )
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
+    # The cell walks and the ball searches take scattered queries in a Hilbert order too, and from
+    # fewer queries than the descent (``_KNN_ORDER_MIN_QUERIES``); the order's test rides on the
+    # box's readback when the call reads the box.
     if bounds is None:
-        bounds = od.bounds.aabb(points)
+        bounds, order = bounds_and_search_order(
+            points, queries, _KNN_ORDER_MIN_QUERIES, _KNN_ORDER_ALWAYS_QUERIES_CUDA
+        )
+    else:
+        order = search_order(queries, _KNN_ORDER_MIN_QUERIES, _KNN_ORDER_ALWAYS_QUERIES_CUDA)
     min_bound, max_bound = bounds
     estimated = initial_radius is None
     if initial_radius is None:
@@ -1431,7 +1451,7 @@ def query_nearest(
         _launch.launch(
             kernel_neighbors.bvh_nearest_kernel(k, per_row=row_radii is not None),
             dim=m,
-            inputs=[*search, bvh.id, *shared, min_bound, max_bound, wp.int32(0), *outputs],
+            inputs=[*search, bvh.id, *shared, min_bound, max_bound, wp.int32(0), order, *outputs],
             device=device,
         )
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
@@ -1526,6 +1546,7 @@ def query_nearest(
             else kernel_neighbors.START_SCALED,
             start_histogram,
             *lanes,
+            order,
             deferred,
             *outputs,
         ],
@@ -1541,6 +1562,7 @@ def query_nearest(
             initial_radius,
             (min_bound, max_bound),
             leaf_size,
+            order,
             deferred,
             neighbor_indices,
             neighbor_distances,
@@ -1557,6 +1579,7 @@ def _finish_deferred_nearest(
     initial_radius: float,
     bounds: tuple[wp.vec3, wp.vec3],
     leaf_size: int | None,
+    order: wp.array[wp.int32] | None,
     deferred: wp.array[wp.int32],
     neighbor_indices: odt.Array2dInt32,
     neighbor_distances: odt.Array2dFloat32,
@@ -1569,7 +1592,8 @@ def _finish_deferred_nearest(
     whose walk held a point goes to the BVH's ball search seeded from the walk; a row with no point
     inside the walk goes to a nearest-point descent of a point tree with one point a leaf -- the
     whole answer at ``k = 1``, the ball's seed above it, walked over the same tree. ``row_radii``
-    is [`query_nearest`][ordito.neighbors.query_nearest]'s per-row radius, or ``None``.
+    is [`query_nearest`][ordito.neighbors.query_nearest]'s per-row radius, or ``None``; ``order``
+    the order the grid took its rows in, which the finishing searches keep.
     """
     # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
     if k == 1:
@@ -1586,7 +1610,7 @@ def _finish_deferred_nearest(
         _launch.launch(
             kernel_neighbors.nearest_point_via_bvh,
             dim=m,
-            inputs=[tree.id, points, queries, wp.float32(max_radius), row_radii],
+            inputs=[tree.id, points, queries, wp.float32(max_radius), row_radii, order],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
         )
@@ -1614,6 +1638,7 @@ def _finish_deferred_nearest(
                 bounds[0],
                 bounds[1],
                 finish,
+                order,
                 neighbor_indices,
                 neighbor_distances,
             ],

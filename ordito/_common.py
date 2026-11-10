@@ -846,13 +846,23 @@ def space_filling_order(
 # count 0.03-0.41 of them long, a scrambled order 0.82-0.99); a coherent order there pays the test
 # alone, 1.03-1.05x. The CPU takes the test at every size from the floor (scrambled 0.48-0.78x,
 # coherent at par up to the 1 M points measured), and never orders a coherent one unasked.
+# ``query_nearest``'s cell walks and ball searches pass gates of their own
+# (``neighbors._KNN_ORDER_MIN_QUERIES``).
 SEARCH_ORDER_MIN_QUERIES = 1 << 18
 SEARCH_ORDER_ALWAYS_QUERIES_CUDA = 1 << 20
 SEARCH_ORDER_SAMPLES = 2048
 SEARCH_ORDER_LONG_FRACTION = 0.6
 
+# ``search_order``'s answer before any test: no order, the sampled test, or an order whatever the
+# test would say.
+_ORDER_NONE, _ORDER_TEST, _ORDER_ALWAYS = 0, 1, 2
 
-def search_order(queries: wp.array[wp.vec3]) -> wp.array[wp.int32] | None:
+
+def search_order(
+    queries: wp.array[wp.vec3],
+    min_queries: int | None = None,
+    always_queries_cuda: int | None = None,
+) -> wp.array[wp.int32] | None:
     """
     Return the order a tree search should take ``queries`` in, or ``None`` for index order.
 
@@ -861,26 +871,84 @@ def search_order(queries: wp.array[wp.vec3]) -> wp.array[wp.int32] | None:
     makes each warp a compact patch; the kernels taking the result read it through
     ``kernels/array.ordered_item``, so their answers do not depend on it. See
     ``SEARCH_ORDER_MIN_QUERIES`` for when it is chosen; between the two gates the choice costs one
-    small launch and a readback.
+    small launch and a readback. ``min_queries`` and ``always_queries_cuda`` replace the two gates
+    for a search whose launch repays an order at other sizes (``None`` keeps the module's).
     """
-    m = queries.size
-    if m < SEARCH_ORDER_MIN_QUERIES:
-        return None
-    device = queries.device
-    if not (wp.get_device(device).is_cuda and m >= SEARCH_ORDER_ALWAYS_QUERIES_CUDA):
-        count = _launch.empty(1, dtype=wp.int32, device=device)
-        _launch.launch_tiled(
-            kernel_array.count_long_steps,
-            dim=[1],
-            inputs=[queries, SEARCH_ORDER_SAMPLES],
-            outputs=[count],
-            block_dim=TILE_1D,
-            device=device,
-        )
+    mode = _search_order_mode(queries, min_queries, always_queries_cuda)
+    if mode == _ORDER_TEST:
+        count = _launch.empty(1, dtype=wp.float32, device=queries.device)
+        _launch_long_steps_count(queries, count)
         # The order's choice: a sort of every query is the cost the read decides against.
-        if read_scalar(count, index=0) < SEARCH_ORDER_LONG_FRACTION * SEARCH_ORDER_SAMPLES:
+        if not _counts_scattered(read_scalar(count, index=0)):
             return None
-    return space_filling_order(queries)
+    return None if mode == _ORDER_NONE else space_filling_order(queries)
+
+
+def bounds_and_search_order(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3],
+    min_queries: int | None = None,
+    always_queries_cuda: int | None = None,
+) -> tuple[tuple[wp.vec3, wp.vec3], wp.array[wp.int32] | None]:
+    """
+    Return ``((min_bound, max_bound), order)``: the box of ``points`` and ``search_order(queries)``.
+
+    One readback for both: the sampled test of [`search_order`][ordito._common.search_order], when
+    it is taken, writes its count beside the box's six corners, so a search that reads the box of
+    its cloud anyway chooses its order for one small launch. ``points`` must be non-empty.
+    """
+    mode = _search_order_mode(queries, min_queries, always_queries_cuda)
+    test = mode == _ORDER_TEST
+    device = points.device
+    # Slots 0..5 the box, the lower corner and the negated upper one (``minmax_vec3_chunked``);
+    # slot 6 the test's count.
+    corners = _launch.full(7, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(points.size),
+        inputs=[points, corners],
+        device=device,
+    )
+    if test:
+        _launch_long_steps_count(queries, _launch.view(corners, 6, 7))
+    # The box sizes the search; the count, when taken, rides on the same read.
+    values = read_values(corners, 0, 7 if test else 6)
+    bounds = (wp.vec3(*values[:3]), wp.vec3(*(-value for value in values[3:6])))
+    if mode == _ORDER_NONE or (test and not _counts_scattered(values[6])):
+        return bounds, None
+    return bounds, space_filling_order(queries)
+
+
+def _search_order_mode(
+    queries: wp.array[wp.vec3], min_queries: int | None, always_queries_cuda: int | None
+) -> int:
+    """``_ORDER_NONE`` below the floor, ``_ORDER_ALWAYS`` past the CUDA gate, else the test."""
+    m = queries.size
+    if m < (SEARCH_ORDER_MIN_QUERIES if min_queries is None else min_queries):
+        return _ORDER_NONE
+    always = (
+        SEARCH_ORDER_ALWAYS_QUERIES_CUDA if always_queries_cuda is None else always_queries_cuda
+    )
+    if wp.get_device(queries.device).is_cuda and m >= always:
+        return _ORDER_ALWAYS
+    return _ORDER_TEST
+
+
+def _launch_long_steps_count(queries: wp.array[wp.vec3], out_count: wp.array[wp.float32]) -> None:
+    """Launch ``kernels/array.count_long_steps`` over ``queries`` into ``out_count[0]``."""
+    _launch.launch_tiled(
+        kernel_array.count_long_steps,
+        dim=[1],
+        inputs=[queries, SEARCH_ORDER_SAMPLES],
+        outputs=[out_count],
+        block_dim=TILE_1D,
+        device=queries.device,
+    )
+
+
+def _counts_scattered(count: float) -> bool:
+    """Whether ``count_long_steps``' count names a scattered order."""
+    return count >= SEARCH_ORDER_LONG_FRACTION * SEARCH_ORDER_SAMPLES
 
 
 # The long rings ``halfedge.vertex_one_rings`` read back, keyed by the rings' offsets (each

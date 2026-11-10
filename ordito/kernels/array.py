@@ -1882,7 +1882,7 @@ def point_curve_keys(
 
 @wp.kernel(enable_backward=False)
 def count_long_steps(
-    points: wp.array[wp.vec3], samples: wp.int32, out_count: wp.array[wp.int32]
+    points: wp.array[wp.vec3], samples: wp.int32, out_count: wp.array[wp.float32]
 ) -> None:
     # How scattered the order of ``points`` is, for ``_common.search_order``: one block takes
     # ``samples`` points spread over the array and counts those whose step to the next point is
@@ -1890,6 +1890,8 @@ def count_long_steps(
     # partner). A scan or a mesh's vertices step to a neighbour and count a few in ten (the jumps
     # between scan lines); a scrambled order counts nearly all. Lanes stride the samples by
     # ``wp.block_dim()`` (the CPU's one lane takes them all); ``points`` has at least two entries.
+    # The count is stored as a ``float32`` (exact below 2^24) so it can share a buffer with a
+    # cloud's box (``_common.bounds_and_search_order``).
     _block, lane = wp.tid()
     n = points.shape[0]
     count = wp.int32(0)
@@ -1901,7 +1903,7 @@ def count_long_steps(
         count += wp.where(step * wp.float32(64.0) > reach, 1, 0)
     total = wp.tile_sum(wp.tile(count))[0]
     if lane == 0:
-        out_count[0] = total
+        out_count[0] = wp.float32(total)
 
 
 @wp.func

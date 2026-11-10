@@ -808,13 +808,15 @@ def query_bvh_nearest_neighbors(
     min_bound: wp.vec3,
     max_bound: wp.vec3,
     finish: wp.int32,
+    order: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
     # ``finish`` is the register-row twins' switch for finishing the rows a grid search deferred;
     # this global-row form serves only ``k`` above the largest bucket, where the grid never
-    # defers, so it takes the argument and ignores it.
-    tid = wp.int32(wp.tid())
+    # defers, so it takes the argument and ignores it. Thread ``t`` answers row ``order[t]``
+    # (``_common.search_order``; row ``t`` without one), as in every k-NN kernel here.
+    tid = ordered_item(order, wp.int32(wp.tid()))
     max_radius = row_max_radius(query_max_radius, row_radii, tid)
     q = queries[tid]
     out_indices_row = out_indices[tid]
@@ -1082,14 +1084,16 @@ def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool, per_row: b
         min_bound: wp.vec3,
         max_bound: wp.vec3,
         finish: wp.int32,
+        order: wp.array[wp.int32],
         out_indices: wp.array2d[wp.int32],
         out_distances: wp.array2d[wp.float32],
     ) -> None:
         # The plain kernel answers every row from scratch over the BVH ``tree_id`` and ignores
         # ``finish``. The ``deferred`` one answers only the grid's rows carrying the marker
         # ``finish``, seeded as ``DEFERRED_ROW`` describes; for ``DEFERRED_FAR_ROW`` rows the
-        # seed is the nearest-point descent over the same tree.
-        tid = wp.int32(wp.tid())
+        # seed is the nearest-point descent over the same tree. Thread ``t`` answers row
+        # ``order[t]`` (``_common.search_order``; row ``t`` without one).
+        tid = ordered_item(order, wp.int32(wp.tid()))
         if wp.static(per_row):
             max_radius = row_max_radius(query_max_radius, row_radii, tid)
         else:
@@ -1270,6 +1274,7 @@ def query_hashgrid_nearest_neighbors(
     start_mode: wp.int32,
     start_histogram: wp.array[wp.int32],
     lanes: wp.int32,
+    order: wp.array[wp.int32],
     out_deferred: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
@@ -1279,9 +1284,10 @@ def query_hashgrid_nearest_neighbors(
     # a start radius, so it takes the arguments and ignores them. It launches ``lanes`` threads a
     # query, the first doing the work: a few long walks then do not share a warp, where they
     # would run one after the other.
-    tid = walk_item(wp.int32(wp.tid()), lanes)
-    if tid < 0:
+    item = walk_item(wp.int32(wp.tid()), lanes)
+    if item < 0:
         return
+    tid = ordered_item(order, item)  # row ``order[item]`` (``_common.search_order``)
     max_radius = row_max_radius(query_max_radius, row_radii, tid)
     q = queries[tid]
     out_indices_row = out_indices[tid]
@@ -1320,11 +1326,14 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         defer: wp.int32,
         start_mode: wp.int32,
         start_histogram: wp.array[wp.int32],
+        order: wp.array[wp.int32],
         out_deferred: wp.array[wp.int32],
         out_indices: wp.array2d[wp.int32],
         out_distances: wp.array2d[wp.float32],
     ) -> None:
-        tid = wp.int32(wp.tid())
+        # Thread ``t`` answers row ``order[t]`` (``_common.search_order``; row ``t`` without
+        # one): scattered queries in a warp walk cells far apart.
+        tid = ordered_item(order, wp.int32(wp.tid()))
         max_radius = row_max_radius(query_max_radius, row_radii, tid)
         q = queries[tid]
         row_indices = vec_indices()
@@ -1454,12 +1463,14 @@ def nearest_point_via_bvh(
     queries: wp.array[wp.vec3],
     query_max_radius: wp.float32,
     row_radii: wp.array[wp.float32],
+    order: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
     # The ``k = 1`` rows the grid deferred, all ``DEFERRED_FAR_ROW`` (a nearest point inside the
     # walk certifies a ``k = 1`` row); ``query_nearest_via_bvh`` answers every row instead.
-    tid = wp.int32(wp.tid())
+    # Thread ``t`` takes row ``order[t]``, the grid's order.
+    tid = ordered_item(order, wp.int32(wp.tid()))
     max_radius = row_max_radius(query_max_radius, row_radii, tid)
     if out_indices[tid, 0] != DEFERRED_FAR_ROW:
         return
