@@ -578,8 +578,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("repair", "commit_non_manifold_faces"): frozenset({"states", "live", "keep"}),
     # ``icp(method="pyvista")``'s one-block loop: ``total`` is the seed transform on entry and the
     # composed one on exit, as in ``icp``'s other loop; ``closest`` holds each landmark's match
-    # between the passes of one round.
-    ("registration", "landmark_icp"): frozenset({"closest", "total"}),
+    # between the passes of one round, ``faces`` its face, which seeds the next round's search.
+    ("registration", "landmark_icp"): frozenset({"closest", "faces", "total"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "update_panel_entries"): frozenset({"fronts", "blocks"}),
     ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),

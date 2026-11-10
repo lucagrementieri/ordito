@@ -1223,10 +1223,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   its rotation fit is `kernels/registration.rotation_from_covariance_d` (a `float32` SVD refined
   in `float64`, ~18 us where the `float64` `wp.svd3` took ~50 us); `sphere_small` 120 -> 70 ms.
   What is left is ~150 us an iteration on one SM against VTK's ~90 us on one CPU thread, ~70 us
-  of it the exact `float64` re-search (`proximity.closest_offset_d`). Open. A lead from the
-  `points` sweep (2026-11-10): `farthest_point_sample` left its one persistent block for a
-  multi-block launch a round, replayed eight a body, once a round outgrew one SM (0.03-0.32x);
-  an iteration's correspondence search could take the same shape on a large source.
+  of it the exact `float64` re-search (`proximity.closest_offset_d`). Since 2026-11-10 a landmark
+  matched before seeds that search with its last face and runs no `float32` query (one tree walk
+  a landmark an iteration fewer, CPU 0.37x on `sphere_small`). Open: what remains is one walk a
+  landmark, a chain of dependent node loads on one SM; a multi-block layout (as
+  `farthest_point_sample`'s rounds) does not shorten a chain, a cheaper start node would.
 - **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
   (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
   0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the

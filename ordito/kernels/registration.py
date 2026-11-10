@@ -6,7 +6,7 @@ from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left
 from ordito.kernels.neighbors import bvh_nearest_point
 from ordito.kernels.predicates import normalize_or_zero
-from ordito.kernels.proximity import closest_offset_d, closest_point_query
+from ordito.kernels.proximity import closest_offset_face_d, closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
     block_chunk_1d,
@@ -821,19 +821,29 @@ vec6d = wp.types.vector(length=6, dtype=wp.float64)
 
 @wp.func
 def landmark_match(
-    index_id: wp.uint64, target_points: wp.array[wp.vec3], cloud: wp.bool, p: wp.vec3d
-) -> wp.vec3d:
-    # ``p``'s match on the target in ``float64``: the nearest target point, or the exact closest
-    # point on the surface. ``icp_match``'s ``float32`` mesh query is not exact (its face can be
-    # one whose true distance is a few 1e-5 longer, on a needle), and one landmark sent to another
-    # face moved a converging saddle by 1e-3 where VTK's exact locator did not, so its face only
-    # seeds ``closest_offset_d``'s exact search.
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    cloud: wp.bool,
+    p: wp.vec3d,
+    previous_face: wp.int32,
+) -> tuple[wp.vec3d, wp.int32]:
+    # ``p``'s match on the target in ``float64`` and, on a mesh, its face: the nearest target
+    # point, or the exact closest point on the surface. ``icp_match``'s ``float32`` mesh query is
+    # not exact (its face can be one whose true distance is a few 1e-5 longer, on a needle), and one
+    # landmark sent to another face moved a converging saddle by 1e-3 where VTK's exact locator did
+    # not, so a face only seeds ``closest_offset_face_d``'s exact search. A landmark matched before
+    # (``previous_face >= 0``) seeds it with its last face instead and runs no ``float32`` query:
+    # the exact search answers the same from any seed, the seed winning only an exact tie.
+    if not cloud and previous_face >= 0:
+        offset, face = closest_offset_face_d(index_id, previous_face, p)
+        return p - offset, face
     closest, _distance, index = icp_match(
         index_id, target_points, cloud, wp.vec3(p), FLOAT32_INF_CONSTANT
     )
     if cloud or index < 0:
-        return wp.vec3d(closest)
-    return p - closest_offset_d(index_id, index, p)
+        return wp.vec3d(closest), wp.int32(-1)
+    offset, face = closest_offset_face_d(index_id, index, p)
+    return p - offset, face
 
 
 @wp.func
@@ -920,12 +930,13 @@ def landmark_icp(
     max_iterations: wp.int32,
     max_mean_distance: wp.float64,
     closest: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
     total: wp.array[wp.mat44],
     out_cost: wp.array[wp.float64],
 ) -> None:
-    # ``total`` holds the seed on entry and the composed map on exit; ``closest`` is per-landmark
-    # scratch. ``out_cost`` is the mean squared distance from the last fit's landmarks to their
-    # matches.
+    # ``total`` holds the seed on entry and the composed map on exit; ``closest`` and ``faces``
+    # (each landmark's last match and its face, which seeds the next) are per-landmark scratch.
+    # ``out_cost`` is the mean squared distance from the last fit's landmarks to their matches.
     _block, lane = wp.tid()
     seed = total[0]
     linear = wp.mat33d(
@@ -948,8 +959,10 @@ def landmark_icp(
         k = lane
         while k < landmark_count:
             p = linear * wp.vec3d(source[k * landmark_step]) + shift
-            q = landmark_match(index_id, target_points, cloud, p)
+            previous_face = wp.where(iteration > 0, faces[k], wp.int32(-1))
+            q, face = landmark_match(index_id, target_points, cloud, p, previous_face)
             closest[k] = q
+            faces[k] = face
             sums += vec6d(p[0], p[1], p[2], q[0], q[1], q[2])
             k += wp.block_dim()
         sums = block_sum(sums)

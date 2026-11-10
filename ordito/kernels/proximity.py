@@ -121,15 +121,19 @@ def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
 
 
 @wp.func
-def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
-    # ``p`` minus its exact closest point on the mesh, in ``float64``, from ``face``, the face a
-    # ``float32`` query of ``p`` answered (``closest_point_query``). That query is not exact: its
-    # face can be one whose true distance is a few 1e-5 longer, on a needle. So the face only
-    # bounds the answer: every face nearer than it meets the box of that radius about ``p``, and
-    # the nearest of those in ``float64`` is the closest point. The box grows by a relative
-    # ``1e-6`` to cover its own rounding to ``float32``. Shared by ``registration``'s landmark
-    # matches and ``levelset``'s ``float64`` lattice band.
+def closest_offset_face_d(
+    mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d
+) -> tuple[wp.vec3d, wp.int32]:
+    # ``p`` minus its exact closest point on the mesh, in ``float64``, and the face holding it,
+    # from ``face``, any face of the mesh: a ``float32`` query's (``closest_point_query``), which is
+    # not exact (its face can be one whose true distance is a few 1e-5 longer, on a needle), or a
+    # nearby answer from before. The face only bounds the answer: every face nearer than it meets
+    # the box of that radius about ``p``, and the nearest of those in ``float64`` is the closest
+    # point, ``face`` kept on a tie. The box grows by a relative ``1e-6`` to cover its own
+    # rounding to ``float32``. Shared by ``registration``'s landmark matches and ``levelset``'s
+    # ``float64`` lattice band (through ``closest_offset_d``).
     best = face_offset_d(mesh_id, face, p)
+    best_face = face
     best_sq = wp.length_sq(best)
     radius = wp.sqrt(best_sq)
     margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
@@ -141,8 +145,16 @@ def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3
         offset_sq = wp.length_sq(offset)
         if offset_sq < best_sq:
             best = offset
+            best_face = candidate
             best_sq = offset_sq
-    return best
+    return best, best_face
+
+
+@wp.func
+def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
+    # ``closest_offset_face_d``'s offset alone.
+    offset, _face = closest_offset_face_d(mesh_id, face, p)
+    return offset
 
 
 @wp.kernel

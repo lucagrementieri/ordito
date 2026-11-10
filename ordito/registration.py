@@ -642,6 +642,7 @@ def _landmark_icp(
     step = n // _PYVISTA_MAX_LANDMARKS if n > _PYVISTA_MAX_LANDMARKS else 1
     count = n // step
     closest = _launch.empty(count, dtype=wp.vec3d, device=device)
+    faces = _launch.empty(count, dtype=wp.int32, device=device)
     cost = _launch.empty(1, dtype=wp.float64, device=device)
     _launch.launch_tiled(
         kernel_registration.landmark_icp,
@@ -656,6 +657,7 @@ def _landmark_icp(
             max_iterations,
             wp.float64(threshold),
             closest,
+            faces,
             total,
             cost,
         ],
