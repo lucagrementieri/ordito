@@ -1221,10 +1221,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   14.7 of 18 ms kernel time and `halfedge_tangent_angles` 3 ms; the explicit smoothing passes'
   warp walk ~0.4 ms a hub.
 - **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
-  ~14 us a round (65 536-point star: 14 419 rounds, 203 ms): five block barriers plus ~10
-  open-corner grid walks, most of them convex corners still blocked. A per-corner blocker cache did
-  not cut the walks. Open: an O(1) test for a blocked corner, or fewer barriers a round. The packed
-  multi-ring loop (`_triangulate_long_rings`) has no tail.
+  ~9.4 us a round (65 536-point star: 14 404 rounds, 135 ms), about 60 % of it the walk phase and
+  most of the rest its five block barriers. The walks left are the two neighbours a clip reclasses
+  (an empty triangle's verdict is cached until then, `EAR_UNBLOCKED`), every one of them unblocked
+  on the star. Open: fewer barriers a round, or a cheaper first walk of a reclassed corner. The
+  packed multi-ring loop (`_triangulate_long_rings`) has no tail.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
   landmark an iteration (its radius the distance to its last match since 2026-11-10,
   `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on
