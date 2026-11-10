@@ -6539,8 +6539,7 @@ is the sum of the two means:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">158</span>
-<span class="normal">159</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">159</span>
 <span class="normal">160</span>
 <span class="normal">161</span>
 <span class="normal">162</span>
@@ -6618,7 +6617,8 @@ is the sum of the two means:</p>
 <span class="normal">234</span>
 <span class="normal">235</span>
 <span class="normal">236</span>
-<span class="normal">237</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points</span><span class="p">(</span>
+<span class="normal">237</span>
+<span class="normal">238</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points</span><span class="p">(</span>
     <span class="n">x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7004,8 +7004,7 @@ term adds the mean distance from the cube's corners to the cloud, <code>sqrt(3) 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">284</span>
-<span class="normal">285</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">285</span>
 <span class="normal">286</span>
 <span class="normal">287</span>
 <span class="normal">288</span>
@@ -7090,7 +7089,8 @@ term adds the mean distance from the cube's corners to the cloud, <code>sqrt(3) 
 <span class="normal">367</span>
 <span class="normal">368</span>
 <span class="normal">369</span>
-<span class="normal">370</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh</span><span class="p">(</span>
+<span class="normal">370</span>
+<span class="normal">371</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -7526,8 +7526,7 @@ outer corner <code>sqrt(3) / 2</code> from the inner one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">425</span>
-<span class="normal">426</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">426</span>
 <span class="normal">427</span>
 <span class="normal">428</span>
 <span class="normal">429</span>
@@ -7621,7 +7620,8 @@ outer corner <code>sqrt(3) / 2</code> from the inner one:</p>
 <span class="normal">517</span>
 <span class="normal">518</span>
 <span class="normal">519</span>
-<span class="normal">520</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh</span><span class="p">(</span>
+<span class="normal">520</span>
+<span class="normal">521</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7963,8 +7963,7 @@ inputs yield a length-1 zero array.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">550</span>
-<span class="normal">551</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">551</span>
 <span class="normal">552</span>
 <span class="normal">553</span>
 <span class="normal">554</span>
@@ -8067,7 +8066,8 @@ inputs yield a length-1 zero array.</p>
 <span class="normal">651</span>
 <span class="normal">652</span>
 <span class="normal">653</span>
-<span class="normal">654</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points_loss</span><span class="p">(</span>
+<span class="normal">654</span>
+<span class="normal">655</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points_loss</span><span class="p">(</span>
     <span class="n">x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8450,8 +8450,7 @@ away from the face:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">657</span>
-<span class="normal">658</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">658</span>
 <span class="normal">659</span>
 <span class="normal">660</span>
 <span class="normal">661</span>
@@ -8560,7 +8559,8 @@ away from the face:</p>
 <span class="normal">764</span>
 <span class="normal">765</span>
 <span class="normal">766</span>
-<span class="normal">767</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh_loss</span><span class="p">(</span>
+<span class="normal">767</span>
+<span class="normal">768</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh_loss</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8987,8 +8987,7 @@ weight <code>1 / 8</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">770</span>
-<span class="normal">771</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">771</span>
 <span class="normal">772</span>
 <span class="normal">773</span>
 <span class="normal">774</span>
@@ -9110,7 +9109,8 @@ weight <code>1 / 8</code>:</p>
 <span class="normal">890</span>
 <span class="normal">891</span>
 <span class="normal">892</span>
-<span class="normal">893</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh_loss</span><span class="p">(</span>
+<span class="normal">893</span>
+<span class="normal">894</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh_loss</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -9402,8 +9402,7 @@ symmetrizing <a class="autorefs autorefs-external" href="https://docs.scipy.org/
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">901</span>
-<span class="normal">902</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">902</span>
 <span class="normal">903</span>
 <span class="normal">904</span>
 <span class="normal">905</span>
@@ -9456,7 +9455,8 @@ symmetrizing <a class="autorefs autorefs-external" href="https://docs.scipy.org/
 <span class="normal">952</span>
 <span class="normal">953</span>
 <span class="normal">954</span>
-<span class="normal">955</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_points_to_points</span><span class="p">(</span>
+<span class="normal">955</span>
+<span class="normal">956</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_points_to_points</span><span class="p">(</span>
     <span class="n">x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">single_directional</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9717,8 +9717,7 @@ cloud is <code>sqrt(3) / 2</code> from the centre point, so the symmetric value 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 958</span>
-<span class="normal"> 959</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 959</span>
 <span class="normal"> 960</span>
 <span class="normal"> 961</span>
 <span class="normal"> 962</span>
@@ -9784,7 +9783,8 @@ cloud is <code>sqrt(3) / 2</code> from the centre point, so the symmetric value 
 <span class="normal">1022</span>
 <span class="normal">1023</span>
 <span class="normal">1024</span>
-<span class="normal">1025</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_points_to_mesh</span><span class="p">(</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_points_to_mesh</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -10100,8 +10100,7 @@ outer corners <code>sqrt(3) / 2</code> from the inner one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1028</span>
-<span class="normal">1029</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1029</span>
 <span class="normal">1030</span>
 <span class="normal">1031</span>
 <span class="normal">1032</span>
@@ -10179,7 +10178,8 @@ outer corners <code>sqrt(3) / 2</code> from the inner one:</p>
 <span class="normal">1104</span>
 <span class="normal">1105</span>
 <span class="normal">1106</span>
-<span class="normal">1107</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_mesh_to_mesh</span><span class="p">(</span>
+<span class="normal">1107</span>
+<span class="normal">1108</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hausdorff_mesh_to_mesh</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>

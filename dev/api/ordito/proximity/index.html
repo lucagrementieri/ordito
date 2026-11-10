@@ -6683,8 +6683,7 @@ when no face lies within <code>max_dist</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">146</span>
-<span class="normal">147</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">147</span>
 <span class="normal">148</span>
 <span class="normal">149</span>
 <span class="normal">150</span>
@@ -6787,7 +6786,10 @@ when no face lies within <code>max_dist</code>.</p>
 <span class="normal">247</span>
 <span class="normal">248</span>
 <span class="normal">249</span>
-<span class="normal">250</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_point_on_mesh</span><span class="p">(</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_point_on_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -6875,6 +6877,8 @@ when no face lies within <code>max_dist</code>.</p>
         <span class="n">out_face</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">out_closest</span><span class="p">,</span> <span class="n">out_distance</span><span class="p">,</span> <span class="n">out_face</span>
 
+    <span class="c1"># The order is chosen before the mesh is built, so the read it may take waits on no build.</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="n">search_order</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">mesh</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="s2">"closest_point_on_mesh"</span><span class="p">)</span>
         <span class="c1"># The mesh aliases the caller's buffers and is discarded here, so it needs no copy.</span>
@@ -6888,7 +6892,7 @@ when no face lies within <code>max_dist</code>.</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">max_dist</span><span class="p">),</span> <span class="n">out_closest</span><span class="p">,</span> <span class="n">out_distance</span><span class="p">,</span> <span class="n">out_face</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">max_dist</span><span class="p">),</span> <span class="n">order</span><span class="p">,</span> <span class="n">out_closest</span><span class="p">,</span> <span class="n">out_distance</span><span class="p">,</span> <span class="n">out_face</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">out_closest</span><span class="p">,</span> <span class="n">out_distance</span><span class="p">,</span> <span class="n">out_face</span>
@@ -7168,10 +7172,7 @@ point <code>(a, a, a)</code> <em>is</em> returned; only the segment shape is los
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">256</span>
 <span class="normal">257</span>
 <span class="normal">258</span>
 <span class="normal">259</span>
@@ -7338,7 +7339,10 @@ point <code>(a, a, a)</code> <em>is</em> returned; only the segment shape is los
 <span class="normal">420</span>
 <span class="normal">421</span>
 <span class="normal">422</span>
-<span class="normal">423</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_point_on_edges</span><span class="p">(</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_point_on_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7793,10 +7797,7 @@ implementation, and faces only where the configuration is generic.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">426</span>
-<span class="normal">427</span>
-<span class="normal">428</span>
-<span class="normal">429</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">429</span>
 <span class="normal">430</span>
 <span class="normal">431</span>
 <span class="normal">432</span>
@@ -8091,7 +8092,10 @@ implementation, and faces only where the configuration is generic.</p>
 <span class="normal">721</span>
 <span class="normal">722</span>
 <span class="normal">723</span>
-<span class="normal">724</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_to_mesh_distance</span><span class="p">(</span>
+<span class="normal">724</span>
+<span class="normal">725</span>
+<span class="normal">726</span>
+<span class="normal">727</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_to_mesh_distance</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -8584,10 +8588,7 @@ convention.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">730</span>
 <span class="normal">731</span>
 <span class="normal">732</span>
 <span class="normal">733</span>
@@ -8680,7 +8681,10 @@ convention.</p>
 <span class="normal">820</span>
 <span class="normal">821</span>
 <span class="normal">822</span>
-<span class="normal">823</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normals_at_closest_faces</span><span class="p">(</span>
+<span class="normal">823</span>
+<span class="normal">824</span>
+<span class="normal">825</span>
+<span class="normal">826</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normals_at_closest_faces</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9126,10 +9130,7 @@ ray parity, so such a mesh is refused.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">826</span>
-<span class="normal">827</span>
-<span class="normal">828</span>
-<span class="normal">829</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">829</span>
 <span class="normal">830</span>
 <span class="normal">831</span>
 <span class="normal">832</span>
@@ -9293,7 +9294,10 @@ ray parity, so such a mesh is refused.</p>
 <span class="normal">990</span>
 <span class="normal">991</span>
 <span class="normal">992</span>
-<span class="normal">993</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_on_mesh</span><span class="p">(</span>
+<span class="normal">993</span>
+<span class="normal">994</span>
+<span class="normal">995</span>
+<span class="normal">996</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_on_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -9764,10 +9768,7 @@ outward, closed:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1023</span>
-<span class="normal">1024</span>
-<span class="normal">1025</span>
-<span class="normal">1026</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1026</span>
 <span class="normal">1027</span>
 <span class="normal">1028</span>
 <span class="normal">1029</span>
@@ -9892,7 +9893,10 @@ outward, closed:</p>
 <span class="normal">1148</span>
 <span class="normal">1149</span>
 <span class="normal">1150</span>
-<span class="normal">1151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span>
+<span class="normal">1153</span>
+<span class="normal">1154</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10212,10 +10216,7 @@ without sampling it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1154</span>
-<span class="normal">1155</span>
-<span class="normal">1156</span>
-<span class="normal">1157</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1157</span>
 <span class="normal">1158</span>
 <span class="normal">1159</span>
 <span class="normal">1160</span>
@@ -10290,7 +10291,10 @@ without sampling it:</p>
 <span class="normal">1229</span>
 <span class="normal">1230</span>
 <span class="normal">1231</span>
-<span class="normal">1232</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10572,10 +10576,7 @@ left-to-right summation makes it the exact-sum reference.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1235</span>
-<span class="normal">1236</span>
-<span class="normal">1237</span>
-<span class="normal">1238</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1238</span>
 <span class="normal">1239</span>
 <span class="normal">1240</span>
 <span class="normal">1241</span>
@@ -10687,7 +10688,10 @@ left-to-right summation makes it the exact-sum reference.</p>
 <span class="normal">1347</span>
 <span class="normal">1348</span>
 <span class="normal">1349</span>
-<span class="normal">1350</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
+<span class="normal">1350</span>
+<span class="normal">1351</span>
+<span class="normal">1352</span>
+<span class="normal">1353</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -11003,10 +11007,7 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1527</span>
-<span class="normal">1528</span>
-<span class="normal">1529</span>
-<span class="normal">1530</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1530</span>
 <span class="normal">1531</span>
 <span class="normal">1532</span>
 <span class="normal">1533</span>
@@ -11111,7 +11112,10 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 <span class="normal">1632</span>
 <span class="normal">1633</span>
 <span class="normal">1634</span>
-<span class="normal">1635</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
+<span class="normal">1635</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -11411,10 +11415,7 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1638</span>
-<span class="normal">1639</span>
-<span class="normal">1640</span>
-<span class="normal">1641</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1641</span>
 <span class="normal">1642</span>
 <span class="normal">1643</span>
 <span class="normal">1644</span>
@@ -11526,7 +11527,10 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 <span class="normal">1750</span>
 <span class="normal">1751</span>
 <span class="normal">1752</span>
-<span class="normal">1753</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
+<span class="normal">1753</span>
+<span class="normal">1754</span>
+<span class="normal">1755</span>
+<span class="normal">1756</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
