@@ -28,6 +28,7 @@ from ordito.kernels.array import (
     binary_search_index,
     cross2,
     csr_key,
+    csr_row_long,
     divide_if_positive,
     next_up,
     sorted_run_end,
@@ -45,12 +46,7 @@ from ordito.kernels.laplacian import (
     face_half_cotangents_float64,
     pattern_row_on_rim,
 )
-from ordito.kernels.linalg import (
-    csr_row_long,
-    shift_factor,
-    shifted_block_entry,
-    shifted_scalar_entry,
-)
+from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
@@ -213,7 +209,7 @@ def upper_edge_length_sum_and_count(
     # the bundle needs a keyword on public ``heat_operators`` and a sum cached on the ``Trimesh``,
     # for one launch, one allocation and one fill: ~17 us, 0.8 % of ``extend_scalar`` on
     # ``sphere_small`` (2026-11-08), less on every larger call. Declined. A long row
-    # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after, its lanes striding
+    # (``array.csr_row_long``, a fan's hub) is left to the whole block after, its lanes striding
     # the entries into their own sums, so a block without one pays one reduction.
     i, t = wp.tid()
     n = offsets.shape[0] - 1
@@ -405,7 +401,7 @@ def heat_system_rows(
     # rather than reading it back.
     #
     # Launch tiled over ``HEAT_ROWS_PER_BLOCK`` rows a block. A lane forms its row's entries in the
-    # row's order; a long row (``linalg.csr_row_long``, a fan's hub) is left to the whole block
+    # row's order; a long row (``array.csr_row_long``, a fan's hub) is left to the whole block
     # after, its lanes striding the entries and the block summing the diagonal in a fixed tree, so
     # a block without one pays one reduction.
     blk, lane = wp.tid()

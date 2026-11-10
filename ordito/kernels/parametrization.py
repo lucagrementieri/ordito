@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito import constants as twc
 from ordito.kernels.array import cross2, to_vec2d
-from ordito.kernels.laplacian import signed_cotmatrix_row
+from ordito.kernels.laplacian import signed_cotmatrix_rows
 from ordito.kernels.linalg import free_row
 from ordito.kernels.predicates import squared_edge_lengths
 from ordito.kernels.reduce import block_running_sum
@@ -92,10 +92,10 @@ def negated_cotmatrix_rows(
 ) -> None:
     # The ``k == 1`` harmonic system ``-L`` over a mesh operator pattern, one thread per row:
     # ``kernels/laplacian.cotmatrix_rows``' ``float64`` row with each entry negated as it is
-    # written (``signed_cotmatrix_row``), so ``L`` is never stored. Negation is exact, so the
-    # entries are ``energies.k_harmonic(L, k=1)``'s bit for bit.
+    # written (``signed_cotmatrix_rows``, a long row by the warp, as there), so ``L`` is never
+    # stored. Negation is exact, so the entries are ``energies.k_harmonic(L, k=1)``'s bit for bit.
     i = wp.int32(wp.tid())
-    signed_cotmatrix_row(
+    signed_cotmatrix_rows(
         i, offsets, columns, run_start, keys, count, order, cot_entries, 1, out_values
     )
 

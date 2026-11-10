@@ -6,6 +6,7 @@ from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import (
     OverloadTable,
     append_slot,
+    csr_row_long,
     greater,
     inverse_or_one,
     mask_and_not,
@@ -26,7 +27,6 @@ from ordito.kernels.laplacian import (
 )
 from ordito.kernels.linalg import (
     csr_row_dot,
-    csr_row_long,
     free_row,
     selected_row,
     shifted_scalar_entry,
@@ -41,10 +41,9 @@ from ordito.kernels.reduce import (
     block_sum,
     store_block_sum,
     warp_active_lanes,
-    warp_ballot,
-    warp_broadcast,
     warp_lane_leads,
-    warp_lowest_lane,
+    warp_long_rows,
+    warp_lowest_row,
 )
 from ordito.kernels.scatter import add_corner_triple, claim_row_slot
 from ordito.kernels.triangles import corner_triple, local_corner
@@ -1041,7 +1040,7 @@ def fairing_system_rows(
     # face pass adds into zeros with no clear of its own.
     #
     # Launch tiled over ``FAIRING_ROWS_PER_BLOCK`` rows a block. A lane writes its rows' kept
-    # entries into consecutive slots in the row's order; a long row (``linalg.csr_row_long``, a
+    # entries into consecutive slots in the row's order; a long row (``array.csr_row_long``, a
     # fan's hub) is left to the whole block after, its lanes striding the entries -- each kept
     # entry's slot searched in the system's sorted columns -- and the block summing the diagonal
     # and the pinned columns in a fixed tree, so a block without one pays one reduction.
@@ -1379,21 +1378,15 @@ def vec3_pass_value(
     return diffused_value(position, lv, coeff)
 
 
-# A thread-a-row pass kernel takes a long row (``linalg.csr_row_long``, a fan's hub) as a warp:
-# one ballot names the warp's long rows (``warp_long_rows``), each lane whose row is short writes it
-# as before, and the warp walks each long row in turn (``warp_long_operator_row``, through
+# A thread-a-row pass kernel takes a long row (``array.csr_row_long``, a fan's hub) as a warp: one
+# ballot names the warp's long rows (``reduce.warp_long_rows``), each lane whose row is short writes
+# it as before, and the warp walks each long row in turn (``warp_long_operator_row``, through
 # ``laplacian.operator_row_warp``), its lowest lane finishing it. Every short row is its thread's,
-# to the bit; on the CPU device the ballot is empty and every row is. 2026-11-09: ``fan_hub``'s
-# hub held an explicit pass at 7.0 ms in one thread, a warp 0.85 ms (both hubs). A block per long
-# row instead (tiled at 256 rows, a block barrier deciding) reached 0.15 ms but cost every
-# ordinary pass its barrier: 1.25x device time (``sphere_small`` 5.6 -> 7.1 us, ``bunny`` 7.3 ->
-# 8.9 us), 1.07-1.15x the call; the ballot costs them nothing measurable.
-
-
-@wp.func
-def warp_long_rows(offsets: wp.array[wp.int32], i: wp.int32, lanes: wp.int32) -> wp.int32:
-    # The lanes of ``lanes`` whose row is long: 0 on the CPU device and wherever none is.
-    return warp_ballot(lanes, wp.where(csr_row_long(offsets, i), 1, 0))
+# to the bit; on the CPU device the ballot is empty and every row is. 2026-11-09: ``fan_hub``'s hub
+# held an explicit pass at 7.0 ms in one thread, a warp 0.85 ms (both hubs). A block per long row
+# instead (tiled at 256 rows, a block barrier deciding) reached 0.15 ms but cost every ordinary pass
+# its barrier: 1.25x device time (``sphere_small`` 5.6 -> 7.1 us, ``bunny`` 7.3 -> 8.9 us),
+# 1.07-1.15x the call; the ballot costs them nothing measurable.
 
 
 @wp.func
@@ -1408,7 +1401,7 @@ def warp_long_operator_row(
 ) -> tuple[wp.int32, wp.vec3d]:
     # The lowest long row of ``long_rows`` and its operator sum over ``field``, by every lane of
     # ``lanes``; only ``warp_lane_leads(lanes)`` holds the sum.
-    row = warp_broadcast(lanes, i, warp_lowest_lane(long_rows))
+    row = warp_lowest_row(lanes, long_rows, i)
     return row, operator_row_warp(columns, values, field, offsets[row], offsets[row + 1], lanes)
 
 
@@ -2249,7 +2242,7 @@ def implicit_laplacian_step_long_rows(
     x: wp.array[Any],
     out_x: wp.array[wp.vec3d],
 ) -> None:
-    # ``implicit_laplacian_step`` for an operator with a long row (``linalg.csr_row_long``, a
+    # ``implicit_laplacian_step`` for an operator with a long row (``array.csr_row_long``, a
     # fan's hub), which one thread would walk alone (2026-11-08: ``fan_hub``'s held each step at
     # 6 ms). Launch tiled over ``IMPLICIT_ROWS_PER_BLOCK`` rows a block: a lane writes its short
     # rows, then a block holding a long one walks it with every lane

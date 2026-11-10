@@ -1100,6 +1100,27 @@ def csr_key_nonzero(
     return csr_key(row, col, n_rows, n_cols)
 
 
+# Entries from which a CSR row is *long*: on CUDA the row-a-thread solver kernels (Chebyshev steps,
+# the conjugate-gradient mat-vec) skip it under a nonzero ``skip_long`` and blocks sum it instead, a
+# piece of ``linalg.CSR_LONG_ROW_PIECE`` entries each (``linalg.long_row_piece_total``). A row a
+# thread is one thread's chain of dependent loads, so a hub row (a fan's apex, 41 k entries) held
+# every step for as long as the rest of the step by a factor of ~1 000. Mesh and ``warp.fem`` rows
+# stay far below it, so the threshold was not swept. ``ordito/linalg._LongRows`` decides on the
+# host, from one count read per listing, whether a round launches the long-row kernels; launching
+# them every step with no read instead (their blocks returning at once with none listed) cost
+# 1.0-1.31x where no row is long (geomean 1.09-1.12 over 13 meshes and the solver rows of six
+# benchmark files) against the read's 0.98-1.13x (geomean 1.01-1.02; the worst a 1.7 ms call on
+# 1 024 components): a small solve is mostly steps, and the read is once a solve.
+# ``heat_geodesic`` on ``fan_hub``: 0.009x, the same 1 005 rounds. It lives here, not in
+# ``kernels/linalg``, because the operator builders (``kernels/laplacian``) take long rows too.
+CSR_LONG_ROW_ENTRIES = wp.int32(1024)
+
+
+@wp.func
+def csr_row_long(offsets: wp.array[wp.int32], row: wp.int32) -> wp.bool:
+    return offsets[row + 1] - offsets[row] >= CSR_LONG_ROW_ENTRIES
+
+
 @wp.func
 def store_coo_key(
     slot: wp.int32,

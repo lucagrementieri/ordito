@@ -3492,7 +3492,7 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
-        # Rows long enough to stall a row-a-thread kernel (``kernels/linalg.CSR_LONG_ROW_ENTRIES``),
+        # Rows long enough to stall a row-a-thread kernel (``kernels/array.CSR_LONG_ROW_ENTRIES``),
         # summed a block a row on CUDA (``_LongRows``); shared with a Jacobi-Chebyshev polynomial,
         # which steps this same matrix.
         self._long = _LongRows.build(
@@ -4196,7 +4196,7 @@ class _LongRows:
     (``kernels/linalg.csr_long_rows_matvec``, ``kernels/algorithms/multigrid.chebyshev_long_rows``).
     The piece count is read back once per listing (construction and ``refresh``), and the round
     launches the long-row kernels only when it is nonzero, so a matrix with no long row runs the
-    round it always did (``kernels/linalg.CSR_LONG_ROW_ENTRIES`` prices the alternative). The
+    round it always did (``kernels/array.CSR_LONG_ROW_ENTRIES`` prices the alternative). The
     partials and tickets are sized by the bound on pieces at construction, so a listing never
     reallocates what a recorded round points at. They are allocated by the first listing that
     finds a piece, which also makes the state record its round again (``active`` changed), so a
@@ -4229,11 +4229,11 @@ class _LongRows:
         if heavy or not wp.get_device(device).is_cuda or n == 0:
             return None
         entries = matrix.columns.size
-        if entries < int(kernel_linalg.CSR_LONG_ROW_ENTRIES):
+        if entries < int(kernel_array.CSR_LONG_ROW_ENTRIES):
             return None
         # Each long row's pieces: its entries over the piece size, plus at most one partial piece.
         capacity = entries // int(kernel_linalg.CSR_LONG_ROW_PIECE) + entries // int(
-            kernel_linalg.CSR_LONG_ROW_ENTRIES
+            kernel_array.CSR_LONG_ROW_ENTRIES
         )
         long_rows = cls(capacity, n_columns, device)
         long_rows.relist(matrix, n)

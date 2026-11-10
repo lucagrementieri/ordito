@@ -6,6 +6,7 @@ from ordito.kernels.array import (
     OverloadTable,
     append_slot_if,
     csr_key,
+    csr_row_long,
     csr_run_start,
     device_is_cpu,
     popcount32,
@@ -19,8 +20,14 @@ from ordito.kernels.reduce import (
     block_chunk_1d,
     block_min,
     read_group_sum_vector,
+    warp_active_lanes,
+    warp_ballot,
     warp_lane_rank,
     warp_lanes_sum_float,
+    warp_long_rows,
+    warp_lowest_row,
+    warp_walk,
+    warp_walk_total,
 )
 from ordito.kernels.scatter import (
     ARRIVAL_POOL_UNIFORM,
@@ -915,8 +922,21 @@ def cotmatrix_offdiagonal(
     return value
 
 
+# A thread-a-row operator builder takes a long row (``array.csr_row_long``, a fan's hub) as a
+# warp, as the explicit smoothing passes do (``kernels/smoothing.warp_long_operator_row``): one
+# ballot names the warp's long rows (``reduce.warp_long_rows``), each lane whose row is short writes
+# it in its own thread as before, and the warp walks each long row in turn (``reduce.warp_walk``),
+# a row sum (a diagonal, a normalization) taken over the lanes in a fixed tree and broadcast to
+# every lane (``reduce.warp_walk_total``). One row function serves both, its thread form
+# ``lanes == 0``. Every short row is its thread's, to the bit; on the CPU device the ballot is empty
+# and every row is. A long row's sum takes the lanes' tree, not the row's order. The kernel reaches
+# the dispatch converged (its first statement), and no thread reads a row's values back after it
+# (a lane's write is not visible to another lane without a warp barrier).
+
+
 @wp.func
-def signed_cotmatrix_row(
+def signed_cotmatrix_row_lanes(
+    lanes: wp.int32,
     i: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -936,14 +956,16 @@ def signed_cotmatrix_row(
     # degenerate face's self-edge never reaches a row: its four contributions ``w + w - w - w``
     # cancelled exactly in the 12-triplet form too. The half-cotangents may be float32 or float64
     # whatever the matrix precision; each is cast once. ``cotmatrix_row`` is the unnegated row;
-    # ``kernels/parametrization.negated_cotmatrix_rows`` the negated one.
+    # ``kernels/parametrization.negated_cotmatrix_rows`` the negated one. Walked by the lanes of
+    # ``lanes`` (``reduce.warp_walk``), or by one thread at ``lanes == 0``.
     start = offsets[i]
     end = offsets[i + 1]
     if end == start:
         return
     total = type(out_values[start])(0.0)
     slot = wp.int32(-1)
-    for k in range(start, end):
+    first, stride = warp_walk(lanes)
+    for k in range(start + first, end, stride):
         if columns[k] == i:
             slot = k
             continue
@@ -952,8 +974,67 @@ def signed_cotmatrix_row(
         )
         out_values[k] = wp.where(negate != 0, -value, value)
         total += value
+    total = type(total)(warp_walk_total(lanes, wp.float64(total)))
     if slot >= 0:
         out_values[slot] = wp.where(negate != 0, total, -total)
+
+
+@wp.func
+def signed_cotmatrix_row(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: Any,
+    negate: wp.int32,
+    out_values: Any,
+) -> None:
+    # ``signed_cotmatrix_row_lanes`` by the one thread.
+    signed_cotmatrix_row_lanes(
+        0, i, offsets, columns, run_start, keys, count, order, cot_entries, negate, out_values
+    )
+
+
+@wp.func
+def signed_cotmatrix_rows(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: Any,
+    negate: wp.int32,
+    out_values: Any,
+) -> None:
+    # Row ``i`` by its thread and the warp's long rows by the warp: the body of the kernels that
+    # write the cotangent Laplacian a row a thread.
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        signed_cotmatrix_row(
+            i, offsets, columns, run_start, keys, count, order, cot_entries, negate, out_values
+        )
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        signed_cotmatrix_row_lanes(
+            lanes,
+            row,
+            offsets,
+            columns,
+            run_start,
+            keys,
+            count,
+            order,
+            cot_entries,
+            negate,
+            out_values,
+        )
+        long_rows = long_rows & (long_rows - 1)
 
 
 @wp.func
@@ -987,9 +1068,12 @@ def cotmatrix_rows(
     cot_entries: wp.array2d[wp.Float],
     out_values: wp.array[wp.Float],
 ) -> None:
-    # One thread per row of a mesh operator pattern: ``cotmatrix_row``.
+    # One thread per row of a mesh operator pattern: ``cotmatrix_row``, a long row by the warp
+    # (``signed_cotmatrix_rows``).
     i = wp.int32(wp.tid())
-    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+    signed_cotmatrix_rows(
+        i, offsets, columns, run_start, keys, count, order, cot_entries, 0, out_values
+    )
 
 
 @wp.kernel
@@ -1012,7 +1096,9 @@ def cotmatrix_rows_and_rounding_ratio(
     # are read through the consumer-fused finish (``read_group_sum_vector``), so with the setting
     # on no finish launch or result buffer is needed either.
     i = wp.int32(wp.tid())
-    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+    signed_cotmatrix_rows(
+        i, offsets, columns, run_start, keys, count, order, cot_entries, 0, out_values
+    )
     commit_row_ratio(read_group_sum_vector(rounding, rounding_sums, i), limit, out_max)
 
 
@@ -1041,6 +1127,40 @@ def umbrella_entry(
     return value
 
 
+@wp.func
+def umbrella_row(
+    lanes: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    vertices: wp.array[wp.vec3],
+    equal_weight: wp.int32,
+    symmetric: wp.int32,
+    out_values: Any,
+) -> None:
+    # Row ``i`` of ``laplacian_rows``, walked by the lanes of ``lanes`` (``reduce.warp_walk``), or
+    # by one thread at ``lanes == 0``.
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    total = type(out_values[start])(0.0)
+    first, stride = warp_walk(lanes)
+    for k in range(start + first, end, stride):
+        c = columns[k]
+        w = type(out_values[k])(edge_weight(i, c, vertices, equal_weight))
+        value = umbrella_entry(w, i, c, k, run_start, keys, count, symmetric)
+        out_values[k] = value
+        total += value
+    total = type(total)(warp_walk_total(lanes, wp.float64(total)))
+    if total > type(total)(0.0):
+        for k in range(start + first, end, stride):
+            out_values[k] = out_values[k] / total
+
+
 @wp.kernel
 def laplacian_rows(
     offsets: wp.array[wp.int32],
@@ -1059,21 +1179,65 @@ def laplacian_rows(
     # twice. Symmetric (trimesh's ``vertex_neighbors``): once per unique edge whatever its run --
     # but twice for a degenerate face's self-edge, whose unique ``(a, a)`` edge emits both of its
     # directions onto one entry. The row is then divided by its sum, in column order, if positive.
+    # A long row is the warp's (``signed_cotmatrix_row_lanes``' comment), its sum the lanes' tree.
     i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    if end == start:
-        return
-    total = type(out_values[start])(0.0)
-    for k in range(start, end):
-        c = columns[k]
-        w = type(out_values[k])(edge_weight(i, c, vertices, equal_weight))
-        value = umbrella_entry(w, i, c, k, run_start, keys, count, symmetric)
-        out_values[k] = value
-        total += value
-    if total > type(total)(0.0):
-        for k in range(start, end):
-            out_values[k] = out_values[k] / total
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        umbrella_row(
+            0,
+            i,
+            offsets,
+            columns,
+            run_start,
+            keys,
+            count,
+            vertices,
+            equal_weight,
+            symmetric,
+            out_values,
+        )
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        umbrella_row(
+            lanes,
+            row,
+            offsets,
+            columns,
+            run_start,
+            keys,
+            count,
+            vertices,
+            equal_weight,
+            symmetric,
+            out_values,
+        )
+        long_rows = long_rows & (long_rows - 1)
+
+
+@wp.func
+def pattern_row_on_rim_lanes(
+    lanes: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    i: wp.int32,
+) -> wp.bool:
+    # Whether vertex ``i`` lies on the mesh's rim, read off a ``cotmatrix`` pattern: one of its
+    # off-diagonal entries' runs holds a single key, i.e. that edge lies on one face. Walked by the
+    # lanes of ``lanes`` (``reduce.warp_walk``), each lane answering for the whole row, or by one
+    # thread at ``lanes == 0``.
+    rim = wp.bool(False)
+    first, stride = warp_walk(lanes)
+    for k in range(offsets[i] + first, offsets[i + 1], stride):
+        if columns[k] != i:
+            if sorted_run_end(keys, run_start[k], count) - run_start[k] == 1:
+                rim = True
+    if lanes != 0:
+        rim = warp_ballot(lanes, wp.where(rim, 1, 0)) != 0
+    return rim
 
 
 @wp.func
@@ -1085,15 +1249,46 @@ def pattern_row_on_rim(
     count: wp.int32,
     i: wp.int32,
 ) -> wp.bool:
-    # Whether vertex ``i`` lies on the mesh's rim, read off a ``cotmatrix`` pattern: one of its
-    # off-diagonal entries' runs holds a single key, i.e. that edge lies on one face. Shared by the
-    # face-weighted umbrella and the heat method's boundary-pinned system (``kernels/heat``).
-    rim = wp.bool(False)
-    for k in range(offsets[i], offsets[i + 1]):
-        if columns[k] != i:
-            if sorted_run_end(keys, run_start[k], count) - run_start[k] == 1:
-                rim = True
-    return rim
+    # ``pattern_row_on_rim_lanes`` by the one thread. Shared by the face-weighted umbrella and the
+    # heat method's boundary-pinned system (``kernels/heat``).
+    return pattern_row_on_rim_lanes(0, offsets, columns, run_start, keys, count, i)
+
+
+@wp.func
+def face_weighted_row(
+    lanes: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    out_values: Any,
+) -> None:
+    # Row ``i`` of ``face_weighted_laplacian_rows``, walked by the lanes of ``lanes``
+    # (``reduce.warp_walk``), or by one thread at ``lanes == 0``.
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    rim = pattern_row_on_rim_lanes(lanes, offsets, columns, run_start, keys, count, i)
+    total = type(out_values[start])(0.0)
+    first, stride = warp_walk(lanes)
+    for k in range(start + first, end, stride):
+        value = type(out_values[k])(0.0)
+        if columns[k] == i:
+            value = wp.where(rim, type(value)(2.0), type(value)(1.0))
+        else:
+            faces_on_edge = sorted_run_end(keys, run_start[k], count) - run_start[k]
+            if not rim:
+                value = type(value)(faces_on_edge)
+            elif faces_on_edge == 1:
+                value = type(value)(1.0)
+        out_values[k] = value
+        total += value
+    total = type(total)(warp_walk_total(lanes, wp.float64(total)))
+    for k in range(start + first, end, stride):
+        out_values[k] = out_values[k] / total
 
 
 @wp.kernel
@@ -1111,28 +1306,37 @@ def face_weighted_laplacian_rows(
     # once. A rim vertex -- one of whose edges lies on a single face -- averages along the rim
     # only: its rim neighbours once each and itself twice, its interior edges explicit zeros. The
     # row is divided by its sum, in column order. ``laplacian_rows`` is the plain 1-ring mean over
-    # its own pattern; the two differ in the weights and the rim rule.
+    # its own pattern; the two differ in the weights and the rim rule. A long row is the warp's
+    # (``signed_cotmatrix_row_lanes``' comment), its sum the lanes' tree.
     i = wp.int32(wp.tid())
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        face_weighted_row(0, i, offsets, columns, run_start, keys, count, out_values)
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        face_weighted_row(lanes, row, offsets, columns, run_start, keys, count, out_values)
+        long_rows = long_rows & (long_rows - 1)
+
+
+@wp.func
+def graph_laplacian_row(
+    lanes: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: Any,
+) -> None:
+    # Row ``i`` of ``graph_laplacian_rows``, walked by the lanes of ``lanes``
+    # (``reduce.warp_walk``), or by one thread at ``lanes == 0``.
     start = offsets[i]
     end = offsets[i + 1]
-    if end == start:
-        return
-    rim = pattern_row_on_rim(offsets, columns, run_start, keys, count, i)
-    total = type(out_values[start])(0.0)
-    for k in range(start, end):
-        value = type(out_values[k])(0.0)
+    first, stride = warp_walk(lanes)
+    for k in range(start + first, end, stride):
         if columns[k] == i:
-            value = wp.where(rim, type(value)(2.0), type(value)(1.0))
+            out_values[k] = -type(out_values[k])(end - start - 1)
         else:
-            faces_on_edge = sorted_run_end(keys, run_start[k], count) - run_start[k]
-            if not rim:
-                value = type(value)(faces_on_edge)
-            elif faces_on_edge == 1:
-                value = type(value)(1.0)
-        out_values[k] = value
-        total += value
-    for k in range(start, end):
-        out_values[k] = out_values[k] / total
+            out_values[k] = type(out_values[k])(1.0)
 
 
 @wp.kernel
@@ -1141,20 +1345,18 @@ def graph_laplacian_rows(
 ) -> None:
     # ``A - diag(deg)`` over a mesh pattern with every vertex's diagonal: one per neighbour, the
     # diagonal minus their count (``igl::adjacency_matrix``'s unit weights). A degenerate face's
-    # self-edge is not a neighbour.
+    # self-edge is not a neighbour. A long row is the warp's (``signed_cotmatrix_row_lanes``'
+    # comment): a row's columns are distinct, so its diagonal is minus its length less one, and
+    # whichever lane meets the diagonal writes it with no sum.
     i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    degree = wp.int32(0)
-    slot = wp.int32(-1)
-    for k in range(start, end):
-        if columns[k] == i:
-            slot = k
-        else:
-            out_values[k] = type(out_values[k])(1.0)
-            degree += 1
-    if slot >= 0:
-        out_values[slot] = -type(out_values[slot])(degree)
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        graph_laplacian_row(0, i, offsets, columns, out_values)
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        graph_laplacian_row(lanes, row, offsets, columns, out_values)
+        long_rows = long_rows & (long_rows - 1)
 
 
 @wp.func
@@ -1197,6 +1399,41 @@ def connection_offdiagonal(
     return value, weight
 
 
+@wp.func
+def connection_laplacian_row_warp(
+    lanes: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    cot_entries: Any,
+    transport_angles: wp.array[wp.float64],
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # Long row ``i`` of ``connection_laplacian_rows``, walked by the lanes of ``lanes``
+    # (``reduce.warp_walk``); the kernel writes its short rows inline (see there).
+    start = offsets[i]
+    end = offsets[i + 1]
+    weight = wp.float64(0.0)
+    slot = wp.int32(-1)
+    first, stride = warp_walk(lanes)
+    for k in range(start + first, end, stride):
+        if columns[k] == i:
+            slot = k
+            continue
+        value, weight = connection_offdiagonal(
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+        )
+        out_values[k] = value
+    weight = warp_walk_total(lanes, weight)
+    if slot >= 0:
+        out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+
+
 @wp.kernel
 def connection_laplacian_rows(
     offsets: wp.array[wp.int32],
@@ -1217,23 +1454,48 @@ def connection_laplacian_rows(
     # ``sum w * I`` over the row's entries in column order. Positive semi-definite (positive
     # diagonal), unlike ``cotmatrix``'s igl sign convention, because every consumer here feeds it
     # straight to a conjugate-gradient solve. A degenerate face's self-edge never reaches a row.
+    # A long row is the warp's (``signed_cotmatrix_row_lanes``' comment), its sum the lanes' tree
+    # (``connection_laplacian_row_warp``). The short row stays written out here rather than as the
+    # row function's thread form (``lanes == 0``), which the other builders take: called through
+    # a ``@wp.func`` the same body ran 1.25-1.4x device time (2026-11-10, dragon 0.57 -> 0.72 ms,
+    # bunny 0.057 -> 0.080 ms), with or without the warp path, the walk's stride, the ballot or
+    # forced inlining, at the same register count; inline it is at par. What the two copies
+    # share is the entry (``connection_offdiagonal``); they differ in the walk and the sum.
     i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    if end == start:
-        return
-    weight = wp.float64(0.0)
-    slot = wp.int32(-1)
-    for k in range(start, end):
-        if columns[k] == i:
-            slot = k
-            continue
-        value, weight = connection_offdiagonal(
-            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        start = offsets[i]
+        end = offsets[i + 1]
+        weight = wp.float64(0.0)
+        slot = wp.int32(-1)
+        for k in range(start, end):
+            if columns[k] == i:
+                slot = k
+                continue
+            value, weight = connection_offdiagonal(
+                i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+            )
+            out_values[k] = value
+        if slot >= 0:
+            out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        connection_laplacian_row_warp(
+            lanes,
+            row,
+            offsets,
+            columns,
+            run_start,
+            keys,
+            count,
+            order,
+            faces,
+            cot_entries,
+            transport_angles,
+            out_values,
         )
-        out_values[k] = value
-    if slot >= 0:
-        out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+        long_rows = long_rows & (long_rows - 1)
 
 
 @wp.kernel
