@@ -5,7 +5,10 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
+    LOOP_PROGRESS,
+    LOOP_ROUND,
     RegisterBlockedTable,
+    atomic_max_unless_above,
     declare_map_signatures,
     map_probe,
     map_probe_single,
@@ -975,6 +978,25 @@ FARTHEST_BLOCK_LARGE = 1024
 FARTHEST_BLOCK_LARGE_FROM = 6144
 
 
+@wp.func
+def fold_farthest_distance(
+    points: wp.array[wp.vec3],
+    chosen: wp.vec3,
+    i: wp.int32,
+    first: wp.bool,
+    min_distance_sq: wp.array[wp.float32],
+) -> wp.int64:
+    # One point's round of the greedy sweep: fold the newest sample into its running squared
+    # distance to the chosen set (the distance itself on the ``first`` round, which is what
+    # initializes the scratch) and return its ``pack_farthest_key``. Shared by the one-block sweep
+    # and the multi-block rounds, whose arg-max over these keys is the same whatever the split.
+    distance_sq = wp.length_sq(points[i] - chosen)
+    if not first:
+        distance_sq = wp.min(min_distance_sq[i], distance_sq)
+    min_distance_sq[i] = distance_sq
+    return pack_farthest_key(distance_sq, i)
+
+
 @wp.kernel
 def farthest_point_sample_block(
     points: wp.array[wp.vec3],
@@ -993,10 +1015,11 @@ def farthest_point_sample_block(
     # fill_dp_span_tiled`` measured the opposite): a round is ``n`` distance updates, which one SM
     # finishes in about a microsecond, and the alternative -- one launch per round, even replayed
     # from a captured graph -- paid more than that in launch cost with the device idle. So the
-    # per-round cost is what moved. The tie-break is the shipped one: ``pack_farthest_key`` orders
-    # equal distances towards the lower index, and the block max over those keys is the same maximum
-    # whatever lane holds it, so the selection is reproducible and matches the reference's strict
-    # ``>`` arg-max.
+    # per-round cost is what moved. That holds while a round fits one SM; a large cloud on CUDA
+    # takes ``farthest_point_round`` instead (see ``FARTHEST_ROUNDS_FROM``). The tie-break is the
+    # shipped one: ``pack_farthest_key`` orders equal distances towards the lower index, and the
+    # block max over those keys is the same maximum whatever lane holds it, so the selection is
+    # reproducible and matches the reference's strict ``>`` arg-max.
     #
     # ``min_distance_sq`` is caller-allocated scratch, initialized here rather than by ``wp.full``
     # so the wrapper is one launch. The stride is ``wp.block_dim()`` rather than the constant so the
@@ -1015,12 +1038,68 @@ def farthest_point_sample_block(
         chosen = points[chosen_index]
         best = wp.int64(-1)
         for i in range(t, n, stride):
-            distance_sq = wp.min(min_distance_sq[i], wp.length_sq(points[i] - chosen))
-            min_distance_sq[i] = distance_sq
-            best = wp.max(best, pack_farthest_key(distance_sq, i))
+            best = wp.max(best, fold_farthest_distance(points, chosen, i, False, min_distance_sq))
         chosen_index = unpack_ranked_index(block_max(best))
         if t == 0:
             out_selected[step] = chosen_index
+
+
+# When ``farthest_point_sample`` runs on CUDA as one launch a round over many blocks
+# (``farthest_point_round``, replayed ``FARTHEST_ROUNDS_PER_REPLAY`` rounds a body) instead of one
+# persistent block: from ``FARTHEST_ROUNDS_FROM`` points and ``FARTHEST_ROUNDS_FROM_WORK`` points
+# times samples. A round of the one block streams the whole cloud through one SM, ~0.23 ns a point
+# (15 us a round at 64 k points, 90 ms for 1 024 samples of 437 k), where a replayed round costs
+# ~3.3 us at any size to 437 k and the recording ~0.2 ms once (2026-11-10, CUDA): the rounds took
+# 1 024 samples of 16 k random points 0.71x, 64 k 0.22x; 64 samples of 8 k lost 2.0x and of 32 k
+# won 0.71x. One point a lane: 1 024 a block cost 1.7x, 4 096 4.2x; 16 rounds a body 0.94x at
+# 64 k but 1.08x at 64 samples.
+FARTHEST_ROUNDS_FROM = 1 << 14
+FARTHEST_ROUNDS_FROM_WORK = 1 << 21
+FARTHEST_ROUND_ITEMS_PER_BLOCK = TILE_1D
+FARTHEST_ROUNDS_PER_REPLAY = 8
+
+
+@wp.kernel
+def farthest_point_round(
+    points: wp.array[wp.vec3],
+    start: wp.int32,
+    count: wp.int32,
+    n_blocks: wp.int32,
+    step: wp.int32,
+    state: wp.array[wp.int32],
+    keys: wp.array[wp.int64],
+    min_distance_sq: wp.array[wp.float32],
+    out_selected: wp.array[wp.int32],
+) -> None:
+    # Round ``LOOP_ROUND + step`` of ``farthest_point_sample_block``'s sweep over the whole grid,
+    # ``step`` its place in a replayed body of ``FARTHEST_ROUNDS_PER_REPLAY``: each block folds its
+    # points (``fold_farthest_distance``) and commits its arg-max key by ``atomic_max`` into the
+    # round's slot of ``keys`` (seeded ``-1``), which the next launch reads as its sample. The
+    # maximum is the one block's key exactly, so the selection is the same. Round ``count`` only
+    # writes the last sample, and a round past it returns: the idle tail of the last body. A bid
+    # already beaten is skipped (``atomic_max_unless_above``): every block of a round bids on one
+    # slot, 1 709 on ``dragon``, and the plain atomic cost 1.3x there and 1.4-1.5x on ``lucy``.
+    block, lane = wp.tid()
+    sample = state[LOOP_ROUND] + step
+    if sample > count:
+        return
+    chosen_index = start
+    if sample > 1:
+        chosen_index = unpack_ranked_index(keys[sample - 1])
+    if block == 0 and lane == 0:
+        out_selected[sample - 1] = chosen_index
+        state[LOOP_PROGRESS] = 1
+    if sample == count:
+        return
+    chosen = points[chosen_index]
+    first = sample == 1
+    best = wp.int64(-1)
+    stride = n_blocks * wp.block_dim()
+    for i in range(block * wp.block_dim() + lane, points.shape[0], stride):
+        best = wp.max(best, fold_farthest_distance(points, chosen, i, first, min_distance_sq))
+    block_best = block_max(best)
+    if lane == 0:
+        atomic_max_unless_above(keys, sample, block_best)
 
 
 # Directions one ``hull_support_extremes`` thread may reduce together: the point it loads is dotted

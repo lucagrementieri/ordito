@@ -1768,9 +1768,10 @@ def farthest_point_sample(
     output over the cloud's *support* rather than its density — so unlike
     [`ordito.voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample] it returns an exact
     count, and unlike a random subsample it cannot leave a hole. The greedy choice makes it
-    inherently sequential in ``count``, and the whole sweep runs as **one persistent block** on the
-    device: each round folds the newest sample into every point's running distance and takes the
-    global arg-max as a block reduction, so nothing is launched or read back per round.
+    inherently sequential in ``count``. Each round folds the newest sample into every point's
+    running distance and takes the global arg-max, with nothing read back per round: a small cloud
+    runs the whole sweep as one persistent block, and a large one on CUDA a launch a round over the
+    whole device, replayed from a recorded graph.
 
     Parameters
     ----------
@@ -1840,6 +1841,13 @@ def farthest_point_sample(
 
     # Scratch for the running squared distance to the chosen set; the kernel initializes it.
     min_distance_sq = _launch.empty(n, dtype=wp.float32, device=device)
+    if (
+        n >= kernel_points.FARTHEST_ROUNDS_FROM
+        and n * count >= kernel_points.FARTHEST_ROUNDS_FROM_WORK
+        and wp.get_device(device).is_cuda
+    ):
+        _farthest_point_rounds(points, start, count, min_distance_sq, out_selected)
+        return out_selected
     if n >= kernel_points.FARTHEST_BLOCK_LARGE_FROM:
         block_dim = kernel_points.FARTHEST_BLOCK_LARGE
     elif n >= kernel_points.FARTHEST_BLOCK_MID_FROM:
@@ -1855,6 +1863,54 @@ def farthest_point_sample(
         device=device,
     )
     return out_selected
+
+
+def _farthest_point_rounds(
+    points: wp.array[wp.vec3],
+    start: int,
+    count: int,
+    min_distance_sq: wp.array[wp.float32],
+    out_selected: wp.array[wp.int32],
+) -> None:
+    """``farthest_point_sample``'s sweep as one multi-block launch a round, replayed in groups."""
+    device = points.device
+    items = kernel_points.FARTHEST_ROUND_ITEMS_PER_BLOCK
+    n_blocks = (points.size + items - 1) // items
+    # Each round's arg-max key, seeded below every real key, and the loop's slot table: round 1
+    # first, the condition armed.
+    keys = _launch.full(count, -1, dtype=wp.int64, device=device)
+    state = _launch.pattern([1, 1, 0], wp.int32, device)
+    rounds_per_body = int(kernel_points.FARTHEST_ROUNDS_PER_REPLAY)
+    # Rounds 1 to ``count``, the last writing the last sample; the cap is insurance.
+    max_rounds = wp.int32(count + 1)
+
+    def rounds() -> None:
+        for step in range(rounds_per_body):
+            _launch.launch_tiled(
+                kernel_points.farthest_point_round,
+                dim=[n_blocks],
+                inputs=[
+                    points,
+                    start,
+                    count,
+                    n_blocks,
+                    step,
+                    state,
+                    keys,
+                    min_distance_sq,
+                    out_selected,
+                ],
+                block_dim=TILE_1D,
+                device=device,
+            )
+        _launch.launch(
+            kernel_array.loop_advance_by,
+            dim=1,
+            inputs=[rounds_per_body, max_rounds, state],
+            device=device,
+        )
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), rounds)
 
 
 def convex_hull(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:

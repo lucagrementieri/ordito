@@ -24,6 +24,7 @@ import ordito.grouping as od_grouping
 import ordito.neighbors as od_neighbors
 import ordito.points as od
 import ordito.typing as odt
+from ordito.kernels import points as kernel_points
 from tests.comparisons import assert_same_up_to_sign, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -1604,6 +1605,53 @@ def test_farthest_point_sample_matches_pytorch3d(device: str) -> None:
     assert indices_p3d.shape == (1, 8)
     assert np.unique(indices_p3d.cpu().numpy()).size == 8
     assert np.array_equal(indices_wp.numpy(), indices_p3d[0].cpu().numpy())
+
+
+@pytest.mark.parity("farthest_point_sample", "pytorch3d")
+def test_farthest_point_sample_rounds_match_pytorch3d(device: str) -> None:
+    """
+    Class A: the index sequence on a cloud large enough for the multi-block rounds on CUDA.
+
+    ``20 000`` points and ``131`` samples pass both of ``kernels.points.FARTHEST_ROUNDS_FROM``'s
+    gates, and ``131`` is not a multiple of ``FARTHEST_ROUNDS_PER_REPLAY``, so the last replayed
+    body has an idle tail. The CPU device runs the one-block sweep, against the same reference.
+    """
+    count = 131
+    rng = np.random.default_rng(11)
+    points_np = rng.normal(size=(20_000, 3)).astype(np.float32)
+    assert points_np.shape[0] >= kernel_points.FARTHEST_ROUNDS_FROM
+    assert points_np.shape[0] * count >= kernel_points.FARTHEST_ROUNDS_FROM_WORK
+    assert count % kernel_points.FARTHEST_ROUNDS_PER_REPLAY != 0
+    _, indices_p3d = p3d_ops.sample_farthest_points(
+        points_to_torch(points_np, device), K=count, random_start_point=False
+    )
+    indices_wp = od.farthest_point_sample(points_to_warp(points_np, device), count)
+
+    assert np.unique(indices_p3d.cpu().numpy()).size == count
+    assert np.array_equal(indices_wp.numpy(), indices_p3d[0].cpu().numpy())
+
+
+def test_farthest_point_sample_rounds_match_one_block(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the multi-block rounds and the one-block sweep, from a non-zero start.
+
+    pytorch3d starts at index 0 only, so this pins ``start`` on the rounds path against the
+    one-block sweep, which the transcription below checks from any start. Raising the gate out of
+    reach sends the same call to the one-block kernel.
+    """
+    start = 4_321
+    rng = np.random.default_rng(12)
+    points_wp = points_to_warp(rng.random((20_000, 3)).astype(np.float32), device)
+
+    rounds_wp = od.farthest_point_sample(points_wp, 131, start=start).numpy()
+    monkeypatch.setattr(kernel_points, "FARTHEST_ROUNDS_FROM", 1 << 40)
+    one_block_wp = od.farthest_point_sample(points_wp, 131, start=start).numpy()
+
+    assert rounds_wp[0] == start
+    assert np.unique(rounds_wp).size == 131
+    assert np.array_equal(rounds_wp, one_block_wp)
 
 
 def _farthest_point_sequence(points_np: np.ndarray, count: int, start: int = 0) -> np.ndarray:

@@ -720,6 +720,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # caller-allocated scratch the persistent block initializes and folds down one selection per
     # round. The answer is ``out_selected``; this buffer is the sweep's state.
     ("points", "farthest_point_sample_block"): frozenset({"min_distance_sq"}),
+    # ``state`` is the multi-block rounds' persistent loop word (its scratch and arg-max slots are
+    # written through ``@wp.func`` helpers this check does not follow).
+    ("points", "farthest_point_round"): frozenset({"state"}),
     # ``slot_count`` is the per-vertex atomic cursor picking which of the two neighbour slots each
     # scattered edge lands in: caller-allocated scratch, under a name that says what it holds. The
     # answer is ``out_neighbors``.
