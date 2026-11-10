@@ -5770,7 +5770,7 @@
  "benchmarks/test_registration.py::test_icp_mesh_pyvista[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 5,
+   "alloc": 4,
    "h2h": 1,
    "readback": 1
   }

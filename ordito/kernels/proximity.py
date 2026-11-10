@@ -121,25 +121,19 @@ def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
 
 
 @wp.func
-def closest_offset_face_d(
-    mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d
-) -> tuple[wp.vec3d, wp.int32]:
-    # ``p`` minus its exact closest point on the mesh, in ``float64``, and the face holding it,
-    # from ``face``, any face of the mesh: a ``float32`` query's (``closest_point_query``), which is
-    # not exact (its face can be one whose true distance is a few 1e-5 longer, on a needle), or a
-    # nearby answer from before. The face only bounds the answer: every face nearer than it meets
-    # the ball of that radius about ``p``, and the nearest of those in ``float64`` is the closest
-    # point, ``face`` kept on a tie. The ball grows by a relative ``1e-6`` to cover its own
-    # rounding to ``float32``. Shared by ``registration``'s landmark matches and ``levelset``'s
-    # ``float64`` lattice band (through ``closest_offset_d``). The ball's walk over the mesh's
-    # tree, not the box's ``mesh_query_aabb``: the same faces nearest; ``icp(method="pyvista")``
-    # 0.85-0.96x on the spheres and 0.49-0.87x on bunny / dragon (2026-11-10). A seed of the last
-    # match's point instead of its face (one face evaluation and the face table fewer, a looser
-    # ball) measured 0.96-0.99x of this on small meshes and 1.02x on dragon.
-    best = face_offset_d(mesh_id, face, p)
-    best_face = face
+def nearest_offset_within(
+    mesh_id: wp.uint64, p: wp.vec3d, radius: wp.float64, best: wp.vec3d
+) -> wp.vec3d:
+    # The shortest of ``best`` and ``p``'s exact ``float64`` offsets to every face within
+    # ``radius`` of it: the closest point's offset once some point of the mesh is known within
+    # ``radius``. Every face that near meets the ball of that radius about ``p``, grown by a
+    # relative ``1e-6`` to cover its own rounding to ``float32``; a tie keeps the earlier offset.
+    # The ball's walk over the mesh's tree, not a box's: the same faces nearest (2026-11-10).
+    # Against the box seeded by the last face: ``icp(method="pyvista")`` 0.89-0.92x on the
+    # spheres, 0.75-0.85x on bunny, 0.50-0.52x on dragon. Keeping that face seed with the ball (a
+    # face table and one more face evaluation, a ball never looser) bought 1.02x on dragon and
+    # lost 1.01-1.04x on the small meshes, so ``registration`` seeds with the last point.
     best_sq = wp.length_sq(best)
-    radius = wp.sqrt(best_sq)
     margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
     query = wp.bvh_query_sphere(wp.mesh_get_bvh(mesh_id), wp.vec3(p), wp.float32(radius + margin))
     candidate = wp.int32(0)
@@ -148,16 +142,19 @@ def closest_offset_face_d(
         offset_sq = wp.length_sq(offset)
         if offset_sq < best_sq:
             best = offset
-            best_face = candidate
             best_sq = offset_sq
-    return best, best_face
+    return best
 
 
 @wp.func
 def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
-    # ``closest_offset_face_d``'s offset alone.
-    offset, _face = closest_offset_face_d(mesh_id, face, p)
-    return offset
+    # ``p`` minus its exact closest point on the mesh, in ``float64``, from ``face``, the face a
+    # ``float32`` query of ``p`` answered (``closest_point_query``). That query is not exact: its
+    # face can be one whose true distance is a few 1e-5 longer, on a needle. So the face only
+    # bounds the answer, and ``nearest_offset_within`` searches the ball it bounds. Shared by
+    # ``registration``'s landmark matches and ``levelset``'s ``float64`` lattice band.
+    best = face_offset_d(mesh_id, face, p)
+    return nearest_offset_within(mesh_id, p, wp.length(best), best)
 
 
 @wp.kernel

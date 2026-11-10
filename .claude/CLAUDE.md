@@ -1233,9 +1233,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   not cut the walks. Open: an O(1) test for a blocked corner, or fewer barriers a round. The packed
   multi-ring loop (`_triangulate_long_rings`) has no tail.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
-  landmark an iteration (seeded by its last face, `proximity.closest_offset_face_d`, since
-  2026-11-10), a chain of dependent node loads on one SM; a multi-block layout does not shorten a
-  chain, a cheaper start node would.
+  landmark an iteration (its radius the distance to its last match since 2026-11-10,
+  `kernels/registration.landmark_rematch`), a chain of dependent node loads on one SM; a
+  multi-block layout does not shorten a chain, a cheaper start node would.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
