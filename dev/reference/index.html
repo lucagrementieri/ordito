@@ -6378,6 +6378,18 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="submesh_from_face_mask" href="../api/ordito/selection/#ordito.selection.submesh_from_face_mask"><code>selection.submesh_from_face_mask</code></a></td>
 </tr>
 <tr>
+<td>carry colours, UVs, labels or any per-vertex or per-face field through an edit</td>
+<td><code>return_provenance=True</code> and <a class="autorefs autorefs-internal" title="Provenance" href="../api/ordito/interpolation/#ordito.interpolation.Provenance"><code>interpolation.Provenance</code></a></td>
+</tr>
+<tr>
+<td>turn per-corner values (a UV atlas, hard normals) into per-vertex ones, or weld them back</td>
+<td><a class="autorefs autorefs-internal" title="split_vertices_by_corner_values" href="../api/ordito/repair/#ordito.repair.split_vertices_by_corner_values"><code>repair.split_vertices_by_corner_values</code></a>, <a class="autorefs autorefs-internal" title="remove_duplicated_vertices" href="../api/ordito/repair/#ordito.repair.remove_duplicated_vertices"><code>remove_duplicated_vertices</code></a> with <code>vertex_values</code></td>
+</tr>
+<tr>
+<td>read a per-vertex field at surface samples or query hits</td>
+<td><a class="autorefs autorefs-internal" title="interpolate_barycentric" href="../api/ordito/interpolation/#ordito.interpolation.interpolate_barycentric"><code>interpolation.interpolate_barycentric</code></a>, <a class="autorefs autorefs-internal" title="sample_surface" href="../api/ordito/sample/#ordito.sample.sample_surface"><code>sample.sample_surface</code></a> with <code>return_barycentric=True</code></td>
+</tr>
+<tr>
 <td>remesh to uniform edge lengths</td>
 <td><a class="autorefs autorefs-internal" title="isotropic_remesh" href="../api/ordito/remesh/#ordito.remesh.isotropic_remesh"><code>remesh.isotropic_remesh</code></a></td>
 </tr>
@@ -6757,7 +6769,7 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td><a href="../api/ordito/interpolation/">interpolation</a></td>
-<td>Moving a field between faces, vertices and edges, or from scattered points.</td>
+<td>Moving a field between faces, vertices and edges, across a topology edit, or from scattered points.</td>
 </tr>
 <tr>
 <td><a href="../api/ordito/parametrization/">parametrization</a></td>
