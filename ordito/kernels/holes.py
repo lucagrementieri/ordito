@@ -91,16 +91,18 @@ def fan_faces(
 
 @wp.kernel
 def kept_then_sources(
-    n_kept: wp.int32, tail: wp.array[wp.int32], out_index: wp.array[wp.int32]
+    n_kept: wp.int32, rotation: wp.int32, tail: wp.array[wp.int32], out_index: wp.array[wp.int32]
 ) -> None:
-    # The source map of an edit that keeps its input's first ``n_kept`` elements where they were
-    # and appends the rest behind them (every filler, extension and bridge here): a kept element is
-    # its own source, an appended one has ``tail``'s entry where ``tail`` lists one (an extension's
-    # rim vertex) and none, ``-1``, past it (a patch face, a strip's sample).
+    # The source map of an edit that keeps its input's first ``n_kept`` elements and appends the
+    # rest behind them (every filler, extension and bridge here): a kept element is its own source,
+    # rotated by ``rotation`` in ``[0, n_kept)`` (a greedy stitch that put B's mesh ahead of A's),
+    # an appended one has ``tail``'s entry where ``tail`` lists one (an extension's rim vertex) and
+    # none, ``-1``, past it (a patch face, a strip's sample).
     i = wp.int32(wp.tid())
     j = i - n_kept
     if j < 0:
-        out_index[i] = i
+        k = i + rotation
+        out_index[i] = wp.where(k < n_kept, k, k - n_kept)
     elif j < tail.shape[0]:
         out_index[i] = tail[j]
     else:

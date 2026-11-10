@@ -1386,7 +1386,7 @@ def test_delete_region_keep_boundary_reports_provenance(
 
     The provenance describes the surviving submesh -- each vertex a copy of the input vertex it
     names, each face the input face it names, which are exactly the undeleted faces in order --
-    and both arms return the same survivor and loops.
+    and both arms of both forms return the same survivor, loops and provenance.
     """
     mesh_tm, mesh_wp = saddle_graded
     device = mesh_wp.points.device
@@ -1408,6 +1408,17 @@ def test_delete_region_keep_boundary_reports_provenance(
     assert len(loops) == 1
     assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
     assert np.array_equal(provenance.face_index.numpy(), np.flatnonzero(~mask_np))
+    packed_v, packed_f, packed_loops, packed_offsets, packed = (
+        od.selection.delete_region_keep_boundary_with_offsets(
+            mesh_wp.points, mesh_wp.indices, mask_wp, return_provenance=True
+        )
+    )
+    assert np.array_equal(packed_v.numpy(), plain_v.numpy())
+    assert np.array_equal(packed_f.numpy(), plain_f.numpy())
+    assert np.array_equal(packed_loops.numpy(), loops[0].numpy())
+    assert packed_offsets.numpy().tolist() == [0, loops[0].size]
+    assert np.array_equal(packed.vertex_index.numpy(), provenance.vertex_index.numpy())
+    assert np.array_equal(packed.face_index.numpy(), provenance.face_index.numpy())
 
 
 @pytest.mark.parametrize("region", ["interior", "two_interior", "on_rim", "pinched"])

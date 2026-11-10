@@ -1217,10 +1217,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Topology edits with no `return_provenance` yet** (2026-11-10; §4.2 has the rule): the greedy
-  `holes.stitch` / `stitch_loops`, which swap their meshes when B's rim is longer (their
-  provenance would be over a permuted concatenation), and
-  `selection.delete_region_keep_boundary_with_offsets`.
 - **Hub rows still walked by one thread** (2026-11-10): `kernels/energies.lscm_laplacian_rows_and_counts`
   (its boundary count loop; its cotangent row could take `laplacian.signed_cotmatrix_rows`) and
   the smoothing-norm kernel in `kernels/energies.py`, which reads its row back in the same thread

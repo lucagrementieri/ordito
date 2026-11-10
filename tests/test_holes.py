@@ -4259,6 +4259,52 @@ def test_min_weight_stitches_report_provenance(device: str) -> None:
     assert (provenance.face_index.numpy()[n_faces:] == -1).all()
 
 
+@pytest.mark.parametrize("swapped", [False, True])
+def test_greedy_stitches_report_provenance(device: str, swapped: bool) -> None:
+    """
+    Not a library comparison: no reference reports where a stitch's elements came from.
+
+    The input is the caller's two meshes concatenated, A first, whichever the stitch puts first:
+    with A's rim the shorter (``swapped``) the output leads with B's mesh, and a provenance that
+    ignored the swap would name A's elements for B's. Every input vertex and face is its own
+    source and the bridge triangles have none; ``stitch`` and ``stitch_loops`` agree, and asking
+    for the provenance does not change the answer.
+    """
+    (_, _, small_v, small_f), (_, _, large_v, large_f) = _capsule_halves(device, 7, 13, 0.7)
+    if swapped:
+        va, fa, vb, fb = small_v, small_f, large_v, large_f
+    else:
+        va, fa, vb, fb = large_v, large_f, small_v, small_f
+    both_v, both_f = od.combine.concatenate([(va, fa), (vb, fb)])
+    n_vertices, n_faces = both_v.size, both_f.size // 3
+
+    new_v, new_f, provenance = od.holes.stitch(va, fa, vb, fb, return_provenance=True)
+    plain_v, plain_f = od.holes.stitch(va, fa, vb, fb)
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert new_f.size > both_f.size
+    assert_provenance_describes(provenance, both_v, both_f, new_v, new_f, sourceless=True)
+    # The output leads with the longer rim's mesh: B's once swapped.
+    vertex_shift, face_shift = (va.size, fa.size // 3) if swapped else (0, 0)
+    assert np.array_equal(
+        provenance.vertex_index.numpy(), (np.arange(n_vertices) + vertex_shift) % n_vertices
+    )
+    assert np.array_equal(
+        provenance.face_index.numpy()[:n_faces], (np.arange(n_faces) + face_shift) % n_faces
+    )
+    assert (provenance.face_index.numpy()[n_faces:] == -1).all()
+
+    loop_a = od.boundary.boundary_loops(va, fa)[0]
+    loop_b = od.boundary.boundary_loops(vb, fb)[0]
+    loop_v, loop_f, loop_provenance = od.holes.stitch_loops(
+        va, fa, loop_a, vb, fb, loop_b, return_provenance=True
+    )
+    assert np.array_equal(loop_v.numpy(), new_v.numpy())
+    assert np.array_equal(loop_f.numpy(), new_f.numpy())
+    assert np.array_equal(loop_provenance.vertex_index.numpy(), provenance.vertex_index.numpy())
+    assert np.array_equal(loop_provenance.face_index.numpy(), provenance.face_index.numpy())
+
+
 _INVALID_ARGUMENT_CASES = [
     "fill_smooth_edge_weights",
     "stitch_watertight",

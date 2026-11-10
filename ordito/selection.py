@@ -1217,9 +1217,44 @@ def delete_region_keep_boundary(
     return kept_vertices, kept_faces, views, provenance
 
 
+@overload
 def delete_region_keep_boundary_with_offsets(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_mask: wp.array[wp.bool]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]: ...
+@overload
+def delete_region_keep_boundary_with_offsets(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    od.interpolation.Provenance,
+]: ...
+def delete_region_keep_boundary_with_offsets(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        od.interpolation.Provenance,
+    ]
+):
     """
     Remove a face region and report the boundary loops it opened, packed with their offsets.
 
@@ -1238,6 +1273,9 @@ def delete_region_keep_boundary_with_offsets(
         ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
         ``(n_faces,)`` mask, ``True`` for each face to **delete**.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the surviving submesh.
 
     Returns
     -------
@@ -1252,6 +1290,10 @@ def delete_region_keep_boundary_with_offsets(
         ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``loops[loop_offsets[i] : loop_offsets[i + 1]]``, and ``[0]`` when the deletion opened no
         rim.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each surviving vertex is a copy of the input
+        vertex its ``vertex_index`` names, and each surviving face the input face its
+        ``face_index`` names.
 
     Raises
     ------
@@ -1290,10 +1332,16 @@ def delete_region_keep_boundary_with_offsets(
     print(loop_offsets.numpy().tolist())  # [0, 4]
     ```
     """
-    kept_vertices, kept_faces, loops, loop_offsets, _, _ = _delete_region_loops(
-        vertices, faces, face_mask, host_bounds=False
+    face_index: list[wp.array[wp.int32]] | None = [] if return_provenance else None
+    kept_vertices, kept_faces, loops, loop_offsets, _, vertex_index = _delete_region_loops(
+        vertices, faces, face_mask, host_bounds=False, face_index=face_index
     )
-    return kept_vertices, kept_faces, loops, loop_offsets
+    if face_index is None:
+        return kept_vertices, kept_faces, loops, loop_offsets
+    provenance = od.interpolation.Provenance(
+        vertex_index, face_index[0], None, vertices.size, faces.size // 3
+    )
+    return kept_vertices, kept_faces, loops, loop_offsets, provenance
 
 
 def _delete_region_loops(

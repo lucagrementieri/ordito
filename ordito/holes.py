@@ -2785,6 +2785,7 @@ def fillable_loop_mask(
     return fillable
 
 
+@overload
 def stitch(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -2793,7 +2794,32 @@ def stitch(
     *,
     mates_a: wp.array[wp.int32] | None = None,
     mates_b: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def stitch(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    *,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def stitch(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    *,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Stitch two single-boundary open meshes into one watertight mesh.
 
@@ -2814,6 +2840,9 @@ def stitch(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
         when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
         which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2823,6 +2852,11 @@ def stitch(
     new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the bridge triangles, on
         ``faces_a.device``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its input is the two meshes concatenated, A's
+        vertices and faces first (as [`combine.concatenate`][ordito.combine.concatenate] joins
+        them) whichever mesh the output puts first: every input vertex and face is its own source,
+        and the bridge triangles have none (``-1``).
 
     Raises
     ------
@@ -2869,6 +2903,10 @@ def stitch(
     loop_a, loop_b = _single_boundary_loops(
         vertices_a, faces_a, vertices_b, faces_b, caller="stitch", mates_a=mates_a, mates_b=mates_b
     )
+    if return_provenance:
+        return stitch_loops(
+            vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b, return_provenance=True
+        )
     return stitch_loops(vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b)
 
 
@@ -3519,6 +3557,7 @@ def _single_boundary_loops(
     return loops_a[0], loops_b[0]
 
 
+@overload
 def stitch_loops(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -3526,7 +3565,33 @@ def stitch_loops(
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
     loop_b: wp.array[wp.int32],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def stitch_loops(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def stitch_loops(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Join two meshes by triangulating the band between one boundary loop on each.
 
@@ -3558,6 +3623,9 @@ def stitch_loops(
     loop_a, loop_b
         ``(k_a,)`` and ``(k_b,)`` ordered vertex-index loops (``>= 3`` vertices each) around the
         boundary to join on each mesh, indexing ``vertices_a`` / ``vertices_b`` respectively.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -3568,6 +3636,12 @@ def stitch_loops(
     new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` original faces (B reindexed by ``len(vertices_a)``) followed by the
         bridge triangles, on that same device.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its input is the caller's two meshes
+        concatenated, A's vertices and faces first (as
+        [`combine.concatenate`][ordito.combine.concatenate] joins them) whichever mesh the swap
+        put first: every input vertex and face is its own source, and the bridge triangles have
+        none (``-1``).
 
     Raises
     ------
@@ -3633,7 +3707,10 @@ def stitch_loops(
     )
     n = loop_a.size
     m = loop_b.size
+    # The input index of the output's first vertex and face: B's leads once the meshes swap.
+    rotations = (0, 0)
     if n < m:
+        rotations = (vertices_a.size, faces_a.size // 3)
         vertices_a, vertices_b = vertices_b, vertices_a
         faces_a, faces_b = faces_b, faces_a
         loop_a, loop_b = loop_b, loop_a
@@ -3754,7 +3831,16 @@ def stitch_loops(
         outputs=[bridge],
         device=device,
     )
-    return combined_vertices, combined_faces
+    return _stitched_result(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        combined_vertices,
+        combined_faces,
+        return_provenance,
+        rotations,
+    )
 
 
 def _stitched_mesh(
@@ -4132,16 +4218,22 @@ def _stitched_result(
     new_vertices: wp.array[wp.vec3],
     new_faces: wp.array[wp.int32],
     return_provenance: bool,
+    rotations: tuple[int, int] = (0, 0),
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
-    """Return a stitch's mesh, with its provenance over A and B concatenated if asked."""
+    """
+    Return a stitch's mesh, with its provenance over A and B concatenated if asked.
+
+    ``rotations`` is ``_appended_provenance``'s: the caller's input index of the output's first
+    vertex and face, nonzero where the stitch put B's mesh first.
+    """
     if not return_provenance:
         return new_vertices, new_faces
     n_vertices = vertices_a.size + vertices_b.size
     provenance = _appended_provenance(
-        n_vertices, (faces_a.size + faces_b.size) // 3, new_faces, n_vertices
+        n_vertices, (faces_a.size + faces_b.size) // 3, new_faces, n_vertices, rotations=rotations
     )
     return new_vertices, new_faces, provenance
 
@@ -5429,6 +5521,7 @@ def _appended_provenance(
     *,
     vertex_sources: wp.array[wp.int32] | None = None,
     operator: odt.BsrMatrix[wp.float32] | None = None,
+    rotations: tuple[int, int] = (0, 0),
 ) -> od.interpolation.Provenance:
     """
     Provenance of an edit that keeps its input mesh in place and appends behind it.
@@ -5436,27 +5529,35 @@ def _appended_provenance(
     Every input vertex and face is its own source; an appended face has none (a patch). An
     appended vertex copies ``vertex_sources``' entry, or has no source past it; with ``operator``,
     which then holds every row, the representatives are its own. The input is ``n_vertices``
-    vertices and ``n_faces`` faces (two stitched meshes' together, A's first).
+    vertices and ``n_faces`` faces (two stitched meshes' together, A's first). ``rotations`` is
+    the ``(vertex, face)`` input index of the first kept vertex and face, nonzero where the edit
+    put B's mesh ahead of A's: kept element ``i`` came from ``(i + rotation) % n_kept``.
     """
     device = new_faces.device
     if operator is not None:
         vertex_index = od.interpolation.operator_representatives(operator)
     else:
-        vertex_index = _kept_then_sources(n_vertices, n_out_vertices, vertex_sources, device)
-    face_index = _kept_then_sources(n_faces, new_faces.size // 3, None, device)
+        vertex_index = _kept_then_sources(
+            n_vertices, n_out_vertices, vertex_sources, device, rotations[0]
+        )
+    face_index = _kept_then_sources(n_faces, new_faces.size // 3, None, device, rotations[1])
     return od.interpolation.Provenance(vertex_index, face_index, operator, n_vertices, n_faces)
 
 
 def _kept_then_sources(
-    n_kept: int, n_out: int, tail: wp.array[wp.int32] | None, device: wp.DeviceLike
+    n_kept: int,
+    n_out: int,
+    tail: wp.array[wp.int32] | None,
+    device: wp.DeviceLike,
+    rotation: int = 0,
 ) -> wp.array[wp.int32]:
-    """``(n_out,)`` sources: the first ``n_kept`` their own, then ``tail``, then ``-1``."""
+    """``(n_out,)`` sources: the first ``n_kept`` rotated, then ``tail``, then ``-1``."""
     index = _launch.empty(n_out, dtype=wp.int32, device=device)
     if n_out > 0:
         _launch.launch(
             kernel_holes.kept_then_sources,
             dim=n_out,
-            inputs=[wp.int32(n_kept), tail, index],
+            inputs=[wp.int32(n_kept), wp.int32(rotation), tail, index],
             device=device,
         )
     return index
