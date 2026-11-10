@@ -7839,7 +7839,7 @@
  },
  "benchmarks/test_tangent_space.py::test_halfedge_tangent_angles[fan_hub-ordito-cuda]": {
   "counts": {
-   "launch": 8,
+   "launch": 9,
    "alloc": 6,
    "memset": 2,
    "d2h": 2,

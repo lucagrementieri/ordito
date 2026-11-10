@@ -17,8 +17,10 @@ from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
 from ordito.kernels.reduce import (
     GroupSumPass,
+    block_chunk,
     block_chunk_1d,
     block_min,
+    block_sum,
     read_group_sum_vector,
     warp_active_lanes,
     warp_ballot,
@@ -1400,9 +1402,9 @@ def connection_offdiagonal(
 
 
 @wp.func
-def connection_laplacian_row_warp(
-    lanes: wp.int32,
+def connection_laplacian_row_block(
     i: wp.int32,
+    lane: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     run_start: wp.array[wp.int32],
@@ -1414,14 +1416,12 @@ def connection_laplacian_row_warp(
     transport_angles: wp.array[wp.float64],
     out_values: wp.array[wp.mat22d],
 ) -> None:
-    # Long row ``i`` of ``connection_laplacian_rows``, walked by the lanes of ``lanes``
-    # (``reduce.warp_walk``); the kernel writes its short rows inline (see there).
-    start = offsets[i]
-    end = offsets[i + 1]
+    # Long row ``i`` of ``connection_laplacian_rows`` by the whole block (every lane must call it),
+    # lanes striding its entries and the diagonal weight summed over them in the block's fixed
+    # tree; the kernel writes its short rows inline (see there).
     weight = wp.float64(0.0)
     slot = wp.int32(-1)
-    first, stride = warp_walk(lanes)
-    for k in range(start + first, end, stride):
+    for k in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
         if columns[k] == i:
             slot = k
             continue
@@ -1429,9 +1429,14 @@ def connection_laplacian_row_warp(
             i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
         )
         out_values[k] = value
-    weight = warp_walk_total(lanes, weight)
+    weight = block_sum(weight)
     if slot >= 0:
         out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+
+
+# Rows a block of ``connection_laplacian_rows`` holds, a row a lane on CUDA (the occupancy of a
+# thread-a-row launch); on the CPU device the block's one lane walks them all.
+CONNECTION_ROWS_PER_BLOCK = 256
 
 
 @wp.kernel
@@ -1447,24 +1452,35 @@ def connection_laplacian_rows(
     transport_angles: wp.array[wp.float64],
     out_values: wp.array[wp.mat22d],
 ) -> None:
-    # The vector Laplacian over a mesh operator pattern, one thread per row: each off-diagonal
-    # weight becomes a rotation (``connection_offdiagonal``), since the two endpoints of an edge
-    # measure tangent directions from different reference directions and a difference between them
-    # is only meaningful after transporting one into the other's frame. The diagonal is
+    # The vector Laplacian over a mesh operator pattern, a row a lane: each off-diagonal weight
+    # becomes a rotation (``connection_offdiagonal``), since the two endpoints of an edge measure
+    # tangent directions from different reference directions and a difference between them is
+    # only meaningful after transporting one into the other's frame. The diagonal is
     # ``sum w * I`` over the row's entries in column order. Positive semi-definite (positive
     # diagonal), unlike ``cotmatrix``'s igl sign convention, because every consumer here feeds it
     # straight to a conjugate-gradient solve. A degenerate face's self-edge never reaches a row.
-    # A long row is the warp's (``signed_cotmatrix_row_lanes``' comment), its sum the lanes' tree
-    # (``connection_laplacian_row_warp``). The short row stays written out here rather than as the
-    # row function's thread form (``lanes == 0``), which the other builders take: called through
-    # a ``@wp.func`` the same body ran 1.25-1.4x device time (2026-11-10, dragon 0.57 -> 0.72 ms,
-    # bunny 0.057 -> 0.080 ms), with or without the warp path, the walk's stride, the ballot or
-    # forced inlining, at the same register count; inline it is at par. What the two copies
-    # share is the entry (``connection_offdiagonal``); they differ in the walk and the sum.
-    i = wp.int32(wp.tid())
-    lanes = warp_active_lanes()
-    long_rows = warp_long_rows(offsets, i, lanes)
-    if long_rows == 0 or not csr_row_long(offsets, i):
+    # Launched tiled over ``CONNECTION_ROWS_PER_BLOCK`` rows a block: a long row
+    # (``array.csr_row_long``, a fan's hub) is skipped by its lane and walked by the whole block
+    # after (``connection_laplacian_row_block``), as ``kernels/heat.vector_heat_system_rows`` does,
+    # its sum the block's tree. A warp a hub row held ``fan_hub`` at 14.7 ms: each entry is a chain
+    # of dependent loads and two ``float64`` rotations, so the row is latency-bound and eight warps
+    # walk it about eight times faster. The short row stays written out here rather than as a row
+    # function with a lane stride of one: called through a ``@wp.func`` the same body ran
+    # 1.25-1.4x device time (2026-11-10, dragon 0.57 -> 0.72 ms, bunny 0.057 -> 0.080 ms), at the
+    # same register count; inline it is at par. What the two copies share is the entry
+    # (``connection_offdiagonal``); they differ in the walk and the sum.
+    blk, lane = wp.tid()
+    base, rows = block_chunk(offsets.shape[0] - 1, blk, CONNECTION_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    # The CPU device's one lane walks every row in turn anyway, so it defers none.
+    defer = device_is_cpu() == 0
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = base + r
+        if defer and csr_row_long(offsets, i):
+            found = 1
+            continue
         start = offsets[i]
         end = offsets[i + 1]
         weight = wp.float64(0.0)
@@ -1479,23 +1495,25 @@ def connection_laplacian_rows(
             out_values[k] = value
         if slot >= 0:
             out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
-    while long_rows != 0:
-        row = warp_lowest_row(lanes, long_rows, i)
-        connection_laplacian_row_warp(
-            lanes,
-            row,
-            offsets,
-            columns,
-            run_start,
-            keys,
-            count,
-            order,
-            faces,
-            cot_entries,
-            transport_angles,
-            out_values,
-        )
-        long_rows = long_rows & (long_rows - 1)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = base + r
+        if csr_row_long(offsets, i):
+            connection_laplacian_row_block(
+                i,
+                lane,
+                offsets,
+                columns,
+                run_start,
+                keys,
+                count,
+                order,
+                faces,
+                cot_entries,
+                transport_angles,
+                out_values,
+            )
 
 
 @wp.kernel

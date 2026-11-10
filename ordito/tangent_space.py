@@ -332,11 +332,26 @@ def halfedge_tangent_angles(
     ring_halfedges, ring_offsets, is_boundary = rings
 
     if face_angles is None:
-        # The ring walk forms each corner angle itself, as ``triangles.face_angles`` would.
+        # The ring walk forms each corner angle itself, as ``triangles.face_angles`` would; the
+        # long rings ``vertex_one_rings`` listed have theirs formed across the device first.
+        listed = long_rings(ring_offsets)
+        if listed is not None:
+            _launch.launch(
+                kernel_tangent_space.park_long_ring_angles,
+                dim=listed.size
+                * kernel_tangent_space.TANGENT_PARK_BLOCKS
+                * kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
+                inputs=[vertices, faces, ring_offsets, ring_halfedges, listed],
+                outputs=[angles],
+                device=device,
+            )
         _launch.launch_tiled(
-            kernel_tangent_space.halfedge_tangent_angles_from_positions,
+            kernel_tangent_space.halfedge_tangent_angles_from_positions
+            if listed is None
+            else kernel_tangent_space.halfedge_tangent_angles_parked,
             dim=-(-n // kernel_tangent_space.TANGENT_ROWS_PER_BLOCK),
-            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary, angles],
+            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary],
+            outputs=[angles],
             device=device,
             block_dim=kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
         )

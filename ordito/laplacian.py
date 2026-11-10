@@ -959,9 +959,10 @@ def connection_laplacian(
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
     values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
-    _launch.launch(
+    rows = int(kernel_laplacian.CONNECTION_ROWS_PER_BLOCK)
+    _launch.launch_tiled(
         kernel_laplacian.CONNECTION_LAPLACIAN_ROWS[cot_entries.dtype],
-        dim=n_vertices,
+        dim=(n_vertices + rows - 1) // rows,
         inputs=[
             offsets,
             columns,
