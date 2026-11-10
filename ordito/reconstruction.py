@@ -3177,6 +3177,13 @@ def _solve_screened_poisson(
         )
         multigrid.apply(r, u)
 
+    # Declined (2026-11-10): two or four rounds a replayed body, to pay the conditional-graph test
+    # (about 3 us a round) once a pair. A round past convergence takes no step (``cg_step_scalars``)
+    # but is not idle: it runs the mat-vec and the V-cycle whole. Same meshes; on ``bunny``, CUDA
+    # new/old, 2 rounds 1.11x at depth 6 and 1.02-1.03x at depth 8 (dense), 1.12-1.14x and
+    # 1.04-1.06x (adaptive, this loop and ``_solve_band_level``'s), 4 rounds 1.14-1.46x. A level
+    # takes 13-16 rounds of ~0.1-0.5 ms, so even rounds past convergence made free (every CG and
+    # V-cycle kernel returning on the condition) could save at most half the test, under 1.5 %.
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
     return work.residual_pair
 
@@ -4320,6 +4327,7 @@ def _solve_band_level(
             device=device,
         )
 
+    # Two rounds a replayed body lost, as ``_solve_screened_poisson``'s did (its note).
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
 
 
