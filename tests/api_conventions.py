@@ -847,6 +847,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scratch the multi-launch loop hands ``select_independent`` as ``out_selected``; the answers
     # are ``out_faces`` and the loop's carried ``out_state``.
     ("polyline", "ear_clip_rounds"): frozenset({"selected"}),
+    # ``compute_ears`` takes the loop's carried ``state`` as an input it updates (the good-ear flag,
+    # the face count at the last grading and the hand-off to the tail); ``ear_clip_tail`` carries
+    # the loop's ear grades on, and its corner classes ``corners``.
+    ("polyline", "compute_ears"): frozenset({"state"}),
+    ("polyline", "ear_clip_tail"): frozenset({"corners", "is_ear"}),
     # The packed round loop's carried scratch, the one-ring loop's under other names: ``ring`` is
     # the ``(RING_SCRATCH_ROWS, n_points)`` links / ear grades / selections and each point's loop
     # (``ring_ear_grid_cells`` writes the loop row once), ``rounds`` the loops' state rows behind

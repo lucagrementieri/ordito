@@ -35,9 +35,11 @@ delegates to a **parallel** multi-round ear clipper: a round clips a whole *inde
 ears, so what is serial is the **round count**. Up to ``EAR_ONE_BLOCK_MAX`` corners the whole round
 loop is **one block** that runs every round itself, which trades the recording and replay of a
 conditional graph -- flat in ``n``, and most of a small ring's call -- for three block barriers a
-round; past it a round is four ``dim=n`` launches in a ``wp.capture_while`` loop. The 2D ring is
-clipped as given: there is no plane fit, and the ring length, orientation and reflex count arrive
-in one readback, so a small ring's residual is that readback, the face count and one launch.
+round; past it a round is three ``dim=n`` launches in a ``wp.capture_while`` loop, which hands a
+ring whose rounds have shrunk to a few ears each to a one-block tail
+(``test_triangulate_polygon_long_rings``). The 2D ring is clipped as given: there is no plane fit,
+and the ring length, orientation and reflex count arrive in one readback, so a small ring's
+residual is that readback, the face count and one launch.
 
 The round *count* is what this group caught first: ranking competing ear candidates by raw ring
 index lets ear ``i - 2`` suppress ear ``i`` on an alternating star, so exactly **one** ear is
@@ -847,6 +849,47 @@ def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         polygon = sg.Polygon(_star_np(ring_size))
         _vertices, faces_tm = bench_lib.run(lambda: tm.creation.triangulate_polygon(polygon))
         assert faces_tm.shape[0] > 0
+
+
+_LONG_RINGS = [16384, 65536]
+
+
+def _long_ring_np(shape: str, n: int) -> np.ndarray:
+    """Return a long ring: the star, the unit circle, or the circle with 1 % radial noise."""
+    if shape == "star":
+        return _star_np(n)
+    angle_np = 2.0 * np.pi * np.arange(n) / n
+    radius_np = np.ones(n)
+    if shape == "noisy_circle":
+        radius_np += 0.01 * np.random.default_rng(0).standard_normal(n)
+    return np.column_stack((radius_np * np.cos(angle_np), radius_np * np.sin(angle_np)))
+
+
+@pytest.mark.benchmark(group="triangulate_polygon_long_rings")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("shape", ["star", "circle", "noisy_circle"])
+@pytest.mark.parametrize("ring_size", _LONG_RINGS)
+def test_triangulate_polygon_long_rings(
+    bench_lib: BenchLibrary, shape: str, ring_size: int
+) -> None:
+    """
+    Ear clipping on long rings whose corners are mostly at the rounding level, and a control.
+
+    On the unit circle, and on the star once its tips are clipped (an inner circle of half its
+    points), every corner is ``corner_is_thin``, so only the few good ears compete and each clip
+    makes just its neighbour good: the round loop zips along a front, a few ears a round, and
+    hands the rest to the one-block tail (``kernels/polyline.ear_clip_tail``). The noisy circle is
+    the control: its corners are not thin, every round clips a constant fraction of the ring, and
+    the tail takes nothing. No reference library is timed here (``test_triangulate_polygon`` is the
+    trimesh row).
+    """
+    ring_wp = wp.array(
+        np.ascontiguousarray(_long_ring_np(shape, ring_size), dtype=np.float32),
+        dtype=wp.vec2,
+        device=bench_lib.device,
+    )
+    _vertices, faces_wp = bench_lib.run(lambda: od.polyline.triangulate_polygon(ring_wp))
+    assert faces_wp.size // 3 == ring_size - 2
 
 
 _PACKED_LOOP_COUNTS = [64, 4096]

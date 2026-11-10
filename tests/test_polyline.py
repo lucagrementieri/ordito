@@ -2293,6 +2293,38 @@ def test_triangulate_polygon_leaves_no_rounding_level_slivers(
     assert _sliver_count(ring_np, faces_np, 1.0) == 0
 
 
+@pytest.mark.parametrize("shape", ["star", "circle"])
+def test_triangulate_polygon_zipper_tail_matches_the_round_loop(
+    device: str, shape: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the round loop's faces are the same with and without its one-block tail.
+
+    A circle of radius 1 a thousand units from the origin, and a star whose inner circle is one,
+    have every corner at the rounding level (``corner_is_thin``), so the round loop zips a few
+    ears a round and hands the ring to ``ear_clip_tail`` on CUDA (the CPU runs its one-launch loop
+    either way). The tail runs the same rounds as the loop it replaces, so the faces must be
+    identical, rows compared in tip order; a tail ratio of 0 keeps the loop to the end. The ring
+    is also tiled completely, but for one face of the circle, which the loop alone also leaves
+    (rounded to ``float32`` so far out, the circle is not a strictly simple ring).
+    """
+    n = 3000
+    angle_np = 2.0 * np.pi * np.arange(n) / n
+    radius_np = np.where(np.arange(n) % 2 == 0, 1.3, 1.0) if shape == "star" else np.ones(n)
+    ring_np = 1000.0 + np.column_stack((radius_np * np.cos(angle_np), radius_np * np.sin(angle_np)))
+    ring_np = ring_np.astype(np.float32)
+    ring_wp = points_to_warp_uv(ring_np, device)
+    _, faces_wp = od.polyline.triangulate_polygon(ring_wp)
+    monkeypatch.setattr(kernel_polyline, "EAR_TAIL_RATIO", 0)
+    _, faces_loop_wp = od.polyline.triangulate_polygon(ring_wp)
+    faces_np = faces_wp.numpy()
+    assert np.array_equal(faces_np, faces_loop_wp.numpy())
+    assert faces_np.size // 3 == n - 2 - (shape == "circle")
+    assert np.isclose(
+        _tiled_area(ring_np, faces_np), abs(_signed_ring_area(ring_np.astype(np.float64)))
+    )
+
+
 def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -> None:
     """
     Ordito against ordito: repeated calls on one long, tilted ring give one triangle set.
