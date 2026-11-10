@@ -1004,6 +1004,51 @@ def test_isotropic_remesh_bounds_change_no_answer(
     assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("relax", [False, True], ids=["topology", "relaxed"])
+def test_isotropic_remesh_provenance_describes_the_result(
+    mesh_name: str, relax: bool, request: pytest.FixtureRequest
+) -> None:
+    """
+    Not a library comparison: no reference reports where a remesh's vertices came from.
+
+    Asking for the provenance changes no answer: the faces are byte-identical to the plain call's
+    and the positions too. With smoothing and reprojection off every output position is formed by
+    the splits' midpoints and the collapses' placements, so carrying the input positions through
+    the provenance reproduces them; that covers both placements, since ``saddle_graded``'s rim
+    pins every collapse of a free vertex into a rim vertex. **Mutation probe:** each collapse
+    pass's rows at equal weights (``Provenance.from_clusters``, as ``quadric_decimate`` builds
+    them) fail the position check of both arms on CUDA, a pinned collapse carried to its edge's
+    midpoint where the survivor stayed put. With them on, only the counts, ranges and row sums are
+    claimed, the vertex motion having no interpolation weights.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    kwargs: dict[str, Any] = {
+        "target_length": 2.0 * float(mesh_tm.edges_unique_length.mean()),
+        "iterations": 3,
+        "smooth": relax,
+        "reproject": relax,
+    }
+    plain_v, plain_f = od.remesh.isotropic_remesh(vertices_wp, faces_wp, **kwargs)
+    new_v, new_f, provenance = od.remesh.isotropic_remesh(
+        vertices_wp, faces_wp, return_provenance=True, **kwargs
+    )
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert new_v.size < vertices_wp.size  # non-vacuity: the collapses ran
+    assert provenance.vertex_operator is not None
+    assert_provenance_describes(
+        provenance,
+        vertices_wp,
+        faces_wp,
+        new_v,
+        new_f,
+        positions_reproduce=not relax,
+        faces_inside_sources=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Vertex-clustering decimation vs open3d / pymeshlab
 # ---------------------------------------------------------------------------
@@ -2596,18 +2641,19 @@ def _cluster_of_each_input(provenance: od.interpolation.Provenance) -> np.ndarra
 
 
 @pytest.mark.parametrize("contraction", ["average", "closest"])
-@pytest.mark.parametrize("method", ["open3d", "meshlab"])
+@pytest.mark.parametrize("method", ["open3d", "meshlab", "meshlib"])
 def test_decimation_provenance_carries_fields(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], method: str, contraction: str
 ) -> None:
     """
     Not a library comparison: the decimations' provenance against the meshes they returned.
 
-    A cluster decimation's cell means over its vertices are ``method="open3d"``'s output exactly;
-    the corner-weighted means of ``"meshlab"`` are not (checked only as averages within each cell's
-    span), and ``"closest"`` copies one input vertex. Each output face's source face, renumbered
-    through the clusters, is the output face. The quadric collapse's representative is a member of
-    the cluster its operator averages.
+    A cluster decimation's cell means carried through its operator are its output vertices: over
+    each vertex once for ``method="open3d"``, over its face corners for ``"meshlab"`` and
+    ``"meshlib"`` (**mutation probe:** their rows at equal weights, as ``from_clusters`` builds
+    them, fail the position check of both arms); ``"closest"`` copies one input vertex. Each output
+    face's source face, renumbered through the clusters, is the output face. The quadric
+    collapse's representative is a member of the cluster its operator averages.
     """
     _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -2615,15 +2661,8 @@ def test_decimation_provenance_carries_fields(
     new_v, new_f, provenance = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, return_provenance=True, **kwargs
     )
-    reproduces = contraction == "closest" or method == "open3d"
     assert_provenance_describes(
-        provenance,
-        vertices_wp,
-        faces_wp,
-        new_v,
-        new_f,
-        positions_reproduce=reproduces,
-        faces_inside_sources=False,
+        provenance, vertices_wp, faces_wp, new_v, new_f, faces_inside_sources=False
     )
     if contraction == "average":
         cluster_np = _cluster_of_each_input(provenance)
@@ -4297,6 +4336,41 @@ def test_subdivide_region_max_splits_takes_the_longest_edges(
     assert lengths_np[split].min() >= lengths_np[left].max() - 1e-6
 
 
+@pytest.mark.parametrize("delaunay", [False, True])
+@pytest.mark.parametrize("max_splits", [None, 40])
+def test_subdivide_region_to_size_provenance_describes_the_result(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], delaunay: bool, max_splits: int | None
+) -> None:
+    """
+    Not a library comparison: no reference reports where a refinement's vertices came from.
+
+    Asking for the provenance changes no answer, the returned region is the input region carried
+    by the face map, and the chained midpoints reproduce the output positions, budget-trimmed
+    passes included. Without the flip pass every refined face lies inside the face it names; a
+    flipped face keeps its slot's source, which on this curved patch it leaves, so with the pass
+    only the face map's range is claimed.
+    """
+    v, f, region = _filled_rim(saddle_graded)
+    max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
+    kwargs: dict[str, Any] = {"max_splits": max_splits, "delaunay": delaunay}
+    plain_v, plain_f, plain_r = od.remesh.subdivide_region_to_size(v, f, region, max_edge, **kwargs)
+    new_v, new_f, new_r, provenance = od.remesh.subdivide_region_to_size(
+        v, f, region, max_edge, return_provenance=True, **kwargs
+    )
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert np.array_equal(new_r.numpy(), plain_r.numpy())
+    assert new_v.size > v.size  # non-vacuity: it refined
+    assert np.array_equal(region.numpy()[provenance.face_index.numpy()], new_r.numpy())
+    assert_provenance_describes(provenance, v, f, new_v, new_f, faces_inside_sources=not delaunay)
+    *_, edges, inverse, both = od.remesh.subdivide_region_to_size(
+        v, f, region, max_edge, return_edges=True, return_provenance=True, **kwargs
+    )
+    assert np.array_equal(both.face_index.numpy(), provenance.face_index.numpy())
+    assert inverse.size == new_f.size
+    assert int(edges.shape[0]) > 0
+
+
 # ---------------------------------------------------------------------------
 # Region-restricted density refinement (refine_region_to_density)
 # ---------------------------------------------------------------------------
@@ -4464,6 +4538,34 @@ def test_refine_region_to_density_leaves_the_mesh_closed_and_the_outside_alone(
     assert kept_np == outside_np
     # The originals are a prefix: new vertices are appended, so the caller's index range holds.
     assert np.array_equal(new_v.numpy()[:n_vertices], vertices_wp.numpy())
+
+
+@pytest.mark.parametrize("delaunay", [False, True])
+def test_refine_region_to_density_provenance_describes_the_result(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], delaunay: bool
+) -> None:
+    """
+    Not a library comparison: no reference reports where a refinement's vertices came from.
+
+    Asking for the provenance changes no answer; a centroid carried by its corners -- a centroid of
+    centroids after several passes -- reproduces the output positions, every input face has one or
+    three children per pass, and without the flip pass each lies inside the face it names (a
+    flipped face keeps its slot's source, which it leaves on this curved patch).
+    """
+    vertices_wp, faces_wp, region_wp = _filled_rim(saddle_graded)
+    plain = od.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp, delaunay=delaunay)
+    new_v, new_f, new_r, provenance = od.remesh.refine_region_to_density(
+        vertices_wp, faces_wp, region_wp, delaunay=delaunay, return_provenance=True
+    )
+    for got_wp, plain_wp in zip((new_v, new_f, new_r), plain, strict=True):
+        assert np.array_equal(got_wp.numpy(), plain_wp.numpy())
+    assert new_v.size > vertices_wp.size  # non-vacuity: it refined
+    children_np = np.bincount(provenance.face_index.numpy(), minlength=faces_wp.size // 3)
+    assert children_np.min() == 1
+    assert np.array_equal(region_wp.numpy()[provenance.face_index.numpy()], new_r.numpy())
+    assert_provenance_describes(
+        provenance, vertices_wp, faces_wp, new_v, new_f, faces_inside_sources=not delaunay
+    )
 
 
 def test_refine_region_to_density_alpha_monotone(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
