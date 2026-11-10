@@ -5197,16 +5197,14 @@
  },
  "benchmarks/test_parametrization.py::test_map_vertices_to_circle[hemisphere-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
-   "scan": 1
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_parametrization.py::test_map_vertices_to_circle[saddle_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
-   "scan": 1
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_parametrization.py::test_tutte[hemisphere-ordito-cuda]": {

@@ -62,6 +62,13 @@ _FACTOR_FROM_VERTICES = 4_000
 _ARAP_FACTOR_FROM_ROUNDS_CUDA = 300
 _ARAP_FACTOR_FROM_ROUNDS_CPU = 16
 
+# Loops up to this many vertices are mapped onto the circle by one block, a chunk of the scan at
+# a time, in one launch; longer ones on CUDA by a length launch, a device-wide scan and a position
+# launch (one block 0.39x to 2 048 vertices, 0.80x at 4 096, 1.5x at 8 192). The CPU device takes
+# the block at every size, its one lane summing in loop order as the scan does (0.48-0.74x from 64
+# to 65 536 vertices, byte-identical).
+_CIRCLE_ONE_BLOCK_VERTICES = 4_096
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -271,6 +278,14 @@ def map_vertices_to_circle(
     if n_boundary == 0:
         return out_uv
 
+    if n_boundary <= _CIRCLE_ONE_BLOCK_VERTICES or not wp.get_device(device).is_cuda:
+        _launch.launch_tiled(
+            kernel_parametrization.circle_positions_block,
+            dim=1,
+            inputs=[boundary, vertices, out_uv],
+            device=device,
+        )
+        return out_uv
     segment_lengths = _launch.empty(n_boundary, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_parametrization.boundary_edge_lengths,

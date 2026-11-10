@@ -144,17 +144,20 @@ def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
-def test_map_vertices_to_circle_on_a_long_loop(device: str, deterministic: bool):
+@pytest.mark.parametrize("n_loop", [4_096, 4_097, 100_000])
+def test_map_vertices_to_circle_on_a_long_loop(device: str, deterministic: bool, n_loop: int):
     """
-    Class A: a 100k-vertex loop against ``igl.map_vertices_to_circle``, no transform.
+    Class A: long loops against ``igl.map_vertices_to_circle``, no transform.
 
-    The fixtures' loops fit in one chunk of the fixed-order scan; this one spans dozens, on both
-    the deterministic scan and CUB's (``False``), and the deterministic map must repeat bit for
-    bit. The tolerance is ``1e-4``: the float32 arc length over 100k edges carries ~1e-5 relative
-    rounding into the angle, against libigl's float64 sum. Re-measured: 3.0e-05 on CPU (both
-    settings, so ``1e-5`` fails there), 1.1e-06 / 2.3e-06 on CUDA (deterministic / CUB).
+    The fixtures' loops take the one-block form; on CUDA a loop of 4 097 vertices or more takes the
+    device-wide scan instead (4 096 is the last on the block), the 100k-vertex loop spanning dozens
+    of chunks of both the deterministic scan and CUB's (``False``), and the deterministic map must
+    repeat bit for bit. The CPU takes the block at every length. The tolerance is ``1e-4``: the
+    float32 arc length over 100k edges carries ~1e-5 relative rounding into the angle, against
+    libigl's float64 sum. Re-measured: 3.0e-05 on CPU (both settings, so ``1e-5`` fails there),
+    1.1e-06 / 2.3e-06 on CUDA (deterministic / CUB).
     """
-    t = np.sort(np.random.default_rng(6).random(100_000)) * 2.0 * np.pi
+    t = np.sort(np.random.default_rng(6).random(n_loop)) * 2.0 * np.pi
     vertices_np = np.stack([np.cos(t) * (1.0 + 0.3 * np.sin(5.0 * t)), np.sin(t), 0.0 * t], 1)
     boundary_np = np.arange(t.shape[0], dtype=np.int64)
     vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)

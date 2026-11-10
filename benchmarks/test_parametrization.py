@@ -141,7 +141,12 @@ def test_face_flipped_indices(bench_case: BenchCase) -> None:
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl")
 def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
-    """Arc-length parametrization of the rim: driven by loop length, not by mesh size."""
+    """
+    Arc-length parametrization of the rim: driven by loop length, not by mesh size.
+
+    These rims (268 and 384 vertices) take the one-block form: one launch where the lengths, a scan
+    and the positions were three issues (CUDA 0.39x, CPU 0.48-0.49x at these lengths).
+    """
     if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
         loop, _loop_uv = _boundary(bench_case)

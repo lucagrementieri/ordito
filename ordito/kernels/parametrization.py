@@ -148,17 +148,45 @@ def scatter_solution(
     out_uv[i] = solved_uv(fixed_mask, free_map, sol, fixed_values, i)
 
 
+@wp.func
+def boundary_segment_length(
+    boundary: wp.array[wp.int32], vertices: wp.array[wp.vec3], i: wp.int32
+) -> wp.float32:
+    # Length of the loop segment ending at boundary vertex ``i``; ``0`` at ``i == 0``, which seeds
+    # the arc-length prefix sum (matches ``igl::map_vertices_to_circle``).
+    if i == 0:
+        return wp.float32(0.0)
+    return wp.length(vertices[boundary[i]] - vertices[boundary[i - 1]])
+
+
+@wp.func
+def loop_perimeter(
+    boundary: wp.array[wp.int32], vertices: wp.array[wp.vec3], open_length: wp.float32
+) -> wp.float32:
+    # The loop's perimeter from the arc length to its last vertex, closing over the wrap edge
+    # ``bnd[0] -> bnd[n-1]``. A single-vertex loop, or one whose vertices are all coincident, has
+    # zero perimeter -- every arc length is then 0 too -- so 1 stands in for it: the only guard
+    # needed against the 0/0 that would otherwise write NaN into every position.
+    n = boundary.shape[0]
+    total = open_length + wp.length(vertices[boundary[0]] - vertices[boundary[n - 1]])
+    return wp.where(total <= 0.0, wp.float32(1.0), total)
+
+
+@wp.func
+def circle_position(arc_length: wp.float32, perimeter: wp.float32) -> wp.vec2:
+    # Arc-length parametrization onto the unit circle: ``frac = len[i] * 2pi / total``.
+    frac = arc_length * twc.TWO_PI / perimeter
+    return wp.vec2(wp.cos(frac), wp.sin(frac))
+
+
 @wp.kernel
 def boundary_edge_lengths(
     boundary: wp.array[wp.int32], vertices: wp.array[wp.vec3], out_len: wp.array[wp.float32]
 ) -> None:
-    # Segment length between consecutive boundary vertices; ``out_len[0] = 0`` seeds the arc-length
-    # prefix sum (matches ``igl::map_vertices_to_circle``).
+    # Segment length between consecutive boundary vertices, scanned by the wrapper into each
+    # vertex's arc length.
     i = wp.int32(wp.tid())
-    if i == 0:
-        out_len[0] = wp.float32(0.0)
-    else:
-        out_len[i] = wp.length(vertices[boundary[i]] - vertices[boundary[i - 1]])
+    out_len[i] = boundary_segment_length(boundary, vertices, i)
 
 
 @wp.kernel
@@ -168,19 +196,41 @@ def circle_positions(
     cumulative_length: wp.array[wp.float32],
     out_uv: wp.array[wp.vec2],
 ) -> None:
-    # Arc-length parametrization onto the unit circle: ``frac = len[i] * 2pi / total`` with the
-    # total perimeter closing over the wrap edge ``bnd[0] -> bnd[n-1]``.
+    # Each boundary vertex's circle position from its scanned arc length.
     i = wp.int32(wp.tid())
     n = cumulative_length.shape[0]
-    wrap = wp.length(vertices[boundary[0]] - vertices[boundary[n - 1]])
-    total = cumulative_length[n - 1] + wrap
-    if total <= 0.0:
-        # A single-vertex loop, or one whose vertices are all coincident, has zero perimeter --
-        # every ``cumulative_length`` entry is then 0 too, so this is the only guard needed to
-        # avoid the 0/0 that would otherwise silently write NaN into every position.
-        total = wp.float32(1.0)
-    frac = cumulative_length[i] * twc.TWO_PI / total
-    out_uv[i] = wp.vec2(wp.cos(frac), wp.sin(frac))
+    perimeter = loop_perimeter(boundary, vertices, cumulative_length[n - 1])
+    out_uv[i] = circle_position(cumulative_length[i], perimeter)
+
+
+@wp.kernel
+def circle_positions_block(
+    boundary: wp.array[wp.int32], vertices: wp.array[wp.vec3], out_uv: wp.array[wp.vec2]
+) -> None:
+    # ``boundary_edge_lengths``, the scan and ``circle_positions`` as one block, for a short loop:
+    # the segment lengths are ranked a block-wide chunk at a time by an inclusive tile scan carried
+    # across chunks, each arc length staged in its own vertex's ``out_uv`` slot, and once the
+    # perimeter is known every lane rewrites the slots it staged (no barrier: a lane reads only
+    # its own). The two forms differ in the scan's summation order alone; both are fixed. Every
+    # lane strides by ``wp.block_dim()``, which reads 1 on the CPU device.
+    _block, lane = wp.tid()
+    lanes = wp.block_dim()
+    n = boundary.shape[0]
+    carry = wp.float32(0.0)
+    for start in range(0, n, lanes):
+        i = start + lane
+        segment = wp.float32(0.0)
+        if i < n:
+            segment = boundary_segment_length(boundary, vertices, i)
+        scanned = wp.tile_scan_inclusive(wp.tile(segment))
+        if i < n:
+            out_uv[i] = wp.vec2(carry + wp.untile(scanned), wp.float32(0.0))
+        carry += wp.tile_extract(scanned, lanes - 1)
+    perimeter = loop_perimeter(boundary, vertices, carry)
+    for start in range(0, n, lanes):
+        i = start + lane
+        if i < n:
+            out_uv[i] = circle_position(out_uv[i][0], perimeter)
 
 
 @wp.kernel
