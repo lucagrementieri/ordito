@@ -1227,8 +1227,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   multi-ring loop (`_triangulate_long_rings`) has no tail.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
   landmark an iteration (its radius the distance to its last match since 2026-11-10,
-  `kernels/registration.landmark_rematch`), a chain of dependent node loads on one SM; a
-  multi-block layout does not shorten a chain, a cheaper start node would.
+  `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on
+  one SM; a multi-block layout does not shorten a chain. Refuted 2026-11-10 (`reference/
+  component-status.md`, "The ball walk's two refutations"): a `float32` candidate filter and a
+  per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
+  start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
+  another subtree), so what is open is a shorter chain for the same walk.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

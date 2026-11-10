@@ -848,7 +848,10 @@ def landmark_rematch(
     # mesh: no face is nearer than that point, so the ball it bounds holds the answer and one walk
     # finds it, where ``landmark_match`` walks twice (the ``float32`` query, then the ball of its
     # face). The same nearest offset, a tie aside; 0.54x a whole call on ``sphere_small``, 0.65x
-    # on ``sphere_med`` (2026-11-10). A cloud target has no re-search to save.
+    # on ``sphere_med`` (2026-11-10). A cloud target has no re-search to save. Declined: a
+    # ``float32`` filter ahead of each candidate's ``float64`` test (1.04-1.27x), and a face list
+    # a landmark scanned while its ball stays inside the one it was listed in (exact, 0.74-0.89x
+    # on the spheres but 1.08-6x on bunny and dragon, whose balls meet few candidates).
     if not cloud:
         offset = nearest_offset_within(
             index_id, p, wp.length(p - previous), wp.vec3d(FLOAT64_INF_CONSTANT)
