@@ -12,8 +12,10 @@ import scipy.spatial
 import trimesh.geometry as tm_geometry
 import trimesh.points as tm
 import warp as wp
+from hilbertcurve.hilbertcurve import HilbertCurve
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
+from trimesh import Trimesh
 
 import ordito.config as od_config
 import ordito.creation as od_creation
@@ -706,6 +708,74 @@ def test_radial_sort_parallel_start_raises(device: str) -> None:
             wp.vec3(*normal_np.tolist()),
             start=wp.vec3(*start_np.tolist()),
         )
+
+
+def _lattice_morton_codes(cells_np: np.ndarray) -> np.ndarray:
+    """Morton codes of ``(n, 3)`` 10-bit cells: bit ``b`` of axis ``a`` at bit ``3b + a``."""
+    codes_np = np.zeros(cells_np.shape[0], dtype=np.int64)
+    for bit in range(10):
+        for axis in range(3):
+            codes_np |= ((cells_np[:, axis].astype(np.int64) >> bit) & 1) << (3 * bit + axis)
+    return codes_np
+
+
+@pytest.mark.parametrize("curve", ["hilbert", "morton"])
+def test_space_filling_order_matches_hilbertcurve(
+    sphere_irregular: tuple[Trimesh, wp.Mesh], curve: Literal["hilbert", "morton"]
+) -> None:
+    """
+    Class A: the order against a stable argsort of each point's curve code on the host.
+
+    The cloud is ``sphere_irregular``'s vertices (scrambled, off the origin) mapped onto the
+    integer points of ``[0, 1023]^3``, each axis's extremes landing on 0 and 1023, so the
+    bounding box is that lattice exactly and every point's cell is its own coordinates on both
+    sides. The Hilbert codes are ``hilbertcurve.HilbertCurve(10, 3)``'s, the Morton codes a NumPy
+    interleaving of the bits (no reference library computes one). The first 300 vertices are
+    appended again in reverse, so cells repeat and the tie order (input order) is tested too.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices)
+    lower_np, upper_np = vertices_np.min(axis=0), vertices_np.max(axis=0)
+    cells_np = np.rint((vertices_np - lower_np) / (upper_np - lower_np) * 1023).astype(np.int32)
+    cells_np = np.concatenate([cells_np, cells_np[:300][::-1]])
+    assert cells_np.min() == 0
+    assert cells_np.max() == 1023
+    if curve == "hilbert":
+        codes_np = np.array(HilbertCurve(10, 3).distances_from_points(cells_np.tolist()))
+    else:
+        codes_np = _lattice_morton_codes(cells_np)
+    expected_np = np.argsort(codes_np, kind="stable")
+    assert not np.array_equal(expected_np, np.arange(cells_np.shape[0]))
+    points_wp = points_to_warp(cells_np.astype(np.float32), mesh_wp.device)
+    order_wp = od.space_filling_order(points_wp, curve=curve)
+    assert order_wp.dtype == wp.int32
+    assert np.array_equal(order_wp.numpy(), expected_np)
+
+
+def test_space_filling_order_keeps_neighbours_together(
+    sphere_irregular: tuple[Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the locality the order is for, on an unsnapped surface cloud.
+
+    No reference library orders a cloud along a curve. Consecutive points of the Hilbert order
+    lie on average far closer than in the scrambled input order (measured 0.16x on this fixture;
+    asserted below 0.3x), and the Morton order's in between (0.18x).
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices)
+
+    def mean_step(order_np: np.ndarray) -> float:
+        return float(np.linalg.norm(np.diff(vertices_np[order_np], axis=0), axis=1).mean())
+
+    scrambled = mean_step(np.arange(vertices_np.shape[0]))
+    hilbert = mean_step(od.space_filling_order(mesh_wp.points).numpy())
+    morton = mean_step(od.space_filling_order(mesh_wp.points, curve="morton").numpy())
+    assert np.array_equal(
+        np.sort(od.space_filling_order(mesh_wp.points).numpy()), np.arange(vertices_np.shape[0])
+    )
+    assert hilbert < 0.3 * scrambled
+    assert hilbert < morton < scrambled
 
 
 @pytest.mark.parity(
@@ -2250,6 +2320,13 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
         lambda device: od.farthest_point_sample(_four_zeros(device), 2, start=4),
         "start",
     ),
+    "space_filling_order_unknown_curve": (
+        lambda device: od.space_filling_order(
+            _four_zeros(device),
+            curve="peano",  # pyright: ignore[reportArgumentType]
+        ),
+        "curve must be 'hilbert' or 'morton'",
+    ),
     "vector_angle_length_mismatch": (
         lambda device: od.vector_angle(_four_zeros(device), warp_empty(0, wp.vec3, device)),
         "same length",
@@ -2295,6 +2372,10 @@ _EMPTY_CALLS: dict[str, tuple[Callable[[str], np.ndarray], np.ndarray]] = {
             _empty_cloud(device), wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0)
         ).numpy(),
         np.zeros((0, 3)),
+    ),
+    "space_filling_order": (
+        lambda device: od.space_filling_order(_empty_cloud(device)).numpy(),
+        np.zeros(0),
     ),
     # The sum over no points is the zero matrix, not garbage.
     "gram_matrix": (

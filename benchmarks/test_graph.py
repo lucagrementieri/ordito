@@ -68,7 +68,6 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
-from ordito._common import hilbert_point_order
 
 _adjacency_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
 _scipy_cache: dict[str, sp.csr_matrix] = {}
@@ -538,7 +537,7 @@ def test_shortest_path_envelope_ordered(bench_case: BenchCase) -> None:
     vertices = bench_case.vertices_wp
     envelope = bench_case.run(
         lambda: od.graph.shortest_path_envelope(
-            adjacency, values, order=hilbert_point_order(vertices)
+            adjacency, values, order=od.points.space_filling_order(vertices)
         ),
         rounds=3,
     )

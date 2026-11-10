@@ -48,12 +48,12 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
-    hilbert_point_order,
     read_array,
     read_scalar,
     read_values,
     require_same_device,
     run_device_loop,
+    space_filling_order,
     staging_pool,
 )
 from ordito.halfedge import halfedge_twins, vertex_one_rings
@@ -866,7 +866,7 @@ def _edge_graph_distance(mesh: Trimesh, sources: wp.array[wp.int32]) -> wp.array
     )
     # On CUDA the relaxation's passes take patches of a Hilbert order (``order``); the CPU device
     # settles the field serially and reads no order.
-    order = hilbert_point_order(mesh.vertices) if wp.get_device(device).is_cuda else None
+    order = space_filling_order(mesh.vertices) if wp.get_device(device).is_cuda else None
     return od.graph.shortest_path_envelope(adjacency, seed, order=order)
 
 
@@ -1090,7 +1090,7 @@ def _flip_shortest_edge_tree(
         # (44 passes of ~70 us, device-bound), under 1 % of a 12 ms call.
         state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
         n_vertices_i32 = wp.int32(n_vertices)
-        order = hilbert_point_order(positions)
+        order = space_filling_order(positions)
         n_blocks = -(-n_vertices // _RELAX_BLOCK_DIM)
 
         def relaxation_pass() -> None:

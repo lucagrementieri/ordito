@@ -1918,6 +1918,77 @@ def test_closest_pair_ties_and_degenerate(device: str) -> None:
             )
 
 
+def _mutual_nearest_scipy(
+    a_np: np.ndarray, b_np: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Mutual nearest pairs from two SciPy ``KDTree`` queries, ascending in ``a``."""
+    distances, nearest_in_b = KDTree(b_np).query(a_np)
+    distances_np, nearest_in_b_np = np.asarray(distances), np.asarray(nearest_in_b)
+    nearest_in_a_np = np.asarray(KDTree(a_np).query(b_np)[1])
+    a_indices_np = np.flatnonzero(nearest_in_a_np[nearest_in_b_np] == np.arange(a_np.shape[0]))
+    return a_indices_np, nearest_in_b_np[a_indices_np], distances_np[a_indices_np]
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_mutual_nearest_matches_scipy(mesh_name: str, request: pytest.FixtureRequest) -> None:
+    """
+    Class A: mutual nearest pairs against two ``scipy.spatial.KDTree`` queries, one each way.
+
+    ``a`` is the fixture's vertices and ``b`` a ``trimesh.sample.sample_surface`` cloud of the same
+    mesh, jittered off it, so the two clouds overlap with neither inside the other. Pairs compare
+    index for index (``a`` ascending on both sides) and distances to float32 rounding. Both answers
+    keep some pairs and drop others (asserted), and every point appears at most once.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    a_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    samples_np = np.asarray(tm.sample.sample_surface(mesh_tm, 3 * a_np.shape[0], seed=41)[0])
+    jitter_np = np.random.default_rng(42).normal(scale=0.002, size=samples_np.shape)
+    b_np = (samples_np + jitter_np).astype(np.float32)
+    a_scipy, b_scipy, distances_scipy = _mutual_nearest_scipy(a_np, b_np)
+    assert 0 < a_scipy.size < a_np.shape[0]
+    a_wp, b_wp, distances_wp = od.neighbors.mutual_nearest(
+        points_to_warp(a_np, device), points_to_warp(b_np, device)
+    )
+    assert np.array_equal(a_wp.numpy(), a_scipy)
+    assert np.array_equal(b_wp.numpy(), b_scipy)
+    assert np.allclose(distances_wp.numpy(), distances_scipy, rtol=1e-5, atol=1e-5)
+    assert np.unique(b_wp.numpy()).size == b_wp.size
+
+
+def test_mutual_nearest_of_a_cloud_and_its_shuffled_copy(device: str) -> None:
+    """
+    Class A: a cloud against its own permutation pairs every point with its copy, at distance 0.
+
+    The reference answer is the inverse permutation itself, which ``scipy.spatial.KDTree`` also
+    returns (asserted), so the check is not against ordito's own query.
+    """
+    rng = np.random.default_rng(43)
+    a_np = rng.random((5_000, 3)).astype(np.float32)
+    permutation_np = rng.permutation(a_np.shape[0])
+    b_np = a_np[permutation_np]
+    a_scipy, b_scipy, _ = _mutual_nearest_scipy(a_np, b_np)
+    inverse_np = np.argsort(permutation_np)
+    assert np.array_equal(a_scipy, np.arange(a_np.shape[0]))
+    assert np.array_equal(b_scipy, inverse_np)
+    a_wp, b_wp, distances_wp = od.neighbors.mutual_nearest(
+        points_to_warp(a_np, device), points_to_warp(b_np, device)
+    )
+    assert np.array_equal(a_wp.numpy(), a_scipy)
+    assert np.array_equal(b_wp.numpy(), inverse_np)
+    assert np.all(distances_wp.numpy() == 0.0)
+
+
+@pytest.mark.parametrize(("n_a", "n_b"), [(0, 4), (4, 0), (0, 0)])
+def test_mutual_nearest_of_an_empty_cloud(device: str, n_a: int, n_b: int) -> None:
+    """Not a library comparison: an empty cloud on either side gives no pairs."""
+    points_np = np.random.default_rng(44).random((4, 3)).astype(np.float32)
+    a_wp, b_wp, distances_wp = od.neighbors.mutual_nearest(
+        points_to_warp(points_np[:n_a], device), points_to_warp(points_np[:n_b], device)
+    )
+    assert (a_wp.shape, b_wp.shape, distances_wp.shape) == ((0,), (0,), (0,))
+
+
 def _geodesic_ball_neighborhoods_oracle(
     vertices_np: np.ndarray, faces_np: np.ndarray, radius: float, min_count: int = 6
 ) -> tuple[list[list[int]], np.ndarray]:

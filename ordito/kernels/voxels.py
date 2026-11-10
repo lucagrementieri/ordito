@@ -28,6 +28,8 @@ from ordito.kernels.array import (
     append_slot,
     binary_search_index,
     cube_corner_offset,
+    curve_cell,
+    curve_index,
     lattice_position,
     ravel_index,
 )
@@ -249,6 +251,45 @@ def cell_center_positions(
         volume,
         wp.vec3(wp.float32(voxels[v, 0]), wp.float32(voxels[v, 1]), wp.float32(voxels[v, 2])),
     )
+
+
+@wp.kernel
+def cell_curve_codes(
+    cells: wp.array2d[wp.int32],
+    bits: wp.int32,
+    curve: wp.int32,
+    out_codes: wp.array[wp.int64],
+    out_outside: wp.array[wp.int32],
+) -> None:
+    # ``voxels.space_filling_codes``: each cell's index along ``curve`` (``kernels/array.
+    # curve_index``). A coordinate outside ``[0, 2**bits)`` raises ``out_outside``, which the
+    # wrapper reads instead of a separate range reduction.
+    v = wp.int32(wp.tid())
+    a, b, c = row_triple(cells, v)
+    cell = wp.vec3i(a, b, c)
+    side = 1 << bits
+    if wp.min(cell) < 0 or wp.max(cell) >= side:
+        out_outside[0] = 1
+    out_codes[v] = curve_index(cell, bits, curve)
+
+
+@wp.kernel
+def curve_code_cells(
+    codes: wp.array[wp.int64],
+    bits: wp.int32,
+    curve: wp.int32,
+    out_cells: wp.array2d[wp.int32],
+    out_outside: wp.array[wp.int32],
+) -> None:
+    # ``voxels.cells_from_space_filling_codes``: ``cell_curve_codes``' inverse (``kernels/array.
+    # curve_cell``), a code outside ``[0, 2**(3 * bits))`` raising ``out_outside``.
+    v = wp.int32(wp.tid())
+    code = codes[v]
+    # The bits above the code, not a comparison with ``1 << 3 * bits``, which wraps at 21 bits.
+    if code < wp.int64(0) or (code >> wp.int64(3 * bits)) != wp.int64(0):
+        out_outside[0] = 1
+    cell = curve_cell(code, bits, curve)
+    write_row_triple(out_cells, v, cell[0], cell[1], cell[2])
 
 
 @wp.func

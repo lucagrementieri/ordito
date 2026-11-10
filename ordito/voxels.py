@@ -1206,6 +1206,168 @@ def cell_centers(grid: wp.Volume) -> wp.array[wp.vec3]:
     return centers
 
 
+def space_filling_codes(
+    cells: odt.Array2dInt32, bits: int, *, curve: Literal["hilbert", "morton"] = "hilbert"
+) -> wp.array[wp.int64]:
+    """
+    Index of each integer cell along a space-filling curve through a ``2**bits`` cube lattice.
+
+    Sorting cells by their code puts cells next to each other in space next to each other in the
+    order. ``"hilbert"`` is the Hilbert curve of Skilling's transform ("Programming the Hilbert
+    curve", 2004), on which consecutive codes are always face-adjacent cells; its codes are those
+    of ``hilbertcurve.HilbertCurve(bits, 3)``. ``"morton"`` is the Z-order curve: the code
+    interleaves the bits of the three coordinates, bit ``b`` of coordinate ``x``, ``y``, ``z``
+    landing at bit ``3 * b``, ``3 * b + 1``, ``3 * b + 2``, so the code compares like the cells'
+    most significant differing bits.
+
+    Parameters
+    ----------
+    cells
+        ``(n, 3)`` cell coordinates, each in ``[0, 2**bits)``.
+    bits
+        Lattice depth: bits per coordinate, from 1 to 21 (codes up to 63 bits).
+    curve
+        ``"hilbert"`` (the default) or ``"morton"``.
+
+    Returns
+    -------
+    wp.array[wp.int64]
+        ``(n,)`` codes in ``[0, 2**(3 * bits))``.
+
+    Raises
+    ------
+    ValueError
+        If ``cells`` does not have three columns, ``bits`` is outside ``[1, 21]``, ``curve`` is
+        neither ``"hilbert"`` nor ``"morton"``, or a coordinate lies outside ``[0, 2**bits)``.
+    TypeError
+        If ``cells`` is not a rank-2 ``wp.int32`` array.
+
+    See Also
+    --------
+    [`cells_from_space_filling_codes`][ordito.voxels.cells_from_space_filling_codes]
+        The inverse.
+    [`space_filling_order`][ordito.points.space_filling_order]
+        A point cloud's order along the same curves.
+
+    Examples
+    --------
+    The four cells of the ``z = 0`` face of a ``2 x 2 x 2`` lattice:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=wp.int32)
+    print(od.voxels.space_filling_codes(cells, 1, curve="morton").numpy().tolist())  # [0, 1, 2, 3]
+    print(od.voxels.space_filling_codes(cells, 1).numpy().tolist())  # [0, 7, 3, 4]
+    ```
+    """
+    odt.ensure_ndim(cells, 2, dtype=wp.int32)
+    if int(cells.shape[1]) != 3:
+        raise ValueError(f"cells must have three columns, got {int(cells.shape[1])}")
+    curve_id = _space_filling_curve(bits, curve)
+    n = int(cells.shape[0])
+    device = cells.device
+    codes = _launch.empty(n, dtype=wp.int64, device=device)
+    if n == 0:
+        return codes
+    outside = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.cell_curve_codes,
+        dim=n,
+        inputs=[cells, bits, curve_id, codes, outside],
+        device=device,
+    )
+    # The range flag, read back: a coordinate past the lattice has no code on it.
+    if int(read_scalar(outside, 0)):
+        raise ValueError(f"space_filling_codes requires every coordinate in [0, {1 << bits}).")
+    return codes
+
+
+def cells_from_space_filling_codes(
+    codes: wp.array[wp.int64], bits: int, *, curve: Literal["hilbert", "morton"] = "hilbert"
+) -> odt.Array2dInt32:
+    """
+    Integer cell at each index along a space-filling curve through a ``2**bits`` cube lattice.
+
+    The inverse of [`space_filling_codes`][ordito.voxels.space_filling_codes] at the same ``bits``
+    and ``curve``.
+
+    Parameters
+    ----------
+    codes
+        ``(n,)`` curve indices, each in ``[0, 2**(3 * bits))``.
+    bits
+        Lattice depth: bits per coordinate, from 1 to 21.
+    curve
+        ``"hilbert"`` (the default) or ``"morton"``.
+
+    Returns
+    -------
+    Array2dInt32
+        ``(n, 3)`` cell coordinates, each in ``[0, 2**bits)``.
+
+    Raises
+    ------
+    ValueError
+        If ``bits`` is outside ``[1, 21]``, ``curve`` is neither ``"hilbert"`` nor ``"morton"``, or
+        a code lies outside ``[0, 2**(3 * bits))``.
+    TypeError
+        If ``codes`` is not a rank-1 ``wp.int64`` array.
+
+    See Also
+    --------
+    [`space_filling_codes`][ordito.voxels.space_filling_codes]
+        The inverse.
+
+    Examples
+    --------
+    The first four cells of the Hilbert curve through a ``2 x 2 x 2`` lattice:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    codes = wp.array([0, 1, 2, 3], dtype=wp.int64)
+    cells = od.voxels.cells_from_space_filling_codes(codes, 1)
+    print(cells.numpy().tolist())  # [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]
+    ```
+    """
+    odt.ensure_ndim(codes, 1, dtype=wp.int64)
+    curve_id = _space_filling_curve(bits, curve)
+    n = codes.size
+    device = codes.device
+    out_cells = odt.empty_2d((n, 3), wp.int32, device=device)
+    if n == 0:
+        return out_cells
+    outside = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.curve_code_cells,
+        dim=n,
+        inputs=[codes, bits, curve_id, out_cells, outside],
+        device=device,
+    )
+    # The range flag, read back: a code past the curve's end names no cell.
+    if int(read_scalar(outside, 0)):
+        raise ValueError(
+            f"cells_from_space_filling_codes requires every code in [0, {1 << (3 * bits)})."
+        )
+    return out_cells
+
+
+def _space_filling_curve(bits: int, curve: str) -> int:
+    """Return the kernels' selector for ``curve``, after validating it and ``bits``."""
+    if not 1 <= bits <= 21:
+        raise ValueError(f"bits must lie in [1, 21], got {bits}.")
+    if curve == "hilbert":
+        return int(kernel_array.CURVE_HILBERT)
+    if curve == "morton":
+        return int(kernel_array.CURVE_MORTON)
+    raise ValueError(f"curve must be 'hilbert' or 'morton', got {curve!r}.")
+
+
 def occupancy_at_points(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     """
     Occupancy mask of the voxel each query point falls in.

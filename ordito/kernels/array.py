@@ -1678,37 +1678,52 @@ class OverloadTable(KernelTable):
         )
 
 
+# The space-filling curves ``curve_index`` orders cells along (``voxels.space_filling_codes``,
+# ``points.space_filling_order``): a warp-uniform selector, as ``ACCEL_HASHGRID`` / ``ACCEL_BVH``.
+CURVE_HILBERT = wp.int32(0)
+CURVE_MORTON = wp.int32(1)
+
+
 @wp.func
-def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
-    # The 30-bit Morton (Z-order) code of ``point`` on a 1024^3 lattice over the box from
-    # ``lower`` with ``inv_extent = 1023 / (upper - lower)`` per axis: the bits of the three
-    # quantized coordinates interleaved ``x`` lowest. Sorting points by it puts spatial neighbours
-    # next to each other; a point outside the box clamps onto its face.
-    q = wp.cw_mul(point - lower, inv_extent)
-    code = wp.int32(0)
+def morton_index(cell: wp.vec3i, bits: wp.int32) -> wp.int64:
+    # The Morton (Z-order) index of ``cell`` on a ``2**bits`` lattice, ``bits <= 21``: the low
+    # ``bits`` bits of the three coordinates interleaved, ``x`` lowest (bit ``3 * b + axis`` holds
+    # bit ``b`` of coordinate ``axis``).
+    code = wp.int64(0)
     for axis in range(3):
-        cell = wp.int32(wp.clamp(q[axis], 0.0, 1023.0))
-        for bit in range(10):
-            code = code | (((cell >> bit) & 1) << (3 * bit + axis))
+        coordinate = wp.int64(cell[axis])
+        for bit in range(bits):
+            code = code | (
+                ((coordinate >> wp.int64(bit)) & wp.int64(1)) << wp.int64(3 * bit + axis)
+            )
     return code
 
 
 @wp.func
-def hilbert_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
-    # ``morton_code_30``'s lattice ordered along a Hilbert curve instead: consecutive codes are
-    # face-adjacent cells, where Z-order jumps at every power-of-two boundary, so a run of codes is
-    # a more compact region. Skilling's transform (2004, "Programming the Hilbert curve") of the
-    # three 10-bit coordinates into the curve's transposed index, then its bits interleaved from
-    # the top, ``x`` highest.
-    q = wp.cw_mul(point - lower, inv_extent)
-    x = wp.vec3i(
-        wp.int32(wp.clamp(q[0], 0.0, 1023.0)),
-        wp.int32(wp.clamp(q[1], 0.0, 1023.0)),
-        wp.int32(wp.clamp(q[2], 0.0, 1023.0)),
-    )
+def morton_cell(code: wp.int64, bits: wp.int32) -> wp.vec3i:
+    # ``morton_index``'s inverse: the cell whose interleaved bits are ``code``.
+    cell = wp.vec3i(0, 0, 0)
+    for axis in range(3):
+        coordinate = wp.int32(0)
+        for bit in range(bits):
+            if ((code >> wp.int64(3 * bit + axis)) & wp.int64(1)) != wp.int64(0):
+                coordinate = coordinate | (1 << bit)
+        cell[axis] = coordinate
+    return cell
+
+
+@wp.func
+def hilbert_index(cell: wp.vec3i, bits: wp.int32) -> wp.int64:
+    # The Hilbert index of ``cell`` on a ``2**bits`` lattice, ``bits <= 21``: consecutive indices
+    # are face-adjacent cells, where Z-order jumps at every power-of-two boundary, so a run of
+    # indices is a more compact region. Skilling's transform (2004, "Programming the Hilbert
+    # curve") of the coordinates into the curve's transposed index, then its bits interleaved from
+    # the top, ``x`` highest: the index ``hilbertcurve.HilbertCurve(bits, 3)`` gives.
+    x = cell
+    top = 1 << (bits - 1)
     # Undo excess work: from the top bit's mask down to the second lowest.
-    for level in range(9):
-        mask = 512 >> level
+    mask = top
+    while mask > 1:
         low = mask - 1
         for axis in range(3):
             if (x[axis] & mask) != 0:
@@ -1717,20 +1732,98 @@ def hilbert_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.i
                 swap = (x[0] ^ x[axis]) & low
                 x[0] = x[0] ^ swap
                 x[axis] = x[axis] ^ swap
+        mask = mask >> 1
     # Gray encode.
     x[1] = x[1] ^ x[0]
     x[2] = x[2] ^ x[1]
     flip = wp.int32(0)
-    for level in range(9):
-        mask = 512 >> level
+    mask = top
+    while mask > 1:
         if (x[2] & mask) != 0:
             flip = flip ^ (mask - 1)
-    code = wp.int32(0)
-    for level in range(10):
-        bit = 9 - level
+        mask = mask >> 1
+    code = wp.int64(0)
+    for level in range(bits):
+        bit = bits - 1 - level
         for axis in range(3):
-            code = (code << 1) | (((x[axis] ^ flip) >> bit) & 1)
+            code = (code << wp.int64(1)) | wp.int64(((x[axis] ^ flip) >> bit) & 1)
     return code
+
+
+@wp.func
+def hilbert_cell(code: wp.int64, bits: wp.int32) -> wp.vec3i:
+    # ``hilbert_index``'s inverse: Skilling's transposed index read off ``code``'s interleaved bits,
+    # Gray decoded, then the excess work redone from the second lowest bit up.
+    x = wp.vec3i(0, 0, 0)
+    for level in range(bits):
+        bit = bits - 1 - level
+        for axis in range(3):
+            if ((code >> wp.int64(3 * bit + 2 - axis)) & wp.int64(1)) != wp.int64(0):
+                x[axis] = x[axis] | (1 << bit)
+    # Gray decode.
+    flip = x[2] >> 1
+    x[2] = x[2] ^ x[1]
+    x[1] = x[1] ^ x[0]
+    x[0] = x[0] ^ flip
+    # Redo the excess work.
+    mask = wp.int32(2)
+    while mask < (1 << bits):
+        low = mask - 1
+        for step in range(3):
+            axis = 2 - step
+            if (x[axis] & mask) != 0:
+                x[0] = x[0] ^ low
+            else:
+                swap = (x[0] ^ x[axis]) & low
+                x[0] = x[0] ^ swap
+                x[axis] = x[axis] ^ swap
+        mask = mask << 1
+    return x
+
+
+@wp.func
+def curve_index(cell: wp.vec3i, bits: wp.int32, curve: wp.int32) -> wp.int64:
+    # ``cell``'s index along ``curve`` (``CURVE_HILBERT`` / ``CURVE_MORTON``).
+    if curve == CURVE_MORTON:
+        return morton_index(cell, bits)
+    return hilbert_index(cell, bits)
+
+
+@wp.func
+def curve_cell(code: wp.int64, bits: wp.int32, curve: wp.int32) -> wp.vec3i:
+    # ``curve_index``'s inverse.
+    if curve == CURVE_MORTON:
+        return morton_cell(code, bits)
+    return hilbert_cell(code, bits)
+
+
+@wp.func
+def lattice_cell_1024(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.vec3i:
+    # ``point``'s cell of the 1024^3 lattice over the box from ``lower`` with
+    # ``inv_extent = 1023 / (upper - lower)`` per axis (``morton_frame``); a point outside the box
+    # clamps onto its face.
+    q = wp.cw_mul(point - lower, inv_extent)
+    return wp.vec3i(
+        wp.int32(wp.clamp(q[0], 0.0, 1023.0)),
+        wp.int32(wp.clamp(q[1], 0.0, 1023.0)),
+        wp.int32(wp.clamp(q[2], 0.0, 1023.0)),
+    )
+
+
+@wp.func
+def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
+    # The 30-bit Morton code of ``point``'s cell of the 1024^3 lattice over the box
+    # (``lattice_cell_1024``). Sorting points by it puts spatial neighbours next to each other.
+    # Through the ``bits``-generic ``morton_index``: identical codes, the key kernel 1.00-1.05x on
+    # CUDA and 1.10x on the CPU at 4 M / 200 k points against the unrolled 10-bit form it replaced.
+    return wp.int32(morton_index(lattice_cell_1024(point, lower, inv_extent), 10))
+
+
+@wp.func
+def hilbert_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
+    # ``morton_code_30``'s lattice ordered along a Hilbert curve instead (``hilbert_index``), at
+    # the same price against its unrolled form.
+    return wp.int32(hilbert_index(lattice_cell_1024(point, lower, inv_extent), 10))
 
 
 @wp.func
@@ -1748,18 +1841,21 @@ def morton_frame(corners: wp.array[wp.float32]) -> tuple[wp.vec3, wp.vec3]:
 
 
 @wp.kernel
-def point_hilbert_keys(
+def point_curve_keys(
     points: wp.array[wp.vec3],
     corners: wp.array[wp.float32],
+    curve: wp.int32,
     out_keys: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # Each point's ``hilbert_code_30`` over the box ``corners`` (``morton_frame``), with its index,
-    # into the radix sort's double-width buffers (``_common.hilbert_point_order``): consecutive
-    # points of the sorted order are a compact patch.
+    # Each point's 30-bit index along ``curve`` (``curve_index``) of its cell of the 1024^3 lattice
+    # over the box ``corners`` (``morton_frame``), with its index, into the radix sort's
+    # double-width buffers (``_common.space_filling_order``): consecutive points of the sorted
+    # order are a compact patch.
     i = wp.int32(wp.tid())
     lower, inv_extent = morton_frame(corners)
-    out_keys[i] = hilbert_code_30(points[i], lower, inv_extent)
+    cell = lattice_cell_1024(points[i], lower, inv_extent)
+    out_keys[i] = wp.int32(curve_index(cell, 10, curve))
     out_order[i] = i
 
 
@@ -2207,6 +2303,7 @@ def _declare_map_kernels() -> None:
             (wp.normalize, (single(wp.vec3),), wp.vec3),
             (wp.sub, (dense(wp.float32), wp.float32(1)), wp.float32),
             (wp.sub, (dense(wp.float64), wp.float64(1)), wp.float64),
+            (wp.sub, (dense(wp.int32), dense(wp.int32)), wp.int32),
             # --- This module's own mapped ``@wp.func``s. Every scalar argument is spelled
             # with an explicit constructor because a bare Python int at a ``wp.map`` scalar
             # infers ``wp.int32`` whatever the mapped function's own dtype is.

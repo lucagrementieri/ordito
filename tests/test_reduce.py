@@ -1091,6 +1091,218 @@ def test_segment_sum_matches_numpy(
         assert np.array_equal(od_reduce.segment_sum(values_wp, offsets_wp).numpy(), sums_wp.numpy())
 
 
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES)
+@pytest.mark.parity("scatter_mean", "numpy")
+def test_scatter_mean_matches_numpy(
+    device: str, dtype_wp: type, dtype_np: type, width: int, deterministic: bool
+) -> None:
+    """
+    Class A: per-group means against ``numpy.bincount`` sums over counts, in ``float64``.
+
+    20 000 values into 500 groups, one of which no index names: its mean is ``0 / 0``, NaN in
+    every component, as the reference's (asserted). Vectors are compared per component.
+    """
+    del deterministic  # the mode is the fixture's; the oracle is the same in both
+    n, n_groups = 20_000, 500
+    values_np = _group_values(n, width, dtype_np, seed=21)
+    indices_np = np.random.default_rng(22).integers(0, n_groups, n).astype(np.int32)
+    indices_np[indices_np == 11] = 12  # group 11 receives nothing
+    columns_np = values_np.reshape(n, width).astype(np.float64)
+    counts_np = np.bincount(indices_np, minlength=n_groups).astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        expected_np = np.stack(
+            [
+                np.bincount(indices_np, columns_np[:, c], minlength=n_groups) / counts_np
+                for c in range(width)
+            ],
+            1,
+        ).reshape((n_groups,) if width == 1 else (n_groups, width))
+    assert np.all(np.isnan(expected_np[11]))
+    assert np.ptp(np.nan_to_num(expected_np)) > 0.5
+    means_wp = od_reduce.scatter_mean(
+        wp.array(values_np, dtype=dtype_wp, device=device),
+        wp.array(indices_np, dtype=wp.int32, device=device),
+        n_groups,
+    )
+    assert means_wp.dtype == dtype_wp
+    assert np.allclose(means_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
+@pytest.mark.parity("segment_mean", "numpy")
+def test_segment_mean_matches_numpy(
+    device: str, dtype_wp: type, dtype_np: type, width: int
+) -> None:
+    """
+    Class B: per-segment means against ``numpy.add.reduceat`` over the lengths, empty ones NaN.
+
+    ``reduceat`` repeats the value at an empty segment's start, so the transform sets the
+    reference to NaN at the empty segments (asserted present), where ``segment_mean`` divides
+    ``0 / 0``. Segment lengths run from 0 to 2 000.
+    """
+    rng = np.random.default_rng(23)
+    lengths_np = rng.integers(0, 40, 300)
+    lengths_np[::25] = 0
+    lengths_np[5] = 2_000
+    offsets_np = np.concatenate([[0], np.cumsum(lengths_np)]).astype(np.int32)
+    n = int(offsets_np[-1])
+    values_np = _group_values(n, width, dtype_np, seed=24)
+    sums_np = np.add.reduceat(values_np.astype(np.float64), offsets_np[:-1].clip(max=n - 1))
+    shape = (-1,) + (1,) * (sums_np.ndim - 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        expected_np = sums_np / lengths_np.reshape(shape)
+    expected_np[lengths_np == 0] = np.nan
+    assert np.count_nonzero(lengths_np == 0) >= 12
+    means_wp = od_reduce.segment_mean(
+        wp.array(values_np, dtype=dtype_wp, device=device),
+        wp.array(offsets_np, dtype=wp.int32, device=device),
+    )
+    assert means_wp.shape == (lengths_np.size,)
+    assert np.allclose(means_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5, equal_nan=True)
+
+
+_EXTREMUM_DTYPES = [
+    pytest.param(wp.int32, np.int32, 1, id="int32"),
+    pytest.param(wp.int64, np.int64, 1, id="int64"),
+    pytest.param(wp.float32, np.float32, 1, id="float32"),
+    pytest.param(wp.float64, np.float64, 1, id="float64"),
+    pytest.param(wp.vec2, np.float32, 2, id="vec2"),
+    pytest.param(wp.vec3, np.float32, 3, id="vec3"),
+    pytest.param(wp.vec4d, np.float64, 4, id="vec4d"),
+]
+
+_EXTREMA = [
+    pytest.param(od_reduce.scatter_min, od_reduce.segment_min, np.minimum, id="min"),
+    pytest.param(od_reduce.scatter_max, od_reduce.segment_max, np.maximum, id="max"),
+]
+
+
+def _extremum_values(n: int, width: int, dtype_np: type, seed: int) -> np.ndarray:
+    """``(n,)`` or ``(n, width)`` values: integers spanning the dtype's sign, or normals."""
+    if np.issubdtype(dtype_np, np.integer):
+        return _scalar_values((n,), np.int32, seed).astype(dtype_np) * 1_000_003
+    return _group_values(n, width, dtype_np, seed)
+
+
+def _extremum_identity(ufunc: np.ufunc, dtype_np: type) -> float | int:
+    """Return what an empty group holds: the largest value for a minimum, the least for a max."""
+    if np.issubdtype(dtype_np, np.integer):
+        info = np.iinfo(dtype_np)
+        return int(info.max) if ufunc is np.minimum else int(info.min)
+    return np.inf if ufunc is np.minimum else -np.inf
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(("scatter", "segment", "ufunc"), _EXTREMA)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _EXTREMUM_DTYPES)
+@pytest.mark.parity("scatter_min", "numpy")
+@pytest.mark.parity("scatter_max", "numpy")
+def test_scatter_extrema_match_numpy(
+    device: str,
+    scatter: Callable[..., wp.array[Any]],
+    segment: Callable[..., wp.array[Any]],
+    ufunc: np.ufunc,
+    dtype_wp: type,
+    dtype_np: type,
+    width: int,
+    deterministic: bool,
+) -> None:
+    """
+    Class A: per-group minima and maxima against ``ufunc.at`` into the identity, bit for bit.
+
+    50 000 values into 3 000 groups, a third of them into group 0 (every lane of a warp on one
+    slot), group 7 receiving nothing and holding the identity. With ``n_groups`` passed and
+    inferred; two calls agree byte for byte in both modes, as the docstring promises.
+    """
+    del segment, deterministic
+    n, n_groups = 50_000, 3_000
+    values_np = _extremum_values(n, width, dtype_np, seed=25)
+    indices_np = np.random.default_rng(26).integers(0, n_groups - 1, n).astype(np.int32)
+    indices_np[: n // 3] = 0
+    indices_np[indices_np == 7] = 8
+    shape = (n_groups,) if width == 1 else (n_groups, width)
+    expected_np = np.full(shape, _extremum_identity(ufunc, dtype_np), dtype=dtype_np)
+    ufunc.at(expected_np, indices_np, values_np)
+    assert np.unique(expected_np[:-1]).size > 100
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    extrema_wp = scatter(values_wp, indices_wp, n_groups)
+    assert extrema_wp.dtype == dtype_wp
+    assert np.array_equal(extrema_wp.numpy(), expected_np)
+    assert np.array_equal(scatter(values_wp, indices_wp).numpy(), expected_np[:-1])
+    again_np = scatter(values_wp, indices_wp, n_groups).numpy()
+    assert np.array_equal(again_np.view(np.uint8), extrema_wp.numpy().view(np.uint8))
+
+
+@pytest.mark.parametrize(("scatter", "segment", "ufunc"), _EXTREMA)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _EXTREMUM_DTYPES)
+@pytest.mark.parity("segment_min", "numpy")
+@pytest.mark.parity("segment_max", "numpy")
+def test_segment_extrema_match_numpy(
+    device: str,
+    scatter: Callable[..., wp.array[Any]],
+    segment: Callable[..., wp.array[Any]],
+    ufunc: np.ufunc,
+    dtype_wp: type,
+    dtype_np: type,
+    width: int,
+) -> None:
+    """
+    Class B: per-segment minima and maxima against ``ufunc.reduceat``, empty segments the identity.
+
+    ``reduceat`` repeats the value at an empty segment's start, so the transform sets the
+    reference to the identity there (asserted present). Segment lengths run from 0 to 2 000.
+    """
+    del scatter
+    rng = np.random.default_rng(27)
+    lengths_np = rng.integers(0, 40, 300)
+    lengths_np[::25] = 0
+    lengths_np[5] = 2_000
+    offsets_np = np.concatenate([[0], np.cumsum(lengths_np)]).astype(np.int32)
+    n = int(offsets_np[-1])
+    values_np = _extremum_values(n, width, dtype_np, seed=28)
+    expected_np = ufunc.reduceat(values_np, offsets_np[:-1].clip(max=n - 1))
+    expected_np[lengths_np == 0] = _extremum_identity(ufunc, dtype_np)
+    assert np.count_nonzero(lengths_np == 0) >= 12
+    extrema_wp = segment(
+        wp.array(values_np, dtype=dtype_wp, device=device),
+        wp.array(offsets_np, dtype=wp.int32, device=device),
+    )
+    assert extrema_wp.dtype == dtype_wp
+    assert np.array_equal(extrema_wp.numpy(), expected_np)
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"), [(wp.float32, np.float32), (wp.vec3d, np.float64)]
+)
+def test_scatter_extrema_of_signed_zeros_repeat(
+    device: str, dtype_wp: type, dtype_np: type, deterministic: bool
+) -> None:
+    """
+    Ordito against ordito: a group of ``-0.0`` and ``+0.0`` gets the same zero on every call.
+
+    The one tie a minimum's arrival order could decide is between the two zeros, whose bits
+    differ. Four groups of a million zeros of random sign, ten calls each, compared byte for byte;
+    ``test_scatter_extrema_match_numpy`` holds the value's oracle.
+    """
+    del deterministic
+    rng = np.random.default_rng(29)
+    n = 1 << 20
+    zeros_np = np.where(rng.random(n) < 0.5, -0.0, 0.0).astype(dtype_np)
+    if dtype_wp is wp.vec3d:
+        zeros_np = np.repeat(zeros_np[:, None], 3, axis=1)
+    values_wp = wp.array(zeros_np, dtype=dtype_wp, device=device)
+    indices_wp = wp.array(rng.integers(0, 4, n).astype(np.int32), dtype=wp.int32, device=device)
+    for scatter in (od_reduce.scatter_min, od_reduce.scatter_max):
+        first_np = scatter(values_wp, indices_wp).numpy()
+        assert np.all(first_np == 0.0)
+        for _ in range(9):
+            again_np = scatter(values_wp, indices_wp).numpy()
+            assert np.array_equal(np.signbit(again_np), np.signbit(first_np))
+
+
 _REJECTED_GROUP_SUMS: list[tuple[str, Callable[[str], object], type, str]] = [
     (
         "rank-2 values",
@@ -1186,6 +1398,67 @@ _REJECTED_GROUP_SUMS: list[tuple[str, Callable[[str], object], type, str]] = [
         ValueError,
         "non-empty rank-1 offsets",
     ),
+    (
+        "integer values to a mean",
+        lambda device: od_reduce.scatter_mean(
+            wp.zeros(2, dtype=wp.int32, device=device), wp.zeros(2, dtype=wp.int32, device=device)
+        ),
+        TypeError,
+        "scatter_mean sums wp.float32",
+    ),
+    (
+        "segment mean offsets not closed by n",
+        lambda device: od_reduce.segment_mean(
+            wp.zeros(3, dtype=wp.float32, device=device),
+            wp.array([0, 2], dtype=wp.int32, device=device),
+        ),
+        ValueError,
+        "segment_mean offsets end at 2",
+    ),
+    (
+        "bool values to a minimum",
+        lambda device: od_reduce.scatter_min(
+            wp.zeros(2, dtype=wp.bool, device=device), wp.zeros(2, dtype=wp.int32, device=device)
+        ),
+        TypeError,
+        "scatter_min takes wp.int32",
+    ),
+    (
+        "rank-2 values to a maximum",
+        lambda device: od_reduce.scatter_max(
+            warp_empty((3, 2), wp.float32, device), warp_empty(3, wp.int32, device)
+        ),
+        ValueError,
+        "scatter_max requires rank-1 values",
+    ),
+    (
+        "maximum index past n_groups",
+        lambda device: od_reduce.scatter_max(
+            wp.zeros(2, dtype=wp.int64, device=device),
+            wp.array([0, 2], dtype=wp.int32, device=device),
+            2,
+        ),
+        ValueError,
+        "scatter_max indices span",
+    ),
+    (
+        "segment minimum offsets not closed by n",
+        lambda device: od_reduce.segment_min(
+            wp.zeros(3, dtype=wp.int32, device=device),
+            wp.array([0, 4], dtype=wp.int32, device=device),
+        ),
+        ValueError,
+        "segment_min offsets end at 4",
+    ),
+    (
+        "int64 offsets to a segment maximum",
+        lambda device: od_reduce.segment_max(
+            wp.zeros(3, dtype=wp.float32, device=device),
+            wp.array([0, 3], dtype=wp.int64, device=device),
+        ),
+        TypeError,
+        "segment_max requires wp.int32 offsets",
+    ),
 ]
 
 
@@ -1199,7 +1472,7 @@ _REJECTED_GROUP_SUMS: list[tuple[str, Callable[[str], object], type, str]] = [
 def test_invalid_group_sums_raise(
     device: str, call: Callable[[str], object], error: type[Exception], match: str
 ) -> None:
-    """Each rejected argument of ``scatter_sum`` / ``segment_sum`` raises its documented error."""
+    """Each rejected argument of a ``scatter_*`` / ``segment_*`` reduction raises its error."""
     with pytest.raises(error, match=match):
         call(device)
 
@@ -1212,6 +1485,26 @@ def test_group_sums_of_nothing(device: str) -> None:
     assert od_reduce.scatter_sum(empty_values, empty_indices, 3).numpy().tolist() == [0.0] * 3
     offsets = wp.zeros(3, dtype=wp.int32, device=device)
     assert od_reduce.segment_sum(empty_values, offsets).numpy().tolist() == [0.0, 0.0]
+
+
+def test_group_extrema_and_means_of_nothing(device: str) -> None:
+    """
+    Not a library comparison: no values give each group its identity, or NaN for a mean.
+
+    NumPy has no empty-group convention to compare with: ``ufunc.at`` keeps whatever ``out``
+    held, and ``reduceat`` repeats a neighbouring value.
+    """
+    empty_values = wp.zeros(0, dtype=wp.float32, device=device)
+    empty_indices = warp_empty(0, wp.int32, device)
+    offsets = wp.zeros(3, dtype=wp.int32, device=device)
+    assert od_reduce.scatter_min(empty_values, empty_indices).shape == (0,)
+    assert od_reduce.scatter_min(empty_values, empty_indices, 2).numpy().tolist() == [np.inf] * 2
+    assert od_reduce.segment_max(empty_values, offsets).numpy().tolist() == [-np.inf] * 2
+    empty_ints = wp.zeros(0, dtype=wp.int32, device=device)
+    assert od_reduce.scatter_max(empty_ints, empty_indices, 1).numpy().tolist() == [-(2**31)]
+    assert np.all(np.isnan(od_reduce.scatter_mean(empty_values, empty_indices, 3).numpy()))
+    assert np.all(np.isnan(od_reduce.segment_mean(empty_values, offsets).numpy()))
+    assert od_reduce.scatter_mean(empty_values, empty_indices).shape == (0,)
 
 
 def test_float_sum_of_a_strided_view_is_reproducible(device: str) -> None:

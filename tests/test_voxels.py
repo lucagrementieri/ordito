@@ -24,6 +24,7 @@ gained a CPU path in Warp 1.16, so nothing here is CUDA-only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal, cast
 
 import igl
@@ -38,6 +39,7 @@ import torch
 import trimesh as tm
 import trimesh.voxel.ops as tm_voxel_ops
 import warp as wp
+from hilbertcurve.hilbertcurve import HilbertCurve
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
@@ -760,6 +762,171 @@ def test_cells_sorted_order_handles_negative_cells(device: str):
     rows = od.voxels.cells(grid, order="sorted").numpy()
     # Ascending in the packed key means lexicographic with x as the *last* tiebreak.
     assert np.array_equal(rows, rows[np.lexsort((rows[:, 0], rows[:, 1], rows[:, 2]))])
+
+
+def _lattice_cells(n: int, bits: int, seed: int) -> npt.NDArray[np.int32]:
+    """``(n, 3)`` random cells of a ``2**bits`` lattice, its two extreme corners first."""
+    side = 1 << bits
+    cells_np = np.random.default_rng(seed).integers(0, side, (n, 3)).astype(np.int32)
+    cells_np[0] = 0
+    cells_np[1] = side - 1
+    return cells_np
+
+
+def _morton_codes_np(cells_np: npt.NDArray[np.int32], bits: int) -> npt.NDArray[np.int64]:
+    """Morton codes by interleaving the coordinate bits, bit ``b`` of axis ``a`` at ``3b + a``."""
+    codes_np = np.zeros(cells_np.shape[0], dtype=np.int64)
+    for bit in range(bits):
+        for axis in range(3):
+            codes_np |= ((cells_np[:, axis].astype(np.int64) >> bit) & 1) << (3 * bit + axis)
+    return codes_np
+
+
+@pytest.mark.parametrize("bits", [1, 4, 10, 21])
+def test_space_filling_codes_match_hilbertcurve(device: str, bits: int):
+    """
+    Class A: Hilbert codes and their inverse against ``hilbertcurve.HilbertCurve(bits, 3)``.
+
+    The package implements Skilling's transform independently, in Python integers. The lattice
+    depth runs from one bit (eight cells) to 21 (63-bit codes, past ``int32``); the cloud includes
+    both extreme corners, and the codes are not constant.
+    """
+    cells_np = _lattice_cells(2_000, bits, seed=31)
+    curve_hc = HilbertCurve(bits, 3)
+    codes_hc = np.array(curve_hc.distances_from_points(cells_np.tolist()), dtype=np.int64)
+    assert np.ptp(codes_hc) > 0
+    cells_wp = odt.as_array2d(wp.array(cells_np, dtype=wp.int32, device=device), wp.int32)
+    codes_wp = od.voxels.space_filling_codes(cells_wp, bits)
+    assert codes_wp.dtype == wp.int64
+    assert np.array_equal(codes_wp.numpy(), codes_hc)
+    decoded_wp = od.voxels.cells_from_space_filling_codes(codes_wp, bits)
+    assert np.array_equal(decoded_wp.numpy(), np.array(curve_hc.points_from_distances(codes_hc)))
+
+
+@pytest.mark.parametrize("bits", [1, 10, 21])
+def test_space_filling_codes_match_numpy_morton(device: str, bits: int):
+    """
+    Class A: Morton codes and their inverse against a NumPy interleaving of the coordinate bits.
+
+    Not a geometry library, since none of the references computes a Z-order index; the
+    interleaving is the curve's definition, written with array shifts rather than a per-cell loop.
+    """
+    cells_np = _lattice_cells(2_000, bits, seed=32)
+    codes_np = _morton_codes_np(cells_np, bits)
+    assert np.ptp(codes_np) > 0
+    cells_wp = odt.as_array2d(wp.array(cells_np, dtype=wp.int32, device=device), wp.int32)
+    codes_wp = od.voxels.space_filling_codes(cells_wp, bits, curve="morton")
+    assert np.array_equal(codes_wp.numpy(), codes_np)
+    decoded_wp = od.voxels.cells_from_space_filling_codes(codes_wp, bits, curve="morton")
+    assert np.array_equal(decoded_wp.numpy(), cells_np)
+
+
+@pytest.mark.parametrize("bits", [1, 2, 3])
+def test_hilbert_codes_walk_face_adjacent_cells(device: str, bits: int):
+    """
+    Not a library comparison: the curve visits every cell once, a face-adjacent step at a time.
+
+    Decoding every code of the lattice gives each cell exactly once, consecutive cells differ by
+    one in one coordinate, and the walk starts at the origin. The Morton curve fails the step test
+    from ``bits = 1`` (asserted), so it discriminates.
+    """
+    n = 1 << (3 * bits)
+    codes_wp = wp.array(np.arange(n, dtype=np.int64), dtype=wp.int64, device=device)
+    curves: list[tuple[Literal["hilbert", "morton"], bool]] = [("hilbert", True), ("morton", False)]
+    for curve, adjacent in curves:
+        cells_np = od.voxels.cells_from_space_filling_codes(codes_wp, bits, curve=curve).numpy()
+        assert np.unique(cells_np, axis=0).shape[0] == n
+        assert cells_np[0].tolist() == [0, 0, 0]
+        steps_np = np.abs(np.diff(cells_np, axis=0)).sum(axis=1)
+        assert bool(np.all(steps_np == 1)) == adjacent
+
+
+_REJECTED_SPACE_FILLING: list[tuple[str, Callable[[str], object], type, str]] = [
+    (
+        "coordinate past the lattice",
+        lambda device: od.voxels.space_filling_codes(
+            wp.array([[0, 0, 4]], dtype=wp.int32, device=device), 2
+        ),
+        ValueError,
+        r"every coordinate in \[0, 4\)",
+    ),
+    (
+        "negative coordinate",
+        lambda device: od.voxels.space_filling_codes(
+            wp.array([[0, -1, 0]], dtype=wp.int32, device=device), 2, curve="morton"
+        ),
+        ValueError,
+        "every coordinate",
+    ),
+    (
+        "code past the curve",
+        lambda device: od.voxels.cells_from_space_filling_codes(
+            wp.array([64], dtype=wp.int64, device=device), 2
+        ),
+        ValueError,
+        r"every code in \[0, 64\)",
+    ),
+    (
+        "zero bits",
+        lambda device: od.voxels.space_filling_codes(warp_empty((0, 3), wp.int32, device), 0),
+        ValueError,
+        r"bits must lie in \[1, 21\]",
+    ),
+    (
+        "22 bits",
+        lambda device: od.voxels.cells_from_space_filling_codes(
+            warp_empty(0, wp.int64, device), 22
+        ),
+        ValueError,
+        r"bits must lie in \[1, 21\]",
+    ),
+    (
+        "unknown curve",
+        lambda device: od.voxels.space_filling_codes(
+            warp_empty((0, 3), wp.int32, device), 4, curve=cast(Literal["hilbert"], "peano")
+        ),
+        ValueError,
+        "'peano'",
+    ),
+    (
+        "two columns",
+        lambda device: od.voxels.space_filling_codes(warp_empty((2, 2), wp.int32, device), 4),
+        ValueError,
+        "three columns",
+    ),
+    (
+        "int32 codes",
+        lambda device: od.voxels.cells_from_space_filling_codes(
+            warp_empty(2, wp.int32, device),  # pyright: ignore[reportArgumentType]
+            4,
+        ),
+        TypeError,
+        "int64",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "error", "match"),
+    [
+        pytest.param(call, error, match, id=name)
+        for name, call, error, match in _REJECTED_SPACE_FILLING
+    ],
+)
+def test_invalid_space_filling_codes_raise(
+    device: str, call: Callable[[str], object], error: type[Exception], match: str
+):
+    """Each rejected argument of the two space-filling code functions raises its error."""
+    with pytest.raises(error, match=match):
+        call(device)
+
+
+def test_space_filling_codes_of_nothing(device: str):
+    """Not a library comparison: no cells give no codes, and no codes no cells."""
+    codes_wp = od.voxels.space_filling_codes(warp_empty((0, 3), wp.int32, device), 21)
+    assert codes_wp.shape == (0,)
+    cells_wp = od.voxels.cells_from_space_filling_codes(warp_empty(0, wp.int64, device), 21)
+    assert cells_wp.shape == (0, 3)
 
 
 @pytest.mark.parity("occupancy_at_points", "open3d")

@@ -453,6 +453,131 @@ def test_segment_sum(bench_case: BenchCase) -> None:
     assert sums.shape[0] == bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="scatter_mean")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_scatter_mean(bench_case: BenchCase) -> None:
+    """
+    ``scatter_sum``'s per-vertex corner sums, plus a count scatter and one division map.
+
+    ``numpy.bincount`` with weights over ``bincount`` of the indices is the host reference.
+    """
+    if bench_case.kind == "numpy":
+        values_np, vertices_np, _, _ = _corners_np(bench_case)
+        n_vertices = bench_case.n_vertices
+        means_np = bench_case.run(
+            lambda: (
+                np.bincount(vertices_np, weights=values_np, minlength=n_vertices)
+                / np.bincount(vertices_np, minlength=n_vertices)
+            )
+        )
+        assert means_np.shape[0] == n_vertices
+        return
+    values, vertices = _corners_wp(bench_case, sorted_form=False)
+    means = bench_case.run(lambda: od.reduce.scatter_mean(values, vertices, bench_case.n_vertices))
+    assert means.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="segment_mean")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_segment_mean(bench_case: BenchCase) -> None:
+    """
+    ``segment_sum``'s sorted corners, plus the segment lengths and one division map.
+
+    ``numpy.add.reduceat`` over the segment lengths is the host reference, its starts clipped as
+    in the ``segment_sum`` row.
+    """
+    if bench_case.kind == "numpy":
+        _, _, sorted_np, offsets_np = _corners_np(bench_case)
+        starts_np = np.minimum(offsets_np[:-1], sorted_np.size - 1)
+        lengths_np = np.diff(offsets_np)
+        means_np = bench_case.run(lambda: np.add.reduceat(sorted_np, starts_np) / lengths_np)
+        assert means_np.shape[0] == bench_case.n_vertices
+        return
+    values, offsets = _corners_wp(bench_case, sorted_form=True)
+    means = bench_case.run(lambda: od.reduce.segment_mean(values, offsets))
+    assert means.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="scatter_min")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_scatter_min(bench_case: BenchCase) -> None:
+    """
+    The per-vertex corner minima: one ``atomic_min`` per value after the index-range readback.
+
+    ``numpy.minimum.at`` into a buffer of ``inf`` is the host reference.
+    """
+    if bench_case.kind == "numpy":
+        values_np, vertices_np, _, _ = _corners_np(bench_case)
+        minima_np = bench_case.run(
+            lambda: _ufunc_at(np.minimum, np.inf, values_np, vertices_np, bench_case.n_vertices)
+        )
+        assert minima_np.shape[0] == bench_case.n_vertices
+        return
+    values, vertices = _corners_wp(bench_case, sorted_form=False)
+    minima = bench_case.run(lambda: od.reduce.scatter_min(values, vertices, bench_case.n_vertices))
+    assert minima.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="scatter_max")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_scatter_max(bench_case: BenchCase) -> None:
+    """``scatter_min``'s twin; ``numpy.maximum.at`` into ``-inf`` is the host reference."""
+    if bench_case.kind == "numpy":
+        values_np, vertices_np, _, _ = _corners_np(bench_case)
+        maxima_np = bench_case.run(
+            lambda: _ufunc_at(np.maximum, -np.inf, values_np, vertices_np, bench_case.n_vertices)
+        )
+        assert maxima_np.shape[0] == bench_case.n_vertices
+        return
+    values, vertices = _corners_wp(bench_case, sorted_form=False)
+    maxima = bench_case.run(lambda: od.reduce.scatter_max(values, vertices, bench_case.n_vertices))
+    assert maxima.shape[0] == bench_case.n_vertices
+
+
+def _ufunc_at(
+    ufunc: np.ufunc, identity: float, values_np: np.ndarray, groups_np: np.ndarray, n_groups: int
+) -> np.ndarray:
+    """``ufunc.at`` of ``values_np`` into ``n_groups`` slots holding ``identity``."""
+    out_np = np.full(n_groups, identity, dtype=values_np.dtype)
+    ufunc.at(out_np, groups_np, values_np)
+    return out_np
+
+
+@pytest.mark.benchmark(group="segment_min")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_segment_min(bench_case: BenchCase) -> None:
+    """
+    The per-vertex minima of the sorted corners: a segment search and one atomic per value.
+
+    ``numpy.minimum.reduceat`` is the host reference, its starts clipped as in the
+    ``segment_sum`` row.
+    """
+    if bench_case.kind == "numpy":
+        _, _, sorted_np, offsets_np = _corners_np(bench_case)
+        starts_np = np.minimum(offsets_np[:-1], sorted_np.size - 1)
+        minima_np = bench_case.run(lambda: np.minimum.reduceat(sorted_np, starts_np))
+        assert minima_np.shape[0] == bench_case.n_vertices
+        return
+    values, offsets = _corners_wp(bench_case, sorted_form=True)
+    minima = bench_case.run(lambda: od.reduce.segment_min(values, offsets))
+    assert minima.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="segment_max")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_segment_max(bench_case: BenchCase) -> None:
+    """``segment_min``'s twin; ``numpy.maximum.reduceat`` is the host reference."""
+    if bench_case.kind == "numpy":
+        _, _, sorted_np, offsets_np = _corners_np(bench_case)
+        starts_np = np.minimum(offsets_np[:-1], sorted_np.size - 1)
+        maxima_np = bench_case.run(lambda: np.maximum.reduceat(sorted_np, starts_np))
+        assert maxima_np.shape[0] == bench_case.n_vertices
+        return
+    values, offsets = _corners_wp(bench_case, sorted_form=True)
+    maxima = bench_case.run(lambda: od.reduce.segment_max(values, offsets))
+    assert maxima.shape[0] == bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="minmax_scalar")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_minmax_scalar(bench_case: BenchCase) -> None:

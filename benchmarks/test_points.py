@@ -87,7 +87,7 @@ both costs are close to linear in the direction count, so two points fix the lin
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import open3d as o3d
@@ -576,6 +576,20 @@ def test_radial_sort(bench_case: BenchCase) -> None:
             lambda: tm.points.radial_sort(points_np, origin=origin_np, normal=_PLANE_NORMAL)
         )
         assert ordered_tm.shape == (n_points, 3)
+
+
+@pytest.mark.benchmark(group="space_filling_order")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("curve", ["hilbert", "morton"])
+def test_space_filling_order(bench_case: BenchCase, curve: Literal["hilbert", "morton"]) -> None:
+    """
+    The vertices along a curve: a box reduction, the key kernel and a 30-bit radix sort.
+
+    No reference row: no reference library orders a cloud along a space-filling curve.
+    """
+    points = bench_case.vertices_wp
+    order = bench_case.run(lambda: od.points.space_filling_order(points, curve=curve))
+    assert order.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="estimate_normals")

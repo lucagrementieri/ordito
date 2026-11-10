@@ -1081,6 +1081,19 @@ wheels = [
 ]
 
 [[package]]
+name = "hilbertcurve"
+version = "2.0.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f8/0f/e5ca68d4f1533b9b4bda6d354b017aa632830f17a951e715cd2a93104be5/hilbertcurve-2.0.5.tar.gz", hash = "sha256:6a7703d9a2f1fe748c86d86908bf183e7d139b973645e4b2526e10b34e75796d", size = 58670, upload-time = "2021-03-29T20:43:27.794Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/ce/b5b18c87a6f02057fe5b2d0638cac0d097de983f560a53213d94e6352907/hilbertcurve-2.0.5-py3-none-any.whl", hash = "sha256:dbaad510237d3cd4355c189f00e8dbe66a9e66e03af37f9d3f257799292da363", size = 8595, upload-time = "2021-03-29T20:43:25.825Z" },
+]
+
+[[package]]
 name = "identify"
 version = "2.6.20"
 source = { registry = "https://pypi.org/simple" }
@@ -2480,6 +2493,7 @@ io = [
 bench = [
     { name = "cairosvg" },
     { name = "embreex" },
+    { name = "hilbertcurve" },
     { name = "libigl" },
     { name = "manifold3d" },
     { name = "matplotlib" },
@@ -2525,6 +2539,7 @@ docs = [
 ]
 test = [
     { name = "embreex" },
+    { name = "hilbertcurve" },
     { name = "libigl" },
     { name = "manifold3d" },
     { name = "meshio" },
@@ -2567,6 +2582,7 @@ provides-extras = ["io"]
 bench = [
     { name = "cairosvg", specifier = ">=2.7" },
     { name = "embreex", specifier = ">=4.4" },
+    { name = "hilbertcurve", specifier = ">=2.0.5" },
     { name = "libigl", specifier = ">=2.6" },
     { name = "manifold3d", specifier = ">=2.3.0" },
     { name = "matplotlib", specifier = ">=3.9" },
@@ -2608,6 +2624,7 @@ docs = [
 ]
 test = [
     { name = "embreex", specifier = ">=4.4" },
+    { name = "hilbertcurve", specifier = ">=2.0.5" },
     { name = "libigl", specifier = ">=2.6" },
     { name = "manifold3d", specifier = ">=2.3.0" },
     { name = "meshio", specifier = ">=5.3" },

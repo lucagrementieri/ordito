@@ -7,7 +7,9 @@ from ordito.kernels.array import (
     append_slot,
     atomic_min_packed_box,
     binary_search_index_left,
+    declare_map_signatures,
     device_is_cpu,
+    map_probe,
     mark_at,
     popcount32,
     scanned_count,
@@ -334,6 +336,60 @@ def segment_sum_vectors(
     # ``segment_sum_scalars`` for vectors.
     i = wp.int32(wp.tid())
     sole_scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i], ARRIVAL_POOL_UNIFORM)
+
+
+# ``reduce.scatter_min`` / ``scatter_max`` and their segment forms: ``maximum`` (warp-uniform)
+# selects the extremum. The two kernels differ only in how an item finds its group. A minimum is
+# exact in any order, so unlike a sum the arrival order moves no bits: these need no deterministic
+# form. A vector commits componentwise (one atomic a component).
+EXTREMUM_MIN = wp.int32(0)
+EXTREMUM_MAX = wp.int32(1)
+
+
+@wp.func
+def commit_extremum(out_extrema: wp.array[Any], group: wp.int32, value: Any, maximum: wp.int32):
+    # ``out_extrema[group]`` lowered (``EXTREMUM_MIN``) or raised (``EXTREMUM_MAX``) to ``value``.
+    if maximum == EXTREMUM_MAX:
+        wp.atomic_max(out_extrema, group, value)
+    else:
+        wp.atomic_min(out_extrema, group, value)
+
+
+@wp.kernel
+def scatter_extrema(
+    values: wp.array[Any],
+    indices: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[Any],
+) -> None:
+    # Each value into its group's extremum.
+    i = wp.int32(wp.tid())
+    commit_extremum(out_extrema, indices[i], values[i], maximum)
+
+
+@wp.kernel
+def segment_extrema(
+    values: wp.array[Any],
+    offsets: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[Any],
+) -> None:
+    # ``scatter_extrema`` with each item's group its segment (``segment_of``).
+    i = wp.int32(wp.tid())
+    commit_extremum(out_extrema, segment_of(offsets, i), values[i], maximum)
+
+
+@wp.func
+def scalar_mean_of_sum(total: wp.Float, count: wp.int32):
+    # ``reduce.scatter_mean`` / ``segment_mean``'s division, mapped over the groups: ``0 / 0``, a
+    # NaN, for an empty group.
+    return total / type(total)(count)
+
+
+@wp.func
+def vector_mean_of_sum(total: Any, count: wp.int32):
+    # ``scalar_mean_of_sum`` for a vector, componentwise.
+    return total / type(total[0])(count)
 
 
 @wp.func
@@ -1131,11 +1187,15 @@ _GRID_DTYPES = (wp.float32, wp.vec3)
 # ``reduce.scatter_sum`` / ``segment_sum``'s value dtypes: the scalars and the vectors it documents.
 _GROUP_SUM_SCALARS = (wp.float32, wp.float64)
 _GROUP_SUM_VECTORS = (wp.vec2, wp.vec3, wp.vec4, wp.vec2d, wp.vec3d, wp.vec4d)
+# ``reduce.scatter_min`` / ``scatter_max`` and their segment forms' value dtypes.
+EXTREMUM_DTYPES = (wp.int32, wp.int64, wp.float32, wp.float64, *_GROUP_SUM_VECTORS)
 
 SCATTER_SUM_SCALARS: OverloadTable
 SCATTER_SUM_VECTORS: OverloadTable
 SEGMENT_SUM_SCALARS: OverloadTable
 SEGMENT_SUM_VECTORS: OverloadTable
+SCATTER_EXTREMA: OverloadTable
+SEGMENT_EXTREMA: OverloadTable
 DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
@@ -1180,6 +1240,15 @@ def _register_overloads() -> None:
             d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
             for d in _GROUP_SUM_VECTORS
         },
+    )
+    global SCATTER_EXTREMA, SEGMENT_EXTREMA
+    SCATTER_EXTREMA = OverloadTable(
+        scatter_extrema,
+        {d: [wp.array[d], wp.array[wp.int32], wp.int32, wp.array[d]] for d in EXTREMUM_DTYPES},
+    )
+    SEGMENT_EXTREMA = OverloadTable(
+        segment_extrema,
+        {d: [wp.array[d], wp.array[wp.int32], wp.int32, wp.array[d]] for d in EXTREMUM_DTYPES},
     )
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
@@ -1284,6 +1353,24 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_map_kernels() -> None:
+    """
+    Pre-declare this module's ``wp.map`` signatures so each builds one module.
+
+    See ``kernels/array.py::declare_map_signatures`` for why this exists.
+    """
+    dense = map_probe
+    declare_map_signatures(
+        [
+            *((scalar_mean_of_sum, (dense(d), dense(wp.int32)), d) for d in _GROUP_SUM_SCALARS),
+            *((vector_mean_of_sum, (dense(d), dense(wp.int32)), d) for d in _GROUP_SUM_VECTORS),
+        ]
+    )
+
+
+_declare_map_kernels()
 
 
 # --------------------------------------------------------------------------------------

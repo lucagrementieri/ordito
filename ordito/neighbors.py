@@ -2076,6 +2076,97 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
     return key & 0xFFFFFFFF, index_b, distance
 
 
+def mutual_nearest(
+    a: wp.array[wp.vec3], b: wp.array[wp.vec3]
+) -> tuple[odt.Array1dInt32, odt.Array1dInt32, odt.Array1dFloat32]:
+    """
+    Pairs of points of two clouds that are each other's nearest neighbour, and their distances.
+
+    Point ``a[i]`` and point ``b[j]`` pair when ``b[j]`` is the nearest point of ``b`` to
+    ``a[i]`` and ``a[i]`` the nearest point of ``a`` to ``b[j]``. Each point is in at most one
+    pair, so the pairs are a one-to-one correspondence between subsets of the two clouds: the
+    usual filter on putative matches before a rigid fit (mutual, or reciprocal, nearest
+    neighbours).
+
+    Parameters
+    ----------
+    a
+        ``(n_a,)`` first cloud.
+    b
+        ``(n_b,)`` second cloud.
+
+    Returns
+    -------
+    a_indices, b_indices, distances
+        ``(n_pairs,)`` ``wp.int32`` indices into ``a`` (ascending) and into ``b``, and the
+        ``(n_pairs,)`` ``wp.float32`` Euclidean distance of each pair. Empty when either cloud
+        is.
+
+    Raises
+    ------
+    RuntimeError
+        If ``a`` and ``b`` are not on one device.
+
+    Notes
+    -----
+    Two nearest-neighbour queries, one each way
+    ([`query_nearest`][ordito.neighbors.query_nearest]), then one pass keeping the pairs that
+    agree. Where a point's nearest neighbour is tied, the query's choice among the tied points
+    decides whether it pairs.
+
+    See Also
+    --------
+    [`query_nearest`][ordito.neighbors.query_nearest]
+        The one-way nearest neighbours.
+    [`ordito.registration.procrustes`][ordito.registration.procrustes]
+        The rigid fit to the pairs.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    a = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=wp.vec3)
+    b = wp.array([[0.1, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=wp.vec3)
+    a_indices, b_indices, distances = od.neighbors.mutual_nearest(a, b)
+    print(a_indices.numpy().tolist(), b_indices.numpy().tolist())  # [0, 2] [0, 1]
+    print([round(float(d), 3) for d in distances.numpy()])  # [0.1, 1.0]
+    ```
+    """
+    require_same_device(a=a, b=b)
+    device = a.device
+    n_a = a.size
+    if n_a == 0 or b.size == 0:
+        return (
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
+        )
+    nearest_in_b, distances = query_nearest(b, a)
+    nearest_in_a, _ = query_nearest(a, b)
+    flags = _launch.empty(n_a, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_neighbors.mutual_nearest_flags,
+        dim=n_a,
+        inputs=[nearest_in_b, nearest_in_a, flags],
+        device=device,
+    )
+    n_pairs = scan_count(flags)
+    a_indices = _launch.empty(n_pairs, dtype=wp.int32, device=device)
+    b_indices = _launch.empty(n_pairs, dtype=wp.int32, device=device)
+    pair_distances = _launch.empty(n_pairs, dtype=wp.float32, device=device)
+    if n_pairs > 0:
+        _launch.launch(
+            kernel_neighbors.emit_mutual_pairs,
+            dim=n_a,
+            inputs=[flags, nearest_in_b, distances, a_indices, b_indices, pair_distances],
+            device=device,
+        )
+    return a_indices, b_indices, pair_distances
+
+
 def geodesic_ball(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], radius: float, min_count: int = 6
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:

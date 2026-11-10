@@ -381,6 +381,39 @@ def test_cell_centers(bench_case: BenchCase) -> None:
     assert centers.size == int(grid.get_active_stats().voxel_count)
 
 
+def _vertex_cells(bench_case: BenchCase) -> odt.Array2dInt32:
+    """Each vertex's cell at the morphology voxel size, from the cloud's lower corner."""
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    origin = wp.vec3(*bench_case.vertices_np.min(axis=0).tolist())
+    return od.voxels.cell_indices(bench_case.vertices_wp, voxel_size, origin=origin)
+
+
+@pytest.mark.benchmark(group="space_filling_codes")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("curve", ["hilbert", "morton"])
+def test_space_filling_codes(bench_case: BenchCase, curve: Literal["hilbert", "morton"]) -> None:
+    """
+    Every vertex cell's curve code at 21 bits, the deepest lattice: one launch and a flag read.
+
+    No reference row: ``hilbertcurve``, the tests' oracle, is a per-cell Python loop.
+    """
+    cells = _vertex_cells(bench_case)
+    codes = bench_case.run(lambda: od.voxels.space_filling_codes(cells, 21, curve=curve))
+    assert codes.size == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="cells_from_space_filling_codes")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("curve", ["hilbert", "morton"])
+def test_cells_from_space_filling_codes(
+    bench_case: BenchCase, curve: Literal["hilbert", "morton"]
+) -> None:
+    """The inverse of ``space_filling_codes`` over the same codes: one launch and a flag read."""
+    codes = od.voxels.space_filling_codes(_vertex_cells(bench_case), 21, curve=curve)
+    cells = bench_case.run(lambda: od.voxels.cells_from_space_filling_codes(codes, 21, curve=curve))
+    assert tuple(cells.shape) == (bench_case.n_vertices, 3)
+
+
 # Query counts for the membership group. The grid is fixed, so this axis is purely "how does the
 # cost of a lookup scale" -- one serial hash probe per query on the reference, one kernel thread
 # per query here.

@@ -1616,6 +1616,39 @@ def nearest_key_pair(
 
 
 @wp.kernel
+def mutual_nearest_flags(
+    nearest_in_b: wp.array[wp.int32],
+    nearest_in_a: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``neighbors.mutual_nearest``: point ``i`` of ``a`` pairs with its nearest point of ``b``
+    # exactly when that point's nearest in ``a`` is ``i``. Written into the buffer the selection
+    # scan runs in.
+    i = wp.int32(wp.tid())
+    out_flags[i] = wp.where(nearest_in_a[nearest_in_b[i]] == i, 1, 0)
+
+
+@wp.kernel
+def emit_mutual_pairs(
+    inclusive: wp.array[wp.int32],
+    nearest_in_b: wp.array[wp.int32],
+    distances: wp.array[wp.float32],
+    out_a: wp.array[wp.int32],
+    out_b: wp.array[wp.int32],
+    out_distances: wp.array[wp.float32],
+) -> None:
+    # Each flagged point's pair into its compact slot, in ascending order of ``a``: the flags were
+    # scanned in place, so a point is flagged where the scan steps (``array.scanned_count``). One
+    # launch for the three outputs, where a selection and two gathers would take five.
+    i = wp.int32(wp.tid())
+    slot, count = kernel_array.scanned_count(inclusive, i)
+    if count != 0:
+        out_a[slot] = i
+        out_b[slot] = nearest_in_b[i]
+        out_distances[slot] = distances[i]
+
+
+@wp.kernel
 def directed_face_edge_keys(
     faces: wp.array[wp.int32], base: wp.uint64, out_keys: wp.array[wp.uint64]
 ) -> None:

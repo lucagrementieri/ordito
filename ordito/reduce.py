@@ -20,7 +20,7 @@ from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 
 DType = TypeVar("DType")
-"""Element type of a per-group sum: ``wp.float32``, ``wp.float64`` or a vector of either."""
+"""Element type of a per-group reduction: a scalar, or a ``wp.float32`` / ``wp.float64`` vector."""
 
 
 # The global overloads take the rank-agnostic ``ArrayNd*`` aliases so a caller holding this
@@ -684,29 +684,7 @@ def scatter_sum(
     ```
     """
     require_same_device(values=values, indices=indices)
-    kernels = _group_sum_kernels(values, "scatter_sum")
-    if indices.ndim != 1:
-        raise ValueError("scatter_sum requires rank-1 indices.")
-    if indices.dtype != wp.int32:
-        raise TypeError(f"scatter_sum requires wp.int32 indices, got {indices.dtype.__name__}.")
-    n = values.size
-    if indices.size != n:
-        raise ValueError(f"scatter_sum requires one index per value: {indices.size} for {n}.")
-    if n_groups is not None and n_groups < 0:
-        raise ValueError(f"scatter_sum requires n_groups >= 0, got {n_groups}.")
-    if n > 0:
-        # One read of the index range: it sizes the result when ``n_groups`` is not given, and an
-        # index outside it would scatter out of bounds.
-        lowest, highest = minmax(indices)
-        if n_groups is None:
-            n_groups = highest + 1
-        if lowest < 0 or highest >= n_groups:
-            raise ValueError(
-                f"scatter_sum indices span [{lowest}, {highest}], outside [0, {n_groups})."
-            )
-    n_groups = n_groups or 0
-    pooling = kernel_scatter.scatter_sum_pooling(n, n_groups)
-    return _scatter_groups(kernels[0], values, indices, n_groups, pooling)
+    return _scatter_sum(values, indices, n_groups, "scatter_sum")
 
 
 def segment_sum(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
@@ -762,18 +740,456 @@ def segment_sum(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.arra
     ```
     """
     require_same_device(values=values, offsets=offsets)
-    kernels = _group_sum_kernels(values, "segment_sum")
-    if offsets.ndim != 1 or offsets.size == 0:
-        raise ValueError("segment_sum requires non-empty rank-1 offsets.")
-    if offsets.dtype != wp.int32:
-        raise TypeError(f"segment_sum requires wp.int32 offsets, got {offsets.dtype.__name__}.")
-    n = values.size
-    # The closing offset, read back: a packing that does not end at ``n`` would assign the tail
-    # of ``values`` to the wrong segment.
-    total = int(read_scalar(offsets, -1))
-    if total != n:
-        raise ValueError(f"segment_sum offsets end at {total}, not at the {n} values.")
+    return _segment_sum(values, offsets, "segment_sum")
+
+
+def scatter_mean(
+    values: wp.array[DType], indices: wp.array[wp.int32], n_groups: int | None = None
+) -> wp.array[DType]:
+    """
+    Per-group means: ``out[g]`` is the mean of the ``values[i]`` whose ``indices[i] == g``.
+
+    [`scatter_sum`][ordito.reduce.scatter_sum] divided by each group's count, componentwise for
+    vectors, so it obeys [`is_deterministic`][ordito.config.is_deterministic] as the sum does. A
+    group no index names is ``0 / 0``, a NaN, as [`numpy.mean`][] of an empty slice.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``wp.vec3`` /
+        ``wp.vec4`` vector of either precision.
+    indices
+        ``(n,)`` ``wp.int32`` group of each value, in ``[0, n_groups)``.
+    n_groups
+        Number of groups. ``None`` takes ``max(indices) + 1`` (0 for no values).
+
+    Returns
+    -------
+    wp.array
+        ``(n_groups,)`` means, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``indices`` is not rank-1, their lengths differ, ``n_groups`` is
+        negative, or an index lies outside ``[0, n_groups)``.
+    TypeError
+        If ``values`` has another dtype, or ``indices`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``indices`` are not on one device.
+
+    See Also
+    --------
+    [`segment_mean`][ordito.reduce.segment_mean]
+        The same means over contiguous segments given by offsets.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1.0, 2.0, 3.0, 4.0], dtype=wp.float32)
+    groups = wp.array([0, 2, 0, 2], dtype=wp.int32)
+    print(od.reduce.scatter_mean(values, groups).numpy().tolist())  # [2.0, nan, 3.0]
+    ```
+    """
+    require_same_device(values=values, indices=indices)
+    sums = _scatter_sum(values, indices, n_groups, "scatter_mean")
+    counts = _launch.zeros(sums.size, dtype=wp.int32, device=values.device)
+    if values.size > 0:
+        _launch.launch(
+            kernel_scatter.count_occurrences,
+            dim=values.size,
+            inputs=[indices, counts],
+            device=values.device,
+        )
+    return _divided_by_counts(sums, counts)
+
+
+def segment_mean(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
+    """
+    Per-segment means of ``values`` over the contiguous segments ``offsets`` delimits.
+
+    [`segment_sum`][ordito.reduce.segment_sum] divided by each segment's length, componentwise
+    for vectors, so it obeys [`is_deterministic`][ordito.config.is_deterministic] as the sum does.
+    An empty segment is ``0 / 0``, a NaN, as [`numpy.mean`][] of an empty slice.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``wp.vec3`` /
+        ``wp.vec4`` vector of either precision.
+    offsets
+        ``(n_segments + 1,)`` ``wp.int32`` segment starts, closed by ``n``.
+
+    Returns
+    -------
+    wp.array
+        ``(n_segments,)`` means, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``offsets`` is not rank-1, ``offsets`` is empty, or its last entry is not
+        ``n``.
+    TypeError
+        If ``values`` has another dtype, or ``offsets`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``offsets`` are not on one device.
+
+    See Also
+    --------
+    [`scatter_mean`][ordito.reduce.scatter_mean]
+        The same means for groups in any order.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1.0, 2.0, 3.0, 4.0], dtype=wp.float64)
+    offsets = wp.array([0, 3, 3, 4], dtype=wp.int32)
+    print(od.reduce.segment_mean(values, offsets).numpy().tolist())  # [2.0, nan, 4.0]
+    ```
+    """
+    require_same_device(values=values, offsets=offsets)
+    sums = _segment_sum(values, offsets, "segment_mean")
+    n_segments = sums.size
+    counts = _launch.empty(n_segments, dtype=wp.int32, device=values.device)
+    if n_segments > 0:
+        ends = _launch.view(offsets, 1, n_segments + 1)
+        wp.map(wp.sub, ends, _launch.view(offsets, 0, n_segments), out=counts)
+    return _divided_by_counts(sums, counts)
+
+
+def scatter_min(
+    values: wp.array[DType], indices: wp.array[wp.int32], n_groups: int | None = None
+) -> wp.array[DType]:
+    """
+    Per-group minima: ``out[g]`` is the least of the ``values[i]`` whose ``indices[i] == g``.
+
+    ``numpy.minimum.at(out, indices, values)`` into ``out`` filled with the dtype's largest value,
+    componentwise for vectors: a group no index names holds ``inf`` (the largest integer for an
+    integer dtype). A minimum does not depend on the order its values arrive in, so the result
+    repeats bit for bit from call to call whatever the
+    [`is_deterministic`][ordito.config.is_deterministic] setting. ``values`` must hold no NaN.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.int32``, ``wp.int64``, ``wp.float32``, ``wp.float64``, or a
+        ``wp.vec2`` / ``wp.vec3`` / ``wp.vec4`` vector of either float precision.
+    indices
+        ``(n,)`` ``wp.int32`` group of each value, in ``[0, n_groups)``.
+    n_groups
+        Number of groups. ``None`` takes ``max(indices) + 1`` (0 for no values).
+
+    Returns
+    -------
+    wp.array
+        ``(n_groups,)`` minima, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``indices`` is not rank-1, their lengths differ, ``n_groups`` is
+        negative, or an index lies outside ``[0, n_groups)``.
+    TypeError
+        If ``values`` has another dtype, or ``indices`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``indices`` are not on one device.
+
+    See Also
+    --------
+    [`scatter_max`][ordito.reduce.scatter_max]
+        The per-group maxima.
+    [`segment_min`][ordito.reduce.segment_min]
+        The same minima over contiguous segments given by offsets.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([3, 1, 4, 1, 5], dtype=wp.int32)
+    groups = wp.array([0, 1, 0, 1, 3], dtype=wp.int32)
+    print(od.reduce.scatter_min(values, groups).numpy().tolist())  # [3, 1, 2147483647, 5]
+    ```
+    """
+    require_same_device(values=values, indices=indices)
+    return _scatter_extrema(
+        values, indices, n_groups, int(kernel_scatter.EXTREMUM_MIN), "scatter_min"
+    )
+
+
+def scatter_max(
+    values: wp.array[DType], indices: wp.array[wp.int32], n_groups: int | None = None
+) -> wp.array[DType]:
+    """
+    Per-group maxima: ``out[g]`` is the greatest of the ``values[i]`` whose ``indices[i] == g``.
+
+    ``numpy.maximum.at(out, indices, values)`` into ``out`` filled with the dtype's least value,
+    componentwise for vectors: a group no index names holds ``-inf`` (the least integer for an
+    integer dtype). Repeats bit for bit as [`scatter_min`][ordito.reduce.scatter_min] does.
+    ``values`` must hold no NaN.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.int32``, ``wp.int64``, ``wp.float32``, ``wp.float64``, or a
+        ``wp.vec2`` / ``wp.vec3`` / ``wp.vec4`` vector of either float precision.
+    indices
+        ``(n,)`` ``wp.int32`` group of each value, in ``[0, n_groups)``.
+    n_groups
+        Number of groups. ``None`` takes ``max(indices) + 1`` (0 for no values).
+
+    Returns
+    -------
+    wp.array
+        ``(n_groups,)`` maxima, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``indices`` is not rank-1, their lengths differ, ``n_groups`` is
+        negative, or an index lies outside ``[0, n_groups)``.
+    TypeError
+        If ``values`` has another dtype, or ``indices`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``indices`` are not on one device.
+
+    See Also
+    --------
+    [`scatter_min`][ordito.reduce.scatter_min]
+        The per-group minima.
+    [`segment_max`][ordito.reduce.segment_max]
+        The same maxima over contiguous segments given by offsets.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([3.0, 1.0, 4.0, 1.0, 5.0], dtype=wp.float32)
+    groups = wp.array([0, 1, 0, 1, 3], dtype=wp.int32)
+    print(od.reduce.scatter_max(values, groups).numpy().tolist())  # [4.0, 1.0, -inf, 5.0]
+    ```
+    """
+    require_same_device(values=values, indices=indices)
+    return _scatter_extrema(
+        values, indices, n_groups, int(kernel_scatter.EXTREMUM_MAX), "scatter_max"
+    )
+
+
+def segment_min(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
+    """
+    Per-segment minima of ``values`` over the contiguous segments ``offsets`` delimits.
+
+    ``numpy.minimum.reduceat`` over the segments, componentwise for vectors, except that an empty
+    segment holds ``inf`` (the largest integer for an integer dtype) where ``reduceat`` would
+    repeat a value. Repeats bit for bit as [`scatter_min`][ordito.reduce.scatter_min] does.
+    ``values`` must hold no NaN.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.int32``, ``wp.int64``, ``wp.float32``, ``wp.float64``, or a
+        ``wp.vec2`` / ``wp.vec3`` / ``wp.vec4`` vector of either float precision.
+    offsets
+        ``(n_segments + 1,)`` ``wp.int32`` segment starts, closed by ``n``.
+
+    Returns
+    -------
+    wp.array
+        ``(n_segments,)`` minima, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``offsets`` is not rank-1, ``offsets`` is empty, or its last entry is not
+        ``n``.
+    TypeError
+        If ``values`` has another dtype, or ``offsets`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``offsets`` are not on one device.
+
+    See Also
+    --------
+    [`segment_max`][ordito.reduce.segment_max]
+        The per-segment maxima.
+    [`scatter_min`][ordito.reduce.scatter_min]
+        The same minima for groups in any order.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([3.0, 1.0, 4.0, 2.0], dtype=wp.float64)
+    offsets = wp.array([0, 3, 3, 4], dtype=wp.int32)
+    print(od.reduce.segment_min(values, offsets).numpy().tolist())  # [1.0, inf, 2.0]
+    ```
+    """
+    require_same_device(values=values, offsets=offsets)
+    return _segment_extrema(values, offsets, int(kernel_scatter.EXTREMUM_MIN), "segment_min")
+
+
+def segment_max(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
+    """
+    Per-segment maxima of ``values`` over the contiguous segments ``offsets`` delimits.
+
+    ``numpy.maximum.reduceat`` over the segments, componentwise for vectors, except that an empty
+    segment holds ``-inf`` (the least integer for an integer dtype) where ``reduceat`` would
+    repeat a value. Repeats bit for bit as [`scatter_min`][ordito.reduce.scatter_min] does.
+    ``values`` must hold no NaN.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.int32``, ``wp.int64``, ``wp.float32``, ``wp.float64``, or a
+        ``wp.vec2`` / ``wp.vec3`` / ``wp.vec4`` vector of either float precision.
+    offsets
+        ``(n_segments + 1,)`` ``wp.int32`` segment starts, closed by ``n``.
+
+    Returns
+    -------
+    wp.array
+        ``(n_segments,)`` maxima, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``offsets`` is not rank-1, ``offsets`` is empty, or its last entry is not
+        ``n``.
+    TypeError
+        If ``values`` has another dtype, or ``offsets`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``offsets`` are not on one device.
+
+    See Also
+    --------
+    [`segment_min`][ordito.reduce.segment_min]
+        The per-segment minima.
+    [`scatter_max`][ordito.reduce.scatter_max]
+        The same maxima for groups in any order.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([3, 1, 4, 2], dtype=wp.int64)
+    offsets = wp.array([0, 3, 4], dtype=wp.int32)
+    print(od.reduce.segment_max(values, offsets).numpy().tolist())  # [4, 2]
+    ```
+    """
+    require_same_device(values=values, offsets=offsets)
+    return _segment_extrema(values, offsets, int(kernel_scatter.EXTREMUM_MAX), "segment_max")
+
+
+def _scatter_sum(
+    values: wp.array[DType], indices: wp.array[wp.int32], n_groups: int | None, name: str
+) -> wp.array[DType]:
+    """[`scatter_sum`][ordito.reduce.scatter_sum] for the public function ``name``."""
+    kernels = _group_sum_kernels(values, name)
+    n_groups = _scatter_group_count(values, indices, n_groups, name)
+    pooling = kernel_scatter.scatter_sum_pooling(values.size, n_groups)
+    return _scatter_groups(kernels[0], values, indices, n_groups, pooling)
+
+
+def _segment_sum(
+    values: wp.array[DType], offsets: wp.array[wp.int32], name: str
+) -> wp.array[DType]:
+    """[`segment_sum`][ordito.reduce.segment_sum] for the public function ``name``."""
+    kernels = _group_sum_kernels(values, name)
+    _check_segment_offsets(values, offsets, name)
     return _scatter_groups(kernels[1], values, offsets, offsets.size - 1, None)
+
+
+def _divided_by_counts(sums: wp.array[DType], counts: wp.array[wp.int32]) -> wp.array[DType]:
+    """Return ``sums`` divided in place by ``counts``, componentwise for a vector dtype."""
+    if sums.size > 0:
+        mean_of_sum = (
+            kernel_scatter.scalar_mean_of_sum
+            if sums.dtype in (wp.float32, wp.float64)
+            else kernel_scatter.vector_mean_of_sum
+        )
+        wp.map(mean_of_sum, sums, counts, out=sums)
+    return sums
+
+
+def _scatter_extrema(
+    values: wp.array[DType],
+    indices: wp.array[wp.int32],
+    n_groups: int | None,
+    maximum: int,
+    name: str,
+) -> wp.array[DType]:
+    """Per-group extrema (``maximum``: ``kernels/scatter.EXTREMUM_*``) for the public ``name``."""
+    _validate_extremum_values(values, name)
+    n_groups = _scatter_group_count(values, indices, n_groups, name)
+    extrema = _extremum_identities(values, n_groups, maximum)
+    if values.size > 0:
+        _launch.launch(
+            kernel_scatter.SCATTER_EXTREMA[values.dtype],
+            dim=values.size,
+            inputs=[values, indices, maximum, extrema],
+            device=values.device,
+        )
+    return extrema
+
+
+def _segment_extrema(
+    values: wp.array[DType], offsets: wp.array[wp.int32], maximum: int, name: str
+) -> wp.array[DType]:
+    """Per-segment extrema (``maximum``: ``kernels/scatter.EXTREMUM_*``) for the public ``name``."""
+    _validate_extremum_values(values, name)
+    _check_segment_offsets(values, offsets, name)
+    extrema = _extremum_identities(values, offsets.size - 1, maximum)
+    if values.size > 0:
+        _launch.launch(
+            kernel_scatter.SEGMENT_EXTREMA[values.dtype],
+            dim=values.size,
+            inputs=[values, offsets, maximum, extrema],
+            device=values.device,
+        )
+    return extrema
+
+
+def _validate_extremum_values(values: wp.array[Any], name: str) -> None:
+    """Raise unless ``values`` is a rank-1 array of a dtype the extremum kernels take."""
+    if values.ndim != 1:
+        raise ValueError(f"{name} requires rank-1 values.")
+    if values.dtype not in kernel_scatter.EXTREMUM_DTYPES:
+        raise TypeError(
+            f"{name} takes wp.int32, wp.int64, wp.float32, wp.float64 or a vec2/vec3/vec4 of "
+            f"either float, not {values.dtype.__name__}."
+        )
+
+
+def _extremum_identities(values: wp.array[DType], n_groups: int, maximum: int) -> wp.array[DType]:
+    """Return ``(n_groups,)`` copies of the extremum's identity: ``inf`` for a float min."""
+    dtype = values.dtype
+    scalar = getattr(dtype, "_wp_scalar_type_", dtype)
+    if maximum == int(kernel_scatter.EXTREMUM_MAX):
+        identity = odt.dtype_min(scalar)
+    else:
+        identity = odt.dtype_max(scalar)
+    length = getattr(dtype, "_length_", 0)
+    fill = dtype(*([identity] * length)) if length else identity
+    return _launch.full(n_groups, fill, dtype=dtype, device=values.device)
 
 
 def _group_sum_kernels(values: wp.array[Any], name: str) -> tuple[odt.Kernel, odt.Kernel]:
@@ -788,6 +1204,44 @@ def _group_sum_kernels(values: wp.array[Any], name: str) -> tuple[odt.Kernel, od
     raise TypeError(
         f"{name} sums wp.float32, wp.float64 or a vec2/vec3/vec4 of either, not {dtype.__name__}."
     )
+
+
+def _scatter_group_count(
+    values: wp.array[Any], indices: wp.array[wp.int32], n_groups: int | None, name: str
+) -> int:
+    """Return the group count of a scatter, after validating ``indices`` against ``values``."""
+    if indices.ndim != 1:
+        raise ValueError(f"{name} requires rank-1 indices.")
+    if indices.dtype != wp.int32:
+        raise TypeError(f"{name} requires wp.int32 indices, got {indices.dtype.__name__}.")
+    n = values.size
+    if indices.size != n:
+        raise ValueError(f"{name} requires one index per value: {indices.size} for {n}.")
+    if n_groups is not None and n_groups < 0:
+        raise ValueError(f"{name} requires n_groups >= 0, got {n_groups}.")
+    if n > 0:
+        # One read of the index range: it sizes the result when ``n_groups`` is not given, and an
+        # index outside it would scatter out of bounds.
+        lowest, highest = minmax(indices)
+        if n_groups is None:
+            n_groups = highest + 1
+        if lowest < 0 or highest >= n_groups:
+            raise ValueError(f"{name} indices span [{lowest}, {highest}], outside [0, {n_groups}).")
+    return n_groups or 0
+
+
+def _check_segment_offsets(values: wp.array[Any], offsets: wp.array[wp.int32], name: str) -> None:
+    """Raise unless ``offsets`` is a CSR packing of ``values``."""
+    if offsets.ndim != 1 or offsets.size == 0:
+        raise ValueError(f"{name} requires non-empty rank-1 offsets.")
+    if offsets.dtype != wp.int32:
+        raise TypeError(f"{name} requires wp.int32 offsets, got {offsets.dtype.__name__}.")
+    n = values.size
+    # The closing offset, read back: a packing that does not end at ``n`` would assign the tail
+    # of ``values`` to the wrong segment.
+    total = int(read_scalar(offsets, -1))
+    if total != n:
+        raise ValueError(f"{name} offsets end at {total}, not at the {n} values.")
 
 
 def _scatter_groups(

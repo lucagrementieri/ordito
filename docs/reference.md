@@ -70,12 +70,14 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | cast rays | [`ray.intersects_first`][ordito.ray.intersects_first], [`intersects_location`][ordito.ray.intersects_location] |
 | test which points are inside | [`ray.contains_points`][ordito.ray.contains_points] |
 | nearest neighbours, radius search | [`neighbors.query_nearest`][ordito.neighbors.query_nearest], [`query_ball`][ordito.neighbors.query_ball] |
+| one-to-one matches between two clouds (mutual nearest neighbours) | [`neighbors.mutual_nearest`][ordito.neighbors.mutual_nearest] |
 | Chamfer and Hausdorff distances | [`metrics`][ordito.metrics]: [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh], [`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh] |
 | intersection curve of two meshes, colliding faces | [`intersection.mesh_with_mesh`][ordito.intersection.mesh_with_mesh], [`collision_masks`][ordito.intersection.collision_masks] |
 | **Point clouds** | |
 | sample points on a surface | [`sample.sample_surface`][ordito.sample.sample_surface], [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] |
 | estimate normals | [`points.estimate_normals`][ordito.points.estimate_normals] |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
+| order points or cells along a Hilbert or Morton curve | [`points.space_filling_order`][ordito.points.space_filling_order], [`voxels.space_filling_codes`][ordito.voxels.space_filling_codes] |
 | remove outliers | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask], [`radius_outlier_mask`][ordito.points.radius_outlier_mask], [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask], [`plane_outlier_mask`][ordito.points.plane_outlier_mask], [`normal_outlier_mask`][ordito.points.normal_outlier_mask] |
 | convex hull ([example](examples/points.md#pc8)) | [`points.convex_hull`][ordito.points.convex_hull] (exact), [`convex_superset_mask`][ordito.points.convex_superset_mask] (prefilter) |
 | reconstruct a surface | [`reconstruction.screened_poisson`][ordito.reconstruction.screened_poisson], [`ball_pivoting`][ordito.reconstruction.ball_pivoting] |
@@ -91,6 +93,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | NumPy-like `unique`, `sort`, `isin`, `searchsorted`-style helpers | [`grouping`][ordito.grouping], [`array`][ordito.array] |
 | reductions (`min`, `max`, `sum`, `mean`) without a host round trip | [`reduce`][ordito.reduce] |
 | per-group sums (`bincount` with weights, `add.reduceat`), reproducible under the deterministic setting | [`reduce.scatter_sum`][ordito.reduce.scatter_sum], [`reduce.segment_sum`][ordito.reduce.segment_sum] |
+| per-group means, minima and maxima (`minimum.at`, `maximum.reduceat`) | [`reduce.scatter_mean`][ordito.reduce.scatter_mean], [`scatter_min`][ordito.reduce.scatter_min], [`scatter_max`][ordito.reduce.scatter_max], [`segment_mean`][ordito.reduce.segment_mean], [`segment_min`][ordito.reduce.segment_min], [`segment_max`][ordito.reduce.segment_max] |
 
 ## Modules
 

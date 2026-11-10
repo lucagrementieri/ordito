@@ -16,6 +16,8 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
   for isolation, which is how a scanned cloud loses its stragglers *before* the normals are fitted.
   [`plane_basis`][ordito.points.plane_basis] and [`radial_sort`][ordito.points.radial_sort] then
   let a caller work in the tangent plane it defines.
+  [`space_filling_order`][ordito.points.space_filling_order] orders a whole cloud along a Hilbert
+  or Morton curve, so points near each other in space sit near each other in memory.
 - **Cleanup and subsampling.** Four masks and one selector, all returning indices or
   ``wp.array[wp.bool]`` rather than a copied cloud, so a caller pays for the gather only if it wants
   one: [`point_finite_mask`][ordito.points.point_finite_mask] and
@@ -68,6 +70,7 @@ from ordito._common import (
     slice_count,
     tiled_ball_walk,
 )
+from ordito._common import space_filling_order as space_filling_order_on
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
@@ -2969,3 +2972,65 @@ def radial_sort(
     )
     _sorted_keys, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
     return od.array.gather(points, order)
+
+
+def space_filling_order(
+    points: wp.array[wp.vec3], *, curve: Literal["hilbert", "morton"] = "hilbert"
+) -> wp.array[wp.int32]:
+    """
+    Point indices in order along a space-filling curve through the cloud's bounding box.
+
+    The box is cut into a ``1024 x 1024 x 1024`` lattice and the points are sorted by their cell's
+    index along ``curve``, so points next to each other in space sit next to each other in the
+    order; points sharing a cell keep their input order. Gathering a cloud in this order makes
+    work over nearby points touch nearby memory. On a Hilbert curve consecutive cells always share
+    a face; a Morton (Z-order) curve jumps at every power-of-two boundary, but its index is the
+    plain interleaving of the cell's coordinate bits
+    ([`space_filling_codes`][ordito.voxels.space_filling_codes] gives both for integer cells).
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` positions.
+    curve
+        ``"hilbert"`` (the default) or ``"morton"``.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n,)`` permutation of ``range(n)``: ``points[order]`` is the cloud along the curve.
+
+    Raises
+    ------
+    ValueError
+        If ``curve`` is neither ``"hilbert"`` nor ``"morton"``.
+
+    See Also
+    --------
+    [`space_filling_codes`][ordito.voxels.space_filling_codes]
+        The curve index of each integer cell, at any lattice depth.
+
+    Examples
+    --------
+    The eight corners of a cube, in Morton order (``x`` varies fastest) and along the Hilbert
+    curve, which steps along an edge each time:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    corners = np.array([[x, y, z] for z in (0, 1) for y in (0, 1) for x in (0, 1)], np.float32)
+    points = wp.array(corners[::-1].copy(), dtype=wp.vec3)
+    print(od.points.space_filling_order(points, curve="morton").numpy().tolist())
+    # [7, 6, 5, 4, 3, 2, 1, 0]
+    print(od.points.space_filling_order(points).numpy().tolist())  # [7, 3, 1, 5, 4, 0, 2, 6]
+    ```
+    """
+    curves = {"hilbert": kernel_array.CURVE_HILBERT, "morton": kernel_array.CURVE_MORTON}
+    if curve not in curves:
+        raise ValueError(f"curve must be 'hilbert' or 'morton', got {curve!r}.")
+    if points.size == 0:
+        return _launch.empty(0, dtype=wp.int32, device=points.device)
+    return space_filling_order_on(points, int(curves[curve]))

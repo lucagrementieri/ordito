@@ -16,7 +16,6 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from ordito._common import hilbert_point_order
 from tests.comparisons import same_partition
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -975,7 +974,7 @@ def test_shortest_path_envelope_in_place_matches_the_capped_passes(
 
     order_wp = None
     if order == "hilbert":
-        order_wp = hilbert_point_order(mesh_wp.points)
+        order_wp = od.points.space_filling_order(mesh_wp.points)
     elif order == "shuffled":
         order_wp = wp.array(
             np.random.default_rng(3).permutation(n_vertices).astype(np.int32),

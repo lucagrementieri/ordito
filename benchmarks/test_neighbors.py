@@ -1102,6 +1102,27 @@ def test_closest_pair(bench_case: BenchCase) -> None:
     assert distance >= 0.0
 
 
+@pytest.mark.benchmark(group="mutual_nearest")
+@pytest.mark.benchlibs("ordito")
+def test_mutual_nearest(bench_case: BenchCase) -> None:
+    """
+    The vertices against a jittered copy of themselves: two nearest queries and one compaction.
+
+    The jitter is a tenth of the mean spacing, so most vertices pair with their own copy and the
+    rest exercise the rejection. No reference row: SciPy's answer is the two ``KDTree`` queries the
+    ``query_nearest`` rows already price.
+    """
+    vertices_np = bench_case.vertices_np
+    spacing = float(np.ptp(vertices_np, axis=0).max()) / np.cbrt(vertices_np.shape[0])
+    jitter_np = np.random.default_rng(5).normal(scale=0.1 * spacing, size=vertices_np.shape)
+    copy = wp.array(
+        (vertices_np + jitter_np).astype(np.float32), dtype=wp.vec3, device=bench_case.device
+    )
+    points = bench_case.vertices_wp
+    a_indices, _, _ = bench_case.run(lambda: od.neighbors.mutual_nearest(points, copy))
+    assert 0 < a_indices.size <= bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="nearest_neighbor_distance")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.censuskeep(
