@@ -837,6 +837,10 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
 - Gate an angle near pi on the angle (`atan2` form, `predicates.vector_angle`), not on its `float32` cosine: the cosine is flat there, so every threshold above ~179.98° rounded to `cos == -1` and the fold gate of `face_defective_mask` / `remove_folded_faces` never flagged an exactly folded-back pair (fixed 2026-10-26; MeshLib, which tests `dot <= cos`, is inclusive at the threshold where ordito is strict).
+- A degeneracy tolerance carries the units of the quantity it bounds: `predicates.point_triangle_offset`'s
+  absolute `1e-12` on `|ab x ac|^2` (a length^4) sent every interior point of a face under ~1e-3
+  across to its first corner (dragon: 1.5x the true distance; fixed 2026-11-10, now relative to
+  the edges).
 - Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
 - Before Warp 1.19 the backward pass of an empty dynamic `range` with `abs(step) > 1` ran one iteration past the range (`range(t, n, 3)` on `t >= n` wrote gradient into `x[t]`, both devices; step 1 was clean; fixed by GH-2046). While the floor is 1.18, a differentiated thread whose loop can draw nothing must return first.
 - **Float atomics and CUB's float scan are not run-to-run reproducible on CUDA**; integer ones are exact. One `atomic_add` per block changed `procrustes`, `moments`, `gram_matrix` and `icp` in 30 of 30 calls at 1 M items; `array_scan` (decoupled look-back) changed every 1.3 M-element `float32` scan, and with it every seeded CDF draw. Reproducible forms: `_launch.array_scan` takes a fixed-order tile scan for `float32` on CUDA (`wp.tile_scan_*` takes no `float64`), and `store_block_*` stores a row per block that the block drawing the last ticket folds after a `__threadfence` (`wp.func_native`). A vector or matrix counter is one atomic per component, so a ticket is read off one component (`last_ticket_vector` / `_matrix`): comparing whole values let no block, or two, see the last ticket. `wp.utils.array_sum` (CUB reduce) and `bsr_mv` repeat bit for bit. Per-vertex scatters too: `hessian_energy`, `curved_hessian_energy` and `vertex_defects` differed on every CUDA call (~1e-13 relative on the energies) until they took the §2.2 forms; so did `vertex_face_adjacency`'s row order.
@@ -940,7 +944,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 
 - **Block-per-item** wins when the outer dimension alone starves the device and loses when a slice dimension already fills it (§2.3); such kernels use register blocking instead (below). Models: `obscurance`, `shape_diameter`, `farthest_point_sample` as one persistent block. Any-hit tracing suits binary occlusion; a point-major layout wins only on very large clouds. A cuBQL mesh pays only when the caller builds once and traces many rays (`Trimesh.mesh_for_rays` decides). `max_tangent_sphere` answers inside a tolerance window; an "exact" variant is not the true answer on a mesh.
 - **Cooperative BVH walks:** the tiled walk beats the hash grid only while concurrent queries are few (a few thousand for a ball of the cell width); the serial BVH does not. Only `ball_pivoting`'s pivot search qualified, so do not re-run the tree-wide sweep. A thread-per-query BVH launch is usually load-imbalanced, not under-pruned: histogram per-thread candidates first. Walk time varies up to 5x with loop spelling, so time a new or fused walk on the device.
-- **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`), unless each launch of a round can return first on a device idle flag: the flip loop's idle round costs ~6 µs below 60 k rows (27 µs at 1.3 M), so it replays 4 a read below `2**18` rows (`_FLIP_BATCH_ROWS`). A `wp.capture_if` round instead costs ~9 µs more an active round, more than the read it saves. A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference.
+- **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`), unless each launch of a round can return first on a device idle flag: the flip loop's idle round costs ~6 µs below 60 k rows (27 µs at 1.3 M), so it replays 4 a read below `2**18` rows (`_FLIP_BATCH_ROWS`). A `wp.capture_if` round instead costs ~9 µs more an active round, more than the read it saves. A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference. A `capture_while` iteration's conditional test costs ~3 µs (2026-11-10: 7.65 / 6.04 / 4.73 µs a round of four small launches at 1 / 2 / 8 rounds a body). Several rounds a body pay only where a round past the fixpoint is already near-idle: the packed long-ring ear loop takes two (0.95-0.99x, `polyline._LONG_RING_ROUNDS_PER_BODY`); screened Poisson's CG rounds past convergence run the mat-vec and V-cycle whole, and two a body lost 1.02-1.14x.
 - **Tile solves** win for K >= 16-32 with few systems and a large matrix; ordito's dense solves (K = 5, 6) lose, so "rewrite them as tiles" is refuted.
 - **Readbacks:** a device reduction wins on CUDA for mesh-sized arrays and loses on CPU; decide on CUDA, measure both. Keep the readback for bool masks and small non-scaling buffers (the real axis is often the loop count). In device loops a per-pass readback is cheaper than an extra pass, so trading passes for fewer syncs loses; `cg(check_every=0)` is not a lever in the harness. A validation flag is read as early as its producer allows: read before the launches that follow it, the host waits on the producer alone and the rest stays asynchronous, where a check moved into the last kernel and read at the end lost 1.03-1.35x (`connected_component_labels_from_edges`, 2026-11-08).
 - **Per-device algorithm choice** only when the parallel form does asymptotically more work (pointer-doubled `polyline_downsample`, CUDA only above a size gate). `prefers_tiled_reduction` is a correctness branch, not a performance one.
@@ -994,12 +998,20 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   0.20-0.34x), ordinary meshes at par on small meshes and 1.01-1.03x on `dragon`, whose passes
   are device-bound (the ballot); the block deferral cost them 1.25x device time a pass (a barrier
   in a 5 us launch) for 0.15 ms on the hub. Four interleaved sums
-  a lane lost 1.34x on the hub.
+  a lane lost 1.34x on the hub. The mesh operator builders take the same warp form (2026-11-10,
+  `kernels/laplacian`, through `reduce.warp_walk` / `warp_walk_total`, a `float64` shuffle
+  broadcast of the lanes' tree sum): `fan_hub` builds 0.10-0.29x (`face_weighted_laplacian` 33 ->
+  3.2 ms, `cotmatrix` 23 -> 4.5 ms, `connection_laplacian` 88 -> 16 ms), ordinary meshes
+  byte-identical at par, CPU byte-identical. A heavy row body called through a `@wp.func` instead
+  of written in the kernel cost 1.25-1.4x device time at the same register count
+  (`connection_laplacian_rows`), so that one keeps its short row inline.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
   next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
   `sphere_med` / `bunny`: a replayed node costs ~1 us, the four-vector gather ~2 us; notes in
-  `kernels/algorithms/conjugate_gradient.py`); a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
+  `kernels/algorithms/conjugate_gradient.py`); a single-block BFS drain, a one-block hole-fill DP
+  and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for
+  multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
 - **Blocked wavefront:** a 2-D DP with local directional dependencies and small per-step work wins as one block per tile and one launch per tile-diagonal, with `wp.tile_sum` as the barrier. It loses where levels are already wide (the fill DP). Test it above 32 lanes and pin it byte for byte to the simple schedule.
 - **Serial-order sweeps as a dataflow wavefront:** an in-place sweep in index order (Gauss-Seidel, `filter_laplacian(method="pyvista")`) runs on CUDA as one launch a wave over all vertices: a vertex with `c` sweeps done runs the next once its lower-index ring neighbours have `c + 1` and its higher-index ones exactly `c`. Two neighbours are never both ready, so positions update in place race-free with only the counts ping-ponged, and the result equals the serial loop bit for bit. The wave count is the numbering's critical path: 13-16 a sweep scrambled; a scan numbering's longest increasing neighbour path plus about 17 a sweep (bunny 255 / 977 waves at 1 / 10 sweeps, dragon 1 132 / 1 301). 10 sweeps, new/VTK: icosphere(6) 1.4 / 54 ms, bunny 8.3 / 46, dragon 21 / 751; one GPU thread would be seconds. Waves go in batches of `16 x sweeps` (at least 128) a readback, so a small mesh pays the batch (sphere_small 1.35 vs VTK 1.56 ms, 160 launches for ~60 waves); graph-capturing the batch lost (2026-10-31: recording each call, then replaying past the first read, 1.00-1.01x on scrambled meshes, which one batch ends, and 1.04-1.49x on bunny / dragon, whose waves are device-bound at ~10 µs), and so does a smaller first batch (16 a sweep + 8: 0.40-0.60x on scrambled meshes at 1-3 sweeps but 1.06-1.18x on scan meshes, which then pay a second read). **The schedule depends on the stencil and the sweep count alone**, so the volume-constrained path (one sweep a call, `iterations` calls) records the first sweep's exact wave count (`gauss_seidel_wave_counted`: the counts' trailing slot counts waves, the vertex taking the last finished slot stores it) and issues exactly that many waves with no readback afterwards: 10 sweeps 0.26-0.28x on scrambled icospheres (8 -> 2.1 ms), 0.93-0.95x on bunny / dragon, bit-identical. The bookkeeping lives in its own kernel because inside the plain wave it cost 5-9 % device time on dragon even unused, and a single sweep does not record (the counted waves cost it 1.07-1.14x). The CPU device runs the serial loop (waves do `waves x n` work).
@@ -1077,6 +1089,19 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   walk writing give the serial order at 0.05x. More rulers pay only with an O(1) next-ruler
   lookup (an open-addressing index in free slots); the walk stays in its own kernel so the plain
   walk keeps its registers, and the ranking launches off a count the call reads back anyway.
+- **A ring kernel takes long rings from the list `vertex_one_rings` read back** (2026-11-10,
+  `tangent_space.vertex_tangent_frames`): the CUDA walk's long-ring list stays with the rings
+  (`_common.note_long_rings`, weakly keyed by their offsets), so a frame kernel whose inlined block
+  path cost ordinary meshes 1.11-1.23x instead takes a `wp.static` skip variant plus a block-a-ring
+  kernel (`vertex_tangent_frames_long`, 512 lanes, own module) only when the list is nonempty:
+  `fan_hub` 64 -> 0.57 ms, hub `basis_x` error 6.6e-4 -> 5e-7; ordinary meshes run the unchanged
+  kernel (byte-identical, 0.97-1.00x). Rings from a call that read nothing back keep the
+  one-thread walk.
+- **A one-block round loop costs its candidates, not its ring** (2026-11-10, `ear_clip_tail`): a
+  block re-grading every active corner each round spends its time on lane-serial dependent loads
+  (~50 us a round); candidate lists only a clip's neighbours update, and all queued walks run in
+  one shared pass instead of a barrier each, took the ear tail to ~14 us a round (65 536-point
+  star 0.21x, unit circles 0.17-0.40x, byte-identical).
 - **A CPU skip in front of a few atomics commits a zero instead** (2026-11-09): the CPU runs a
   launch's threads in turn, so a patternless branch is a mispredict a thread.
   `average_from_edges_onto_vertices` skipped half its halfedges at random (the negatively
@@ -1096,7 +1121,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   pays only the sampled test (one block, 2 048 samples, a readback: 1.03-1.05x). Nothing pays
   below 2^18 (a scrambled 164 k cloud 1.00x, coherent 1.08-1.19x). CPU scrambled 0.48-0.78x,
   coherent at par. Far-off coherent queries would also gain (lucy prefix 0.49x on the kernel) but
-  the test cannot see query depth.
+  the test cannot see query depth. `query_nearest`'s cell walks, ball searches and deferred
+  finishes take it too (2026-11-10, `_common.bounds_and_search_order`: the test's count rides on
+  the cloud box's readback, so the choice adds a launch and no read), from 2^16 queries when the
+  test finds a scrambled order and always from 2^18 on CUDA: scrambled 0.67-0.78x at 64 k,
+  0.17-0.57x from 128 k to 655 k, 0.08-0.24x on lucy; a scan's own order 0.73-0.90x from 2^18;
+  coherent 64-256 k 1.00-1.04x (the test); CPU scrambled 0.74-0.95x, coherent at par; answers
+  bit-identical.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
@@ -1186,54 +1217,28 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Topology edits with no `return_provenance` yet** (2026-11-10; §4.2 has the rule): `clip_mesh_with_field` and `slice_mesh_with_plane` (their crossings are written per face in `kernels/intersection.emit_clip_faces`, the cap's patch faces have no source), `subdivide_region_to_size`, `refine_region_to_density`, `isotropic_remesh`, the `holes` fills, `make_solid`, `fix_degeneracies`, `collapse_small_triangles`, `remove_degree3_vertices`, `combine.split`, `selection.delete_region_keep_boundary`; `remove_unreferenced_vertices` reports the vertex map as `return_inverse`. `cluster_decimate(method="meshlab" | "meshlib", contraction="average")` averages a cell's vertices equally where the positions weight them by faces. `io.load_mesh_data` keeps per-corner texcoords from OBJ only: a PLY `texcoord` face list fails in `meshio` before any reader of ours sees it.
-- **`halfedge_mates`' bucket pipeline under `face_connected_component_labels`:** degree count,
-  bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
-  lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
-  the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
-- **Hub rings outside `vertex_one_rings` (2026-11-08 halfedge sweep):**
-  `tangent_space.vertex_tangent_frames_gathered` / `vertex_tangent_frames` walk each ring in one
-  thread, ~2 850x `sphere_med`'s kernel on `fan_hub`. The tangent angles' block deferral
-  (`tangent_angle_rows`) ports to them (hub 0.016-0.018x) but its inlined code costs the ordinary
-  walk 1.11-1.23x however the decision is taken (declines at `vertex_tangent_frames_gathered`).
-  Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
-  count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
-  per-lane and block forms are one code path.
-- **Hub rows in the operator builders** (2026-11-09): `kernels/laplacian.laplacian_rows` writes
-  `fan_hub`'s hub row from one thread, 6.3 ms of a uniform-Laplacian build (40 % of
-  `filter_neighborhood_average` there once the passes take the warp form). The warp form
-  (`kernels/smoothing.warp_long_operator_row`) needs the row's sum broadcast to every lane, a
-  `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
-  `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
-  ~0.4 ms a hub (32 lanes over 41 k dependent loads).
-- **Ear clipping goes serial on rings whose corners are mostly thin** (diagnosed 2026-11-09): a
-  65 536-vertex star takes 14 419 rounds (979 ms; 16 384 vertices: 52 rounds), a 16 384-point
-  unit circle 1 215 (165 ms) and a 65 536-point one 6 062 (794 ms); noisy circles stay near 50.
-  Once the corners left are at the rounding level (`corner_is_thin`), `ear_eligible` lets only
-  good ears compete while any exists, and each clip makes just its neighbour good: a zipper, one
-  ear a round per front. The zipper is the sliver protection itself
-  (`test_triangulate_polygon_leaves_no_rounding_level_slivers` needs it), so letting thin ears
-  compete earlier (a scarcity threshold, or good-over-thin priority only within ring distance 2)
-  brings slivers back. Output-identical options, both larger: a single-block finish for the tail
-  (the existing one walks the whole ring per corner, O(n), and cannot take a 14 k-vertex tail; it
-  would need `ear_grade_grid`), or re-grading only the corners a clip can change (not local in
-  general: removing a tip can make a distant corner an ear). Needs the user's choice.
-- **`icp(method="pyvista")` per iteration** (2026-11-09): the 120 ms on `sphere_small` is the
-  input, which VTK also takes 500 iterations on (9 on `sphere_med`). The block runs 128 lanes and
-  its rotation fit is `kernels/registration.rotation_from_covariance_d` (a `float32` SVD refined
-  in `float64`, ~18 us where the `float64` `wp.svd3` took ~50 us); `sphere_small` 120 -> 70 ms.
-  What is left is ~150 us an iteration on one SM against VTK's ~90 us on one CPU thread, ~70 us
-  of it the exact `float64` re-search (`proximity.closest_offset_d`). Since 2026-11-10 a landmark
-  matched before seeds that search with its last face and runs no `float32` query (one tree walk
-  a landmark an iteration fewer, CPU 0.37x on `sphere_small`). Open: what remains is one walk a
-  landmark, a chain of dependent node loads on one SM; a multi-block layout (as
-  `farthest_point_sample`'s rounds) does not shorten a chain, a cheaper start node would.
-- **Captured round loops not yet priced** (2026-11-09): `polyline`'s packed-ring ear loop
-  (`clip_round` in `_triangulate_long_rings`; its single-ring sibling's batching was declined at
-  0.96-1.00x), and `reconstruction`'s CG loops, where a round past convergence is not idle (the
-  CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
-  with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
-  idle body `loop_advance_by` would run.
+- **Topology edits with no `return_provenance` yet** (2026-11-10; §4.2 has the rule): the greedy
+  `holes.stitch` / `stitch_loops`, which swap their meshes when B's rim is longer (their
+  provenance would be over a permuted concatenation), and
+  `selection.delete_region_keep_boundary_with_offsets`.
+- **Hub rows still walked by one thread** (2026-11-10): `kernels/energies.lscm_laplacian_rows_and_counts`
+  (its boundary count loop; its cotangent row could take `laplacian.signed_cotmatrix_rows`) and
+  the smoothing-norm kernel in `kernels/energies.py`, which reads its row back in the same thread
+  (a warp-written row would need a `__syncwarp`). On `fan_hub`, `connection_laplacian`'s warp walk
+  is still 14.7 of 18 ms kernel time and `halfedge_tangent_angles` 3 ms; the explicit smoothing
+  passes' warp walk ~0.4 ms a hub.
+- **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
+  ~14 us a round (65 536-point star: 14 419 rounds, 203 ms): five block barriers plus ~10
+  open-corner grid walks, most of them convex corners still blocked. A per-corner blocker cache did
+  not cut the walks. Open: an O(1) test for a blocked corner, or fewer barriers a round. The packed
+  multi-ring loop (`_triangulate_long_rings`) has no tail.
+- **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact walk a landmark
+  an iteration, a chain of dependent node loads on one SM (seeded by its last face since
+  2026-11-10). Unmerged candidate: branch `worktree-agent-a34a7bc16bc7b74b2` (949188ef) re-matches
+  in one `bvh_query_sphere` walk of radius `|p - previous match|` over `mesh_get_bvh`
+  (`kernels/registration.landmark_rematch`, `proximity.nearest_offset_within`), measured 0.54x
+  `sphere_small` and 0.56-0.65x elsewhere against the pre-seed code; it conflicts with the seeded
+  search and needs an A/B against it.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
