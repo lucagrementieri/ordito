@@ -2807,11 +2807,24 @@ def convex_superset_mask(
         device=device,
     )
 
-    out_mask = _launch.empty(n_points, dtype=wp.bool, device=device)
+    n_slices = kernel_array.RegisterBlockedTable.slice_count(
+        n_tetra,
+        n_points,
+        n_tetra,
+        min_slice=kernel_points.SUPERSET_MIN_SLICE,
+        fill_threads=kernel_points.SUPERSET_FILL_THREADS,
+        device=wp.get_device(device),
+    )
+    # Several slices clear a point only by storing ``False``, so the mask starts all ``True``.
+    out_mask = (
+        _launch.empty(n_points, dtype=wp.bool, device=device)
+        if n_slices == 1
+        else _launch.full(n_points, value=True, dtype=wp.bool, device=device)
+    )
     _launch.launch(
         kernel_points.mark_hull_superset,
-        dim=n_points,
-        inputs=[points, planes, valid, shell, wp.float32(margin), out_mask],
+        dim=(n_points, n_slices),
+        inputs=[points, planes, valid, shell, wp.float32(margin), n_slices, out_mask],
         device=device,
     )
     return out_mask

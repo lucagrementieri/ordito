@@ -1356,6 +1356,11 @@ def shell_bounds(shell_vertices: wp.indexedarray[wp.vec3], out_shell: wp.array[w
     # Forming the centroid in every ``tetrahedron_planes`` thread instead (broadcast loads, thread 0
     # publishing the radius) was measured and declined: ``convex_superset_mask`` 1.00-1.05x from
     # ``bunny_decimated`` to ``lucy`` at subdivisions 2 and 3, flat at most cells.
+    #
+    # Its ~75 us at subdivisions 3 (1 284 gathers through the support indices, one at a time) is a
+    # third of the call on ``sphere_small``. Declined: loading four vertices before folding them, in
+    # index order and so bit for bit, took it to 70 us only (2026-11-10); a block-wide sum would
+    # be fast but changes the centroid's bits, and with them the planes.
     n = shell_vertices.shape[0]
     total = wp.vec3(0.0, 0.0, 0.0)
     for i in range(n):
@@ -1444,6 +1449,14 @@ def tetrahedron_planes(
     out_valid[t] = True
 
 
+# The tetrahedron slices of ``mark_hull_superset`` on CUDA (``RegisterBlockedTable.slice_count``):
+# enough to give the launch ``SUPERSET_FILL_THREADS`` threads, none shorter than
+# ``SUPERSET_MIN_SLICE`` tetrahedra. A point on the hull clears every tetrahedron, so a cloud of
+# few points that are mostly hull vertices is a few thousand threads each walking all of them.
+SUPERSET_FILL_THREADS = 1 << 17
+SUPERSET_MIN_SLICE = 32
+
+
 @wp.kernel
 def mark_hull_superset(
     points: wp.array[wp.vec3],
@@ -1451,9 +1464,13 @@ def mark_hull_superset(
     valid: wp.array[wp.bool],
     shell: wp.array[wp.vec4],
     margin: wp.float32,
+    n_slices: wp.int32,
     out_mask: wp.array[wp.bool],
 ) -> None:
-    i = wp.int32(wp.tid())
+    # Thread ``(i, s)`` tests point ``i`` against the tetrahedra ``s, s + n_slices, ...``. With one
+    # slice it writes the point's verdict; with several, ``out_mask`` arrives all ``True`` and a
+    # slice holding the point stores ``False``: the same mask whichever slice finds it.
+    i, s = wp.tid()
     # In the centroid's frame, as the planes are. Evaluated on raw coordinates the plane test's
     # float32 error grew with the cloud's distance from the origin while ``slack`` scales with its
     # size: a ball of radius 1 centred at 1e3 lost true hull vertices (3 of 1 976 at 200 k points).
@@ -1464,7 +1481,7 @@ def mark_hull_superset(
     slack = margin * shell[0][3]
     n_tetra = valid.shape[0]
     keep = wp.int32(1)
-    for t in range(n_tetra):
+    for t in range(s, n_tetra, n_slices):
         if valid[t]:
             inside = wp.int32(1)
             for f in range(4):
@@ -1476,7 +1493,10 @@ def mark_hull_superset(
             if inside != 0:
                 keep = wp.int32(0)
                 break
-    out_mask[i] = keep != 0
+    if n_slices == 1:
+        out_mask[i] = keep != 0
+    elif keep == 0:
+        out_mask[i] = False
 
 
 @wp.func

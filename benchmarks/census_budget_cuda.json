@@ -5378,14 +5378,14 @@
   "counts": {
    "launch": 6,
    "alloc": 8,
-   "memset": 2
+   "memset": 3
   }
  },
  "benchmarks/test_points.py::test_convex_superset_mask[sphere_small-ordito-cuda-3]": {
   "counts": {
    "launch": 6,
    "alloc": 8,
-   "memset": 2
+   "memset": 3
   }
  },
  "benchmarks/test_points.py::test_covariance[sphere_small-ordito-cuda]": {
