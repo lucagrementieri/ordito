@@ -1128,6 +1128,18 @@ def mark_density_splits(
     out_split[f + 1] = wp.where(wanted, wp.int32(1), wp.int32(0))
 
 
+@wp.func
+def density_split_slots(
+    split_offsets: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # Face ``f``'s place in a centroid split pass: its centroid's slot among the new vertices, its
+    # first output face (every face before it became one face, or three if it split, so it is
+    # ``f + 2 * slot``) and whether it splits, where the exclusive scan of
+    # ``mark_density_splits``' flags steps. Shared by the pass's emit and its provenance.
+    slot = split_offsets[f]
+    return slot, f + wp.int32(2) * slot, split_offsets[f + 1] != slot
+
+
 @wp.kernel
 def emit_density_splits(
     vertices: wp.array[wp.vec3],
@@ -1170,13 +1182,12 @@ def emit_density_splits(
     if f >= region.shape[0]:
         return
     i, j, k = corner_triple(faces, f)
-    slot = split_offsets[f]
-    first = f + wp.int32(2) * slot
+    slot, first, split = density_split_slots(split_offsets, f)
     base = first * 3
     inside = region[f]
     flag = wp.where(inside, 1, 0)
     write_flags = out_region_flags.shape[0] > 0
-    if split_offsets[f + 1] == slot:
+    if not split:
         out_faces[base + 0] = i
         out_faces[base + 1] = j
         out_faces[base + 2] = k
@@ -1205,6 +1216,46 @@ def emit_density_splits(
         out_region[first + child] = inside
         if write_flags:
             out_region_flags[first + child] = flag
+
+
+@wp.kernel
+def density_split_provenance(
+    faces: wp.array[wp.int32],
+    split_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
+    out_face_index: wp.array[wp.int32],
+) -> None:
+    # ``emit_density_splits``' pass as ``interpolation.Provenance.from_rows`` rows, over
+    # ``max(n_faces, n_vertices)`` threads: vertex ``t`` copies itself, a split face's centroid
+    # averages its three corners (the emit's ``(a + b + c) / 3``), and each output face names the
+    # face it was emitted from, one row or three.
+    t = wp.int32(wp.tid())
+    third = wp.float32(1.0) / wp.float32(3.0)
+    if t < n_vertices:
+        out_sources[t, 0] = t
+        out_sources[t, 1] = -1
+        out_sources[t, 2] = -1
+        out_weights[t, 0] = wp.float32(1.0)
+        out_weights[t, 1] = wp.float32(0.0)
+        out_weights[t, 2] = wp.float32(0.0)
+    if t >= split_offsets.shape[0] - 1:
+        return
+    slot, first, split = density_split_slots(split_offsets, t)
+    out_face_index[first] = t
+    if not split:
+        return
+    out_face_index[first + 1] = t
+    out_face_index[first + 2] = t
+    i, j, k = corner_triple(faces, t)
+    center = n_vertices + slot
+    out_sources[center, 0] = i
+    out_sources[center, 1] = j
+    out_sources[center, 2] = k
+    out_weights[center, 0] = third
+    out_weights[center, 1] = third
+    out_weights[center, 2] = third
 
 
 # ---------------------------------------------------------------------------
@@ -4026,6 +4077,26 @@ def cluster_closest_sources(closest: wp.array[wp.int64], out_sources: wp.array[w
     out_sources[t] = unpack_nearest_index(closest[t])
 
 
+@wp.kernel
+def cluster_corner_weights(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    corner_count: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # A cluster provenance row reweighted by its members' face-corner counts, a thread a row: the
+    # corner mean ``cluster_decimate``'s ``"meshlab"`` and ``"meshlib"`` place a cell's vertex at,
+    # where ``interpolation.Provenance.from_clusters`` weighs every member equally. A member on no
+    # face weighs zero; a kept cell always holds a corner.
+    row = wp.int32(wp.tid())
+    total = wp.int32(0)
+    for i in range(offsets[row], offsets[row + 1]):
+        total += corner_count[columns[i]]
+    scale = wp.float32(1.0) / wp.float32(wp.max(total, 1))
+    for i in range(offsets[row], offsets[row + 1]):
+        out_weights[i] = wp.float32(corner_count[columns[i]]) * scale
+
+
 # How ``cluster_decimate`` places each output vertex: a warp-uniform selector for the two kernels
 # below, which differ by it only in the per-vertex half of their work. ``CLUSTER_AVERAGE_SORTED``
 # is the mean under the deterministic setting: the vertices are staged for a stable sort by cluster
@@ -4421,6 +4492,48 @@ def compact_surviving_faces(
         out_keys,
         out_order,
     )
+
+
+@wp.kernel
+def collapse_provenance_rows(
+    vertices: wp.array[wp.vec3],
+    remap: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    face_offsets: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    n_faces: wp.int32,
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
+    out_face_index: wp.array[wp.int32],
+) -> None:
+    # A committed collapse pass as ``interpolation.Provenance.from_rows`` rows, read off the
+    # buffers ``compact_surviving_faces`` compacted from, over ``max(n_faces, n_vertices)``
+    # threads of the pass's live input. ``out_sources`` arrives ``-1`` and ``out_weights`` zero.
+    #
+    # A kept target's row is itself and the vertex collapsed into it: a free placement put it at
+    # the edge midpoint, half each, and a pinned one kept the survivor where it was, the removed
+    # vertex weighing nothing. The commit wrote the placement into ``positions`` and kept no other
+    # record, so the two are told apart there: the survivor moved exactly when the placement was
+    # free (a free collapse of two coincident vertices does not move it, and is read as pinned,
+    # which carries the same position). One collapse at most reaches a vertex in a pass, which the
+    # claim's ring locks guarantee. A surviving face names its own slot in the pass's input.
+    t = wp.int32(wp.tid())
+    if t < n_vertices:
+        s = remap[t]
+        slot, kept = scanned_slot(ranks, s)
+        if kept:
+            moved = not (positions[s] == vertices[s])
+            if t == s:
+                out_sources[slot, 0] = t
+                out_weights[slot, 0] = wp.where(moved, wp.float32(0.5), wp.float32(1.0))
+            else:
+                out_sources[slot, 1] = t
+                out_weights[slot, 1] = wp.where(moved, wp.float32(0.5), wp.float32(0.0))
+    if t < n_faces:
+        row, survived = scanned_slot(face_offsets, t)
+        if survived:
+            out_face_index[row] = t
 
 
 @wp.func
