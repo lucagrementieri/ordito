@@ -4844,10 +4844,8 @@
  },
  "benchmarks/test_points.py::test_cluster_outlier_mask[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 9,
-   "alloc": 8,
-   "readback": 1,
-   "scan": 1
+   "launch": 4,
+   "alloc": 4
   }
  },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cpu]": {

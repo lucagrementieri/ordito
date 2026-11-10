@@ -800,7 +800,7 @@ def _find_outliers_ml(
 @pytest.mark.benchlibs("ordito", "meshlib")
 def test_cluster_outlier_mask(bench_case: BenchCase) -> None:
     """
-    Clusters of the radius graph: a packed ball query, a connected-component labelling, a count.
+    Clusters of the radius graph: a ball walk hooking a union-find as it goes, a count.
 
     meshlib's ``findOutliers(SmallComponents)`` is the same union of balls (equal sets in
     ``tests/test_points.py``), unioned on its threads as it searches. Two mean edges, the default

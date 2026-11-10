@@ -3,6 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
+from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
     RegisterBlockedTable,
     declare_map_signatures,
@@ -652,19 +653,38 @@ def radius_outlier_flags_tiled(
 
 
 @wp.kernel
-def ball_graph_edges(
-    neighbors: wp.array[wp.int32], offsets: wp.array[wp.int32], out_edges: wp.array2d[wp.int32]
+def ball_graph_hook(
+    points: wp.array[wp.vec3], grid_id: wp.uint64, radius: wp.float32, parents: wp.array[wp.int32]
 ) -> None:
-    # Row ``i``'s ball entries as edges ``(i, j)`` of the radius graph, one per packed entry: the
-    # self entry and both directions of a pair are edges too, which the labelling takes as they
-    # come (a self loop joins nothing, a repeated pair joins nothing more). Labelling the ball rows
-    # as a CSR instead (``graph.connected_component_labels``, no edge list) took 0.55-0.64x the
-    # peak but 1.3-2.4x the time on ``dragon`` at 1.5 and 3 mean edges (2026-11-02): its hook walks
-    # a row a thread, this one an edge a thread. Declined; an entry-parallel CSR hook is untried.
+    # The hook of every radius-graph edge, owned by its larger end, from the walk that finds it
+    # (``ecl_hook``'s row carry over a ball instead of a CSR row), over an identity ``parents``.
+    # The ball predicate is symmetric (``in_ball`` squares the offset's components), so each edge
+    # is met from both ends and hooked once, and every union points the larger root at the
+    # smaller: the roots, and so the labels, are the edge list's exactly. Replaces a packed ball
+    # query (a count walk, a scan, a readback and a collect walk), an edge list and its pre-hook
+    # and hook passes: on ``lucy`` at two mean edges those held 228 M neighbour entries and twice
+    # as many edge ends (call peak 4.2 -> 0.75 GB, 15.7 GB at four mean edges).
     i = wp.int32(wp.tid())
-    for e in range(offsets[i], offsets[i + 1]):
-        out_edges[e, 0] = i
-        out_edges[e, 1] = neighbors[e]
+    q = points[i]
+    rep = find_representative(parents, i)
+    j = wp.int32(0)
+    query = wp.hash_grid_query(grid_id, q, radius)
+    while wp.hash_grid_query_next(query, j):
+        if j < i:
+            if in_ball(points[j] - q, radius):
+                rep = ecl_hook_edge(parents, rep, j)
+
+
+@wp.kernel
+def component_sizes(
+    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_sizes: wp.array[wp.int32]
+) -> None:
+    # ``ecl_flatten`` and the component-size histogram (``scatter.count_occurrences``) in one
+    # launch: the count reads the label at its own index. ``out_sizes`` arrives zeroed.
+    i = wp.int32(wp.tid())
+    label = find_representative(parents, i)
+    out_labels[i] = label
+    wp.atomic_add(out_sizes, label, 1)
 
 
 @wp.kernel

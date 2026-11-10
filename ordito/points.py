@@ -79,7 +79,6 @@ from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
-from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import convex_hull as kernel_hull
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
@@ -1371,21 +1370,27 @@ def cluster_outlier_mask(
         if grid is None
         else grid
     )
-    neighbors, _, offsets = od.neighbors.query_ball_with_offsets(
-        points, points, radius, accelerator=accelerator
-    )
-    edges = odt.empty_2d((neighbors.size, 2), wp.int32, device=device)
+    # The radius graph's union-find hooks in the ball walk itself, from an identity forest, with
+    # no edge stored. Declined, a pre-hook walk pointing each point at its ball's smallest
+    # (``ecl_init_parent_edges``'s role on an edge list) and the compress after it: the bare hook's
+    # 1.13-1.20x on ``dragon`` and ``lucy`` in scan order, 1.5x scrambled, and 1.15-1.44x on clumps
+    # of 20 k points in one ball and 200 k with ~1 000 neighbours each (2026-11-10, CUDA). The
+    # hook's row carry already takes a hub's edges at its root.
+    parents = od.array.arange(n, device=device)
     _launch.launch(
-        kernel_points.ball_graph_edges,
+        kernel_points.ball_graph_hook,
         dim=n,
-        inputs=[neighbors, offsets],
-        outputs=[edges],
+        inputs=[points, accelerator.id, wp.float32(radius), parents],
         device=device,
     )
-    labels = od.graph.connected_component_labels_from_edges(edges, n, validate=False)
+    labels = _launch.empty(n, dtype=wp.int32, device=device)
     sizes = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_scatter.count_occurrences, dim=n, inputs=[labels], outputs=[sizes], device=device
+        kernel_points.component_sizes,
+        dim=n,
+        inputs=[parents],
+        outputs=[labels, sizes],
+        device=device,
     )
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     _launch.launch(
