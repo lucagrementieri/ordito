@@ -4,8 +4,12 @@ import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.array import device_is_cpu
-from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
-from ordito.kernels.normals import gathered_angle_weighted_sums, normalized_narrowed
+from ordito.kernels.halfedge import halfedge_destination, halfedge_prev, ring_long_from
+from ordito.kernels.normals import (
+    gathered_angle_weighted_sums,
+    halfedge_angle_weighted_term,
+    normalized_narrowed,
+)
 from ordito.kernels.predicates import any_perpendicular, reference_tangent, world_to_tangent
 from ordito.kernels.reduce import block_chunk, block_max, block_sum
 from ordito.kernels.triangles import (
@@ -133,6 +137,56 @@ def tangent_angle_ring(
 
 
 @wp.func
+def ring_reference_slot_block(
+    ring_halfedges: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    boundary: wp.bool,
+    lane: wp.int32,
+) -> wp.int32:
+    # ``ring_reference_slot`` by the whole block (every lane must call it, and every lane gets it):
+    # the slot of the ring's largest halfedge, or ``0`` on an open fan.
+    start = wp.int32(0)
+    if not boundary:
+        lanes = wp.block_dim()
+        largest = wp.int32(-1)
+        for j in range(begin + lane, end, lanes):
+            largest = wp.max(largest, ring_halfedges[j])
+        largest = block_max(largest)
+        slot = wp.int32(-1)
+        for j in range(begin + lane, end, lanes):
+            if ring_halfedges[j] == largest:
+                slot = j - begin
+        start = block_max(slot)
+    return start
+
+
+@wp.func
+def ring_lane_chunk(begin: wp.int32, end: wp.int32, lane: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Lane ``lane``'s contiguous chunk ``[first, last)`` of a ring's ``end - begin`` slots counted
+    # from its reference slot, the ring cut into one chunk a lane of the block.
+    n = end - begin
+    chunk = (n + wp.block_dim() - 1) // wp.block_dim()
+    first = wp.min(lane * chunk, n)
+    return first, wp.min(first + chunk, n)
+
+
+@wp.func
+def lanes_before_and_total(partial: wp.float64, lane: wp.int32) -> tuple[wp.float64, wp.float64]:
+    # The sum of the lanes' ``partial`` before lane ``lane`` and over every lane, both in lane
+    # order, so a ring cut by ``ring_lane_chunk`` resumes each chunk where the one before ended
+    # (``tile_scan_*`` takes no ``float64``). Every lane must call it.
+    partials = wp.tile(partial)
+    before = wp.float64(0.0)
+    total = wp.float64(0.0)
+    for i in range(wp.block_dim()):
+        if i == lane:
+            before = total
+        total += wp.tile_extract(partials, i)
+    return before, total
+
+
+@wp.func
 def tangent_angle_ring_block(
     angle_data: Any,
     angle_faces: Any,
@@ -151,36 +205,15 @@ def tangent_angle_ring_block(
     # all of them, the total) in lane order, and each lays its chunk out from there. The sums are
     # a fixed chunked order, so the ring repeats bit for bit; it is not the one-lane walk's order,
     # which ``float64`` rounding separates by ulps (``tile_scan_*`` takes no ``float64``).
-    n = end - begin
-    lanes = wp.block_dim()
-    start = wp.int32(0)
-    if not boundary:
-        # ``ring_reference_slot`` by the block: the slot of the ring's largest halfedge.
-        largest = wp.int32(-1)
-        for j in range(begin + lane, end, lanes):
-            largest = wp.max(largest, ring_halfedges[j])
-        largest = block_max(largest)
-        slot = wp.int32(-1)
-        for j in range(begin + lane, end, lanes):
-            if ring_halfedges[j] == largest:
-                slot = j - begin
-        start = block_max(slot)
-    chunk = (n + lanes - 1) // lanes
-    first = wp.min(lane * chunk, n)
-    last = wp.min(first + chunk, n)
+    start = ring_reference_slot_block(ring_halfedges, begin, end, boundary, lane)
+    first, last = ring_lane_chunk(begin, end, lane)
     partial = wp.float64(0.0)
     for t in range(first, last):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
         angle = angle_of(angle_data, angle_faces, h)
         out_angles[h] = angle
         partial += angle
-    partials = wp.tile(partial)
-    before = wp.float64(0.0)
-    total = wp.float64(0.0)
-    for i in range(lanes):
-        if i == lane:
-            before = total
-        total += wp.tile_extract(partials, i)
+    before, total = lanes_before_and_total(partial, lane)
     scale = ring_tangent_scale(total, boundary)
     accumulated = before
     for t in range(first, last):
@@ -292,6 +325,40 @@ def ring_angle_total(
 
 
 @wp.func
+def fan_anchor_term(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    origin: wp.vec3,
+    h: wp.int32,
+    theta: wp.float32,
+    frame_x: wp.vec3,
+    frame_y: wp.vec3,
+) -> wp.vec2:
+    # ``fan_anchor``'s term of ring halfedge ``h``: its edge in the frame, rotated back by its
+    # normalized polar angle ``theta``. Shared with ``long_ring_frame``'s block walk.
+    edge = world_to_tangent(vertices[halfedge_destination(faces, h)] - origin, frame_x, frame_y)
+    cos_theta = wp.cos(theta)
+    sin_theta = wp.sin(theta)
+    return wp.vec2(
+        edge[0] * cos_theta + edge[1] * sin_theta, edge[1] * cos_theta - edge[0] * sin_theta
+    )
+
+
+@wp.func
+def fan_rim_edge(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    origin: wp.vec3,
+    last: wp.int32,
+    frame_x: wp.vec3,
+    frame_y: wp.vec3,
+) -> wp.vec2:
+    # An open fan's closing rim edge in the frame, the far edge of its last wedge (ring halfedge
+    # ``last``), at half a turn: ``fan_anchor`` subtracts it.
+    return world_to_tangent(vertices[faces[halfedge_prev(last)]] - origin, frame_x, frame_y)
+
+
+@wp.func
 def fan_anchor(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -318,19 +385,40 @@ def fan_anchor(
     accumulated = wp.float32(0.0)
     for t in range(end - begin):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
-        edge = world_to_tangent(vertices[halfedge_destination(faces, h)] - origin, frame_x, frame_y)
-        theta = scale * accumulated
-        cos_theta = wp.cos(theta)
-        sin_theta = wp.sin(theta)
-        anchor_x += edge[0] * cos_theta + edge[1] * sin_theta
-        anchor_y += edge[1] * cos_theta - edge[0] * sin_theta
+        term = fan_anchor_term(vertices, faces, origin, h, scale * accumulated, frame_x, frame_y)
+        anchor_x += term[0]
+        anchor_y += term[1]
         accumulated += halfedge_corner_angle(vertices, faces, h)
     if boundary:
-        h = ring_halfedges[end - 1]
-        edge = world_to_tangent(vertices[faces[halfedge_prev(h)]] - origin, frame_x, frame_y)
+        edge = fan_rim_edge(vertices, faces, origin, ring_halfedges[end - 1], frame_x, frame_y)
         anchor_x -= edge[0]
         anchor_y -= edge[1]
     return wp.vec2(anchor_x, anchor_y)
+
+
+@wp.func
+def anchored_basis_x(
+    basis_x: wp.vec3, frame_y: wp.vec3, anchor: wp.vec2, length: wp.float32
+) -> wp.vec3:
+    # ``basis_x`` turned to the fan's ``anchor`` (``fan_anchor``) in the provisional frame
+    # ``(basis_x, frame_y)``, unless the anchor vanishes against the reference edge's ``length``.
+    if wp.length(anchor) > TOLERANCE_ZERO_CONSTANT * length:
+        return wp.normalize(anchor[0] * basis_x + anchor[1] * frame_y)
+    return basis_x
+
+
+@wp.func
+def ring_reference_tangent(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    h: wp.int32,
+    v: wp.int32,
+    normal: wp.vec3,
+) -> tuple[wp.vec3, wp.float32]:
+    # The provisional ``basis_x`` the fan's anchor is fitted in: reference halfedge ``h``'s edge
+    # projected into the tangent plane of unit ``normal`` at ``v``, and that projection's length.
+    direction = vertices[halfedge_destination(faces, h)] - vertices[v]
+    return reference_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
 
 
 @wp.func
@@ -359,9 +447,9 @@ def vertex_tangent_basis(
         basis_x = any_perpendicular(normal)
         return basis_x, wp.cross(normal, basis_x)
     start = ring_reference_slot(ring_halfedges, begin, end, boundary)
-    h = ring_halfedges[begin + start]
-    direction = vertices[halfedge_destination(faces, h)] - vertices[v]
-    basis_x, length = reference_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
+    basis_x, length = ring_reference_tangent(
+        vertices, faces, ring_halfedges[begin + start], v, normal
+    )
     scale = ring_tangent_scale(total, boundary)
     if scale > wp.float32(0.0):
         frame_y = wp.cross(normal, basis_x)
@@ -377,67 +465,188 @@ def vertex_tangent_basis(
             basis_x,
             frame_y,
         )
-        norm = wp.length(anchor)
-        if norm > TOLERANCE_ZERO_CONSTANT * length:
-            basis_x = wp.normalize(anchor[0] * basis_x + anchor[1] * frame_y)
+        basis_x = anchored_basis_x(basis_x, frame_y, anchor, length)
     return basis_x, wp.cross(normal, basis_x)
 
 
-@wp.kernel
-def vertex_tangent_frames(
+def _vertex_tangent_frames(name: str, short_only: bool) -> wp.Kernel:
+    # The frame around a caller's normals; ``_vertex_tangent_frames_gathered`` forms the normal
+    # over the ring first. ``short_only`` (the ``_short`` kernels) skips a ring of
+    # ``halfedge.ring_long_from`` halfedges or more, which ``vertex_one_rings`` listed and
+    # ``vertex_tangent_frames_long`` lays out a block a ring; the wrapper takes it only when that
+    # list is known to be nonempty, so a mesh without a long ring runs the plain kernel and pays no
+    # argument or test for it.
+    def _kernel(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        normals: wp.array[wp.vec3],
+        ring_offsets: wp.array[wp.int32],
+        ring_halfedges: wp.array[wp.int32],
+        is_boundary: wp.array[wp.bool],
+        out_basis_x: wp.array[wp.vec3],
+        out_basis_y: wp.array[wp.vec3],
+    ) -> None:
+        v = wp.int32(wp.tid())
+        if wp.static(short_only):
+            if ring_offsets[v + 1] - ring_offsets[v] >= ring_long_from(ring_halfedges.shape[0]):
+                return
+        total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, v)
+        basis_x, basis_y = vertex_tangent_basis(
+            vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v, total
+        )
+        out_basis_x[v] = basis_x
+        out_basis_y[v] = basis_y
+
+    return wp.kernel(_kernel, name=name)
+
+
+vertex_tangent_frames = _vertex_tangent_frames("vertex_tangent_frames", False)
+vertex_tangent_frames_short = _vertex_tangent_frames("vertex_tangent_frames_short", True)
+
+
+def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
+    # ``_vertex_tangent_frames`` with the angle-weighted normal gathered over the ring the frame
+    # walks (``normals.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
+    # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
+    # reads, which the caller-normal kernel walks for alone. The normal written is
+    # ``vertex_normals``' up to the order its ``float64`` sum is taken in. ``short_only`` as there.
+    #
+    # The long rings' block is a kernel of its own because block code inlined here costs every
+    # ordinary walk: ``tangent_angle_rows``' block deferral built into both frame kernels
+    # (2026-11-08) was byte-identical elsewhere and took the hub 0.016-0.018x, but cost ordinary
+    # meshes 1.11-1.23x, wherever the block's decision was taken (a reduction after or before the
+    # walks, a barrier-free warp vote) and under a 56-register cap; packing its sums into vectors
+    # cost 1.2-1.7x.
+    def _kernel(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        ring_offsets: wp.array[wp.int32],
+        ring_halfedges: wp.array[wp.int32],
+        is_boundary: wp.array[wp.bool],
+        out_basis_x: wp.array[wp.vec3],
+        out_basis_y: wp.array[wp.vec3],
+        out_normals: wp.array[wp.vec3],
+    ) -> None:
+        v = wp.int32(wp.tid())
+        if wp.static(short_only):
+            if ring_offsets[v + 1] - ring_offsets[v] >= ring_long_from(ring_halfedges.shape[0]):
+                return
+        sums, total = gathered_angle_weighted_sums(vertices, faces, ring_offsets, ring_halfedges, v)
+        normal = normalized_narrowed(sums[0], sums[1], sums[2])
+        out_normals[v] = normal
+        basis_x, basis_y = vertex_tangent_basis(
+            vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v, total
+        )
+        out_basis_x[v] = basis_x
+        out_basis_y[v] = basis_y
+
+    return wp.kernel(_kernel, name=name)
+
+
+vertex_tangent_frames_gathered = _vertex_tangent_frames_gathered(
+    "vertex_tangent_frames_gathered", False
+)
+vertex_tangent_frames_gathered_short = _vertex_tangent_frames_gathered(
+    "vertex_tangent_frames_gathered_short", True
+)
+
+# Lanes of a ``vertex_tangent_frames_long`` block, which lays out one long ring: ``fan_hub``'s two
+# 40 960-spoke hubs took the launch 1.3x as long at 256 (2026-11-10), and 1 024 asks more registers
+# than a block holds (CUDA error 701). Its own width, so the kernel is in a module of its own
+# (``module="unique"``) rather than rebuilding the per-vertex kernels' at it.
+FRAME_LONG_LANES = 512
+
+
+@wp.func
+def long_ring_frame(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    boundary: wp.bool,
+    v: wp.int32,
+    given_normal: wp.vec3,
+    gather: wp.bool,
+    lane: wp.int32,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    # ``vertex_tangent_basis`` (after ``gathered_angle_weighted_sums`` when ``gather``, else around
+    # ``given_normal``) by the whole block, for a ring one thread would walk twice through ``d``
+    # corners in turn; every lane must call it, and every lane gets ``(basis_x, basis_y, normal)``.
+    # The sums are the walk's terms in a fixed chunked order, in ``float64`` throughout, so a hub's
+    # frame repeats bit for bit but is not the one-thread walk's (whose ``float32`` sums it is
+    # nearer a ``float64`` frame than). The ring is never empty here.
+    begin = ring_offsets[v]
+    end = ring_offsets[v + 1]
+    sums = wp.vec4d()
+    for j in range(begin + lane, end, wp.block_dim()):
+        term, angle = halfedge_angle_weighted_term(vertices, faces, ring_halfedges[j])
+        sums += wp.vec4d(term[0], term[1], term[2], wp.float64(angle))
+    sums = block_sum(sums)
+    normal = given_normal
+    if gather:
+        normal = normalized_narrowed(sums[0], sums[1], sums[2])
+    if wp.length(normal) <= TOLERANCE_ZERO_CONSTANT:
+        return wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), normal
+    start = ring_reference_slot_block(ring_halfedges, begin, end, boundary, lane)
+    basis_x, length = ring_reference_tangent(
+        vertices, faces, ring_halfedges[begin + start], v, normal
+    )
+    scale = ring_tangent_scale(wp.float32(sums[3]), boundary)
+    if scale > wp.float32(0.0):
+        # ``fan_anchor`` a chunk a lane, each resuming the polar angle where the chunk before it
+        # ended (``lanes_before_and_total``).
+        frame_y = wp.cross(normal, basis_x)
+        origin = vertices[v]
+        first, last = ring_lane_chunk(begin, end, lane)
+        partial = wp.float64(0.0)
+        for t in range(first, last):
+            h = ring_halfedges[ring_slot(begin, end, start, t)]
+            partial += wp.float64(halfedge_corner_angle(vertices, faces, h))
+        accumulated, _total = lanes_before_and_total(partial, lane)
+        anchor = wp.vec2d()
+        for t in range(first, last):
+            h = ring_halfedges[ring_slot(begin, end, start, t)]
+            theta = scale * wp.float32(accumulated)
+            anchor += wp.vec2d(fan_anchor_term(vertices, faces, origin, h, theta, basis_x, frame_y))
+            accumulated += wp.float64(halfedge_corner_angle(vertices, faces, h))
+        anchor = block_sum(anchor)
+        if boundary:
+            anchor -= wp.vec2d(
+                fan_rim_edge(vertices, faces, origin, ring_halfedges[end - 1], basis_x, frame_y)
+            )
+        basis_x = anchored_basis_x(basis_x, frame_y, wp.vec2(anchor), length)
+    return basis_x, wp.cross(normal, basis_x), normal
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def vertex_tangent_frames_long(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     normals: wp.array[wp.vec3],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
-    out_basis_x: wp.array[wp.vec3],
-    out_basis_y: wp.array[wp.vec3],
-) -> None:
-    # The frame around a caller's normals; ``vertex_tangent_frames_gathered`` forms the normal
-    # over the ring first.
-    v = wp.int32(wp.tid())
-    total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, v)
-    basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v, total
-    )
-    out_basis_x[v] = basis_x
-    out_basis_y[v] = basis_y
-
-
-@wp.kernel
-def vertex_tangent_frames_gathered(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    ring_offsets: wp.array[wp.int32],
-    ring_halfedges: wp.array[wp.int32],
-    is_boundary: wp.array[wp.bool],
+    long_rings: wp.array[wp.int32],
+    gather: wp.bool,
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # ``vertex_tangent_frames`` with the angle-weighted normal gathered over the ring the frame
-    # walks (``normals.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
-    # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
-    # reads, which the caller-normal kernel walks for alone. The normal written is
-    # ``vertex_normals``' up to the order its ``float64`` sum is taken in.
-    #
-    # A hub's ring stays one thread's walk here (``fan_hub`` ~2 850x ``sphere_med``'s kernel).
-    # ``tangent_angle_rows``' block deferral was built for both frame kernels (2026-11-08):
-    # byte-identical elsewhere, the hub 0.016-0.018x and 450x nearer a ``float64`` frame, but the
-    # inlined block path alone cost ordinary meshes 1.11-1.23x, wherever the block's decision was
-    # taken (a reduction after or before the walks, a barrier-free warp vote) and under a
-    # 56-register cap; packing its sums into vectors cost 1.2-1.7x. Only removing the block code
-    # restored par.
-    v = wp.int32(wp.tid())
-    sums, total = gathered_angle_weighted_sums(vertices, faces, ring_offsets, ring_halfedges, v)
-    normal = normalized_narrowed(sums[0], sums[1], sums[2])
-    out_normals[v] = normal
-    basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v, total
+    # The frames the ``_short`` frame kernels skipped, a block
+    # a listed vertex (``long_ring_frame``); launched tiled at ``FRAME_LONG_LANES``, and only when
+    # the caller knows a long ring exists, so a mesh without one never launches it. ``gather``
+    # forms the normal into ``out_normals``; otherwise ``normals`` is read and ``out_normals`` is
+    # not written (the caller passes ``normals`` for both).
+    blk, lane = wp.tid()
+    v = long_rings[blk]
+    basis_x, basis_y, normal = long_ring_frame(
+        vertices, faces, ring_offsets, ring_halfedges, is_boundary[v], v, normals[v], gather, lane
     )
-    out_basis_x[v] = basis_x
-    out_basis_y[v] = basis_y
+    if lane == 0:
+        out_basis_x[v] = basis_x
+        out_basis_y[v] = basis_y
+        if gather:
+            out_normals[v] = normal
 
 
 @wp.func

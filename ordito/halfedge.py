@@ -22,7 +22,13 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._common import index_extrema, read_scalar, read_values, require_same_device
+from ordito._common import (
+    index_extrema,
+    note_long_rings,
+    read_scalar,
+    read_values,
+    require_same_device,
+)
 from ordito.adjacency import _sorted_face_edge_buffers  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import halfedge as kernel_halfedge
@@ -415,10 +421,16 @@ def vertex_one_rings(
         if check_twins:
             _raise_twin_defects(counts_np)
         n_incomplete = int(counts_np[2])
-        if rank_starts is not None and int(counts_np[4]) > 0:
+        n_long = int(counts_np[4]) if rank_starts is not None else 0
+        if rank_starts is not None and n_long > 0:
             _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts, known=True)
             # Readback: the ranked rings' pinches, on a mesh with a long ring alone.
             n_incomplete = int(read_scalar(defect_counts, 2))
+            if n_incomplete == 0:
+                # The list stays with the rings, for the ring kernels that leave a long ring to a
+                # block (``tangent_space.vertex_tangent_frames``).
+                listed_at = int(kernel_halfedge.RING_LISTED) + 1
+                note_long_rings(offsets, _launch.view(ring_counts, listed_at, listed_at + n_long))
         if validate and n_incomplete > 0:
             raise ValueError(
                 f"vertex_one_rings requires a vertex-manifold mesh: {n_incomplete} vertex/vertices "

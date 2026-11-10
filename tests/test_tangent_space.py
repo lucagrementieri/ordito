@@ -17,6 +17,7 @@ import warp as wp
 
 import ordito as od
 from tests.conftest import MESHES
+from tests.conversions import numpy_to_warp
 
 
 def _vector_heat_solver_pp(mesh_tm: tm.Trimesh) -> pp3d.MeshVectorHeatSolver:
@@ -112,6 +113,68 @@ def test_vertex_tangent_frames_accept_precomputed_rings(
     supplied = od.tangent_space.vertex_tangent_frames(vertices, faces, rings=rings)
     for derived_part, supplied_part in zip(derived, supplied, strict=True):
         assert np.array_equal(derived_part.numpy(), supplied_part.numpy())
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "open"])
+@pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
+def test_vertex_tangent_frames_on_a_hub_match_potpourri3d(
+    device: str, closed: bool, with_normals: bool
+) -> None:
+    """
+    Class A: a 4 096-spoke hub's frame is geometry-central's, as every other vertex's is.
+
+    On a CUDA device ``vertex_one_rings`` lists the hubs' rings as long, and the frame kernel
+    leaves them to a block a ring (``kernels/tangent_space.vertex_tangent_frames_long``); the CPU
+    walks them in one thread. A jittered cone, so the fan is not flat and ``basis_x`` is fitted
+    rather than read off an edge: closed (the apex and the base centre are two interior hubs) and
+    with a wedge removed (the apex is a boundary hub, its reference halfedge the ring's first).
+
+    The asserts read the hubs alone: the rim vertices sit between 4 096 sliver triangles, whose
+    ``float32`` normals differ from potpourri3d's by up to 2e-4 whichever walk forms them (the
+    rest of the file pins ordinary vertices). Measured worst hub difference: 1.3e-7 on
+    CUDA's block (``float64`` sums in a chunked order), 2.9e-6 on the CPU's one-thread walk (its
+    ``float32`` accumulation grows with the valence: 6.6e-4 at ``fan_hub``'s 40 960 spokes); every
+    assert is at ``1e-5``. Mutation probes on the block: dropping the open fan's rim edge from its
+    anchor moves the apex's ``basis_x`` by 3.2e-4, starting the closed rings at their first slot
+    rather than the largest halfedge's by 1.3e-3 and 1.9e-3.
+    """
+    spokes = 4096
+    rng = np.random.default_rng(7)
+    angle = np.linspace(0.0, 2.0 * np.pi, spokes, endpoint=False)
+    radius = 1.0 + 0.2 * rng.random(spokes)
+    rim = np.stack([radius * np.cos(angle), radius * np.sin(angle), 0.3 * rng.random(spokes)], 1)
+    vertices_np = np.concatenate([[[0.1, -0.2, 1.0], [0.0, 0.0, -0.4]], rim])
+    i = np.arange(spokes)
+    j = (i + 1) % spokes
+    faces_np = np.concatenate(
+        [np.stack([0 * i, i + 2, j + 2], 1), np.stack([0 * i + 1, j + 2, i + 2], 1)]
+    )
+    if not closed:
+        faces_np = faces_np[: spokes - 1]
+        vertices_np = np.delete(vertices_np, 1, axis=0)
+        faces_np = np.where(faces_np > 1, faces_np - 1, faces_np)
+    faces_np = faces_np.astype(np.int32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    normals_wp = (
+        od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+        if with_normals
+        else None
+    )
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
+        vertices_wp, faces_wp, normals=normals_wp
+    )
+    basis_x_pp, basis_y_pp, normal_pp = (
+        np.asarray(basis)
+        for basis in _vector_heat_solver_pp(
+            tm.Trimesh(vertices_np, faces_np, process=False)
+        ).get_tangent_frames()
+    )
+
+    hubs = [0, 1] if closed else [0]
+    assert np.ptp(basis_x_pp[hubs]) > 1e-2
+    assert np.allclose(normal_wp.numpy()[hubs], normal_pp[hubs], rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_x_wp.numpy()[hubs], basis_x_pp[hubs], rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp.numpy()[hubs], basis_y_pp[hubs], rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
