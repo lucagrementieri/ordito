@@ -1217,15 +1217,22 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Hub rows still slow on `fan_hub`** (2026-11-10): `connection_laplacian`'s warp walk is still
-  14.7 of 18 ms kernel time and `halfedge_tangent_angles` 3 ms; the explicit smoothing passes'
+- **Hub rows still slow on `fan_hub`** (2026-11-10): `connection_laplacian` 3.5 ms (15.7 before
+  its rows deferred a long row to the block and the long rings' tangent angles were parked across
+  the device): its hub rows are 2.75 ms on one block's SM, the tangent walk 0.52 ms. Spreading a
+  hub row over SMs needs a list of the long rows, which the operator pattern does not carry (the
+  rings' list, `_common.long_rings`, is keyed by the ring offsets). The explicit smoothing passes'
   warp walk ~0.4 ms a hub.
 - **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
-  ~9.4 us a round (65 536-point star: 14 404 rounds, 135 ms), about 60 % of it the walk phase and
-  most of the rest its five block barriers. The walks left are the two neighbours a clip reclasses
-  (an empty triangle's verdict is cached until then, `EAR_UNBLOCKED`), every one of them unblocked
-  on the star. Open: fewer barriers a round, or a cheaper first walk of a reclassed corner. The
-  packed multi-ring loop (`_triangulate_long_rings`) has no tail.
+  ~7.7 us a round (65 536-point star: 14 404 rounds, 111 ms). The walks left are the two
+  neighbours a clip reclasses (an empty triangle's verdict is cached until then, `EAR_UNBLOCKED`),
+  every one of them unblocked on the star, and each phase's own latency chain is most of the rest
+  (a barrier ~0.3 us). Declined: inferring a reclassed corner's empty triangle from the two empty
+  ones it lies in (its old one and the clipped ear's, when their quadrilateral is convex): the
+  float32 `orient2d` behind `point_in_triangle` is not exact, so a vertex within rounding of the
+  shared diagonal can read inside the new triangle and outside both, changing faces. Open: an
+  exact containment predicate would make that inference sound. The packed multi-ring loop
+  (`_triangulate_long_rings`) has no tail.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
   landmark an iteration (its radius the distance to its last match since 2026-11-10,
   `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on

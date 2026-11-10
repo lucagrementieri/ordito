@@ -2096,6 +2096,14 @@ def edge_slab_x_range(
     return result
 
 
+# Shares (``grid_ear_blocker``'s ``parts``) a row of a shared containment walk takes at least:
+# with as many rows as shares each share took whole rows, and the few rows where the triangle
+# meets the ring's dense arcs held most of the points. 4 a row took the ``ear_clip_tail`` star of
+# 65 536 points 136 -> 111 ms and the circle 84 -> 67 ms (2 and 8 less), faces byte-identical
+# (2026-11-10); one share walking alone (``parts == 1``) is unchanged.
+EAR_WALK_ROW_SHARE = 4
+
+
 @wp.func
 def grid_ear_blocker(
     points2d: wp.array[wp.vec2],
@@ -2122,9 +2130,9 @@ def grid_ear_blocker(
     # cells the triangle crosses -- the triangle's x extent over the row's slab, grown by the
     # ``EAR_GRID_PAD_ULPS`` margin in both axes and by a hundredth of a cell in y against the
     # rounding of the slab's bounds -- so a long thin ear across the polygon costs its area in
-    # cells, not its bounding box's. The shares stride the rows; with more shares than rows each
-    # row's points (its crossed cells' runs, consecutive in ``cell_points``) are dealt out among
-    # ``parts // rows`` shares. Dealt by cells, one share took a cell whole, and a ring along a
+    # cells, not its bounding box's. The shares stride the rows, ``EAR_WALK_ROW_SHARE`` shares a
+    # row at least, each row's points (its crossed cells' runs, consecutive in ``cell_points``)
+    # dealt out among its shares. Dealt by cells, one share took a cell whole, and a ring along a
     # circle puts dozens of points in each cell it crosses: the slowest share set the
     # ``ear_clip_tail`` walk at ~11 us (65 536-point star and circle, 2026-11-10). The ring starts
     # at ``points2d[start]`` and its grid's cells at ``cell_starts[cell_base]``.
@@ -2145,7 +2153,7 @@ def grid_ear_blocker(
     slack = pad + wp.float32(0.01) * cell_size
     row_lo = ear_grid_cell(lo - wp.vec2(pad, pad), origin, inv_cell, dims)[1]
     row_hi = ear_grid_cell(hi + wp.vec2(pad, pad), origin, inv_cell, dims)[1]
-    row_step = wp.min(parts, row_hi - row_lo + 1)
+    row_step = wp.max(wp.min(parts, row_hi - row_lo + 1) // EAR_WALK_ROW_SHARE, 1)
     pieces = parts // row_step
     piece = part // row_step
     if piece >= pieces:
