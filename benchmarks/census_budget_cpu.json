@@ -5225,6 +5225,54 @@
    "readback": 2
   }
  },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-16384-circle]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-16384-noisy_circle]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-16384-star]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-65536-circle]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-65536-noisy_circle]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon_long_rings[ordito-cpu-65536-star]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 3,
+   "readback": 2,
+   "sort": 1
+  }
+ },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-1024]": {
   "counts": {
    "launch": 5,
