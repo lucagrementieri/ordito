@@ -5,7 +5,9 @@ from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
     binary_search_index_left,
+    csr_row_long,
     outer_product_slot,
+    popcount32,
     sorted_run_end,
     sorted_run_start,
     store_coo_key,
@@ -13,14 +15,27 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.edges import edge_row_length
 from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints, halfedge_prev
-from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
+from ordito.kernels.laplacian import (
+    cotmatrix_row,
+    signed_cotmatrix_row_lanes,
+    store_half_cotangents,
+)
 from ordito.kernels.predicates import (
     angle_defect,
     corner_cosines_from_l2,
     squared_edge_lengths,
     triangle_double_area,
 )
-from ordito.kernels.reduce import term_sum_1d
+from ordito.kernels.reduce import (
+    term_sum_1d,
+    warp_active_lanes,
+    warp_ballot,
+    warp_lane_rank,
+    warp_long_rows,
+    warp_lowest_row,
+    warp_walk,
+    warp_walk_total,
+)
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d, known_local_corner
 
@@ -206,7 +221,8 @@ def edge_pair_consistency_term(
 
 
 @wp.func
-def smoothing_norm(
+def smoothing_norm_lanes(
+    lanes: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
@@ -217,14 +233,26 @@ def smoothing_norm(
 ) -> wp.float32:
     # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for CSR row ``i``, with ``method``'s two
     # scales (``smoothing_norm_term`` explains them): the row walk and tail both of its
-    # kernels share, which differ only by who writes the row.
+    # kernels share, which differ only by who writes the row. Walked by the lanes of ``lanes``
+    # (``reduce.warp_walk``), the accumulator and diagonal summed over them in ``float64``
+    # (``reduce.warp_walk_total``; the diagonal is one lane's, the rest add zero), or by one thread
+    # at ``lanes == 0``, whose sums pass through unrounded. A row the same lanes wrote with the same
+    # walk (``laplacian_smoothing_cot_norms``) is read back entry by entry by the lane that wrote
+    # it, so the walk needs no warp barrier.
     accumulator = wp.vec3(0.0, 0.0, 0.0)
     diagonal = wp.float32(0.0)
-    for slot in range(offsets[i], offsets[i + 1]):
+    first, stride = warp_walk(lanes)
+    for slot in range(offsets[i] + first, offsets[i + 1], stride):
         column = columns[slot]
         accumulator += values[slot] * vertices[column]
         if column == i:
             diagonal = values[slot]
+    accumulator = wp.vec3(
+        wp.float32(warp_walk_total(lanes, wp.float64(accumulator[0]))),
+        wp.float32(warp_walk_total(lanes, wp.float64(accumulator[1]))),
+        wp.float32(warp_walk_total(lanes, wp.float64(accumulator[2]))),
+    )
+    diagonal = wp.float32(warp_walk_total(lanes, wp.float64(diagonal)))
     row_scale = wp.float32(1.0)
     self_scale = wp.float32(-1.0)
     if method == SMOOTHING_COT:
@@ -238,6 +266,20 @@ def smoothing_norm(
         row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
         self_scale = wp.float32(0.0)
     return wp.length(row_scale * accumulator + self_scale * vertices[i])
+
+
+@wp.func
+def smoothing_norm(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    vertices: wp.array[wp.vec3],
+    area_sums: wp.array[wp.float64],
+    method: wp.int32,
+    i: wp.int32,
+) -> wp.float32:
+    # ``smoothing_norm_lanes`` by the one thread.
+    return smoothing_norm_lanes(0, offsets, columns, values, vertices, area_sums, method, i)
 
 
 @wp.struct
@@ -284,16 +326,39 @@ def smoothing_norm_term(local: wp.int32, offset: wp.int32, terms: SmoothingNormT
     # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
     # zero would.
     #
-    # Summed where it is formed (``SMOOTHING_NORM_SUM``), so no per-row norm is stored.
-    return smoothing_norm(
-        terms.offsets,
-        terms.columns,
-        terms.values,
-        terms.vertices,
-        terms.area_sums,
-        terms.method,
-        offset + local,
-    )
+    # Summed where it is formed (``SMOOTHING_NORM_SUM``), so no per-row norm is stored. A long row
+    # (``array.csr_row_long``, a fan's hub) is walked by the lanes the term reaches together
+    # (``kernels/laplacian``'s warp form; the tile map's lanes, or one lane in a chunk's tail).
+    i = offset + local
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(terms.offsets, i, lanes)
+    norm = wp.float32(0.0)
+    if long_rows == 0 or not csr_row_long(terms.offsets, i):
+        norm = smoothing_norm(
+            terms.offsets,
+            terms.columns,
+            terms.values,
+            terms.vertices,
+            terms.area_sums,
+            terms.method,
+            i,
+        )
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        row_norm = smoothing_norm_lanes(
+            lanes,
+            terms.offsets,
+            terms.columns,
+            terms.values,
+            terms.vertices,
+            terms.area_sums,
+            terms.method,
+            row,
+        )
+        if row == i:
+            norm = row_norm
+        long_rows = long_rows & (long_rows - 1)
+    return norm
 
 
 @wp.kernel(enable_backward=False)
@@ -318,10 +383,26 @@ def laplacian_smoothing_cot_norms(
     # instead of storing it cost 1.4-1.5x the two kernels' device time on scrambled meshes.
     # Folding the norms' mean into this pass as a ``term_sum_1d`` (as the uniform method does) was
     # measured and declined: 1.14x this kernel and the sum's device time at 655 k scrambled
-    # vertices and 7x at 10 k, where every lane walks the last chunk's rows serially.
+    # vertices and 7x at 10 k, where every lane walks the last chunk's rows serially. A long row
+    # (``array.csr_row_long``, a fan's hub) is written and read back by the warp
+    # (``kernels/laplacian``'s warp form), each lane reading only the entries it wrote.
     i = wp.int32(wp.tid())
-    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
-    out_norms[i] = smoothing_norm(offsets, columns, out_values, vertices, area_sums, method, i)
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+        out_norms[i] = smoothing_norm(offsets, columns, out_values, vertices, area_sums, method, i)
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, i)
+        signed_cotmatrix_row_lanes(
+            lanes, row, offsets, columns, run_start, keys, count, order, cot_entries, 0, out_values
+        )
+        norm = smoothing_norm_lanes(
+            lanes, offsets, columns, out_values, vertices, area_sums, method, row
+        )
+        if row == i:
+            out_norms[i] = norm
+        long_rows = long_rows & (long_rows - 1)
 
 
 # One ``kernels/reduce.TermSum`` per regularizer: the fused map and fixed-order (or atomic) block
@@ -1441,6 +1522,30 @@ def lscm_boundary_side(
     return wp.where(tail == r, 1, -1)
 
 
+@wp.func
+def lscm_boundary_count_lanes(
+    lanes: wp.int32,
+    faces: wp.array[wp.int32],
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    r: wp.int32,
+) -> wp.int32:
+    # Vertex ``r``'s boundary edge count over ``L``'s row (``lscm_boundary_side`` nonzero), walked
+    # by the lanes of ``lanes`` and summed over them (``reduce.warp_walk_total``, exact for a
+    # count), or by one thread at ``lanes == 0``.
+    count = wp.int32(0)
+    first, stride = warp_walk(lanes)
+    for e in range(laplacian_offsets[r] + first, laplacian_offsets[r + 1], stride):
+        side = lscm_boundary_side(faces, run_start, keys, n_keys, order, r, laplacian_columns[e], e)
+        if side != 0:
+            count += 1
+    return wp.int32(warp_walk_total(lanes, wp.float64(count)))
+
+
 @wp.kernel
 def lscm_laplacian_rows_and_counts(
     faces: wp.array[wp.int32],
@@ -1457,27 +1562,178 @@ def lscm_laplacian_rows_and_counts(
     # One thread per vertex over ``L``'s pattern: row ``r`` of the ``float64`` cotangent Laplacian
     # (``kernels/laplacian.cotmatrix_row``, as ``cotmatrix_rows`` writes it), and the vertex's
     # boundary edge count into slot ``r + 1`` (thread 0 also writes the leading zero), whose
-    # inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
+    # inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``. A long row
+    # (``array.csr_row_long``, a fan's hub) is walked by the warp, both its values and its count
+    # (``kernels/laplacian``'s warp form).
     r = wp.int32(wp.tid())
-    cotmatrix_row(
-        r,
-        laplacian_offsets,
-        laplacian_columns,
-        run_start,
-        keys,
-        n_keys,
-        order,
-        cot_entries,
-        out_laplacian_values,
-    )
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(laplacian_offsets, r, lanes)
+    if long_rows == 0 or not csr_row_long(laplacian_offsets, r):
+        cotmatrix_row(
+            r,
+            laplacian_offsets,
+            laplacian_columns,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            cot_entries,
+            out_laplacian_values,
+        )
+        out_counts[r + 1] = lscm_boundary_count_lanes(
+            0, faces, laplacian_offsets, laplacian_columns, run_start, keys, n_keys, order, r
+        )
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, r)
+        signed_cotmatrix_row_lanes(
+            lanes,
+            row,
+            laplacian_offsets,
+            laplacian_columns,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            cot_entries,
+            0,
+            out_laplacian_values,
+        )
+        count = lscm_boundary_count_lanes(
+            lanes, faces, laplacian_offsets, laplacian_columns, run_start, keys, n_keys, order, row
+        )
+        if row == r:
+            out_counts[r + 1] = count
+        long_rows = long_rows & (long_rows - 1)
     if r == 0:
         out_counts[0] = 0
-    count = wp.int32(0)
-    for e in range(laplacian_offsets[r], laplacian_offsets[r + 1]):
-        side = lscm_boundary_side(faces, run_start, keys, n_keys, order, r, laplacian_columns[e], e)
+
+
+@wp.func
+def lscm_boundary_entries_lanes(
+    lanes: wp.int32,
+    faces: wp.array[wp.int32],
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    v: wp.int32,
+    shift: wp.int32,
+    sign: wp.float64,
+    slot: wp.int32,
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> wp.int32:
+    # ``-2 A``'s entries of vertex ``v``'s row (``lscm_hessian_csr``), at column ``c + shift`` for
+    # each boundary neighbour ``c`` in ``L``'s column order, written from ``slot``; returns the
+    # slot past them. By one thread at ``lanes == 0``; by the lanes of ``lanes`` a stride at a
+    # time otherwise, a lane taking the entry at its rank (``reduce.warp_walk``) and placing a
+    # boundary one at its rank among the stride's (``reduce.warp_ballot``), so the order is the
+    # thread's.
+    begin = laplacian_offsets[v]
+    end = laplacian_offsets[v + 1]
+    if lanes == 0:
+        for e in range(begin, end):
+            c = laplacian_columns[e]
+            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, v, c, e)
+            if side != 0:
+                out_columns[slot] = c + shift
+                out_values[slot] = wp.where(side > 0, sign, -sign)
+                slot += 1
+        return slot
+    first, stride = warp_walk(lanes)
+    for base in range(begin, end, stride):
+        e = base + first
+        side = wp.int32(0)
+        c = wp.int32(0)
+        if e < end:
+            c = laplacian_columns[e]
+            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, v, c, e)
+        boundary = warp_ballot(lanes, side)
         if side != 0:
-            count += 1
-    out_counts[r + 1] = count
+            at = slot + warp_lane_rank(boundary)
+            out_columns[at] = c + shift
+            out_values[at] = wp.where(side > 0, sign, -sign)
+        slot += popcount32(wp.uint32(boundary))
+    return slot
+
+
+@wp.func
+def lscm_hessian_row_lanes(
+    lanes: wp.int32,
+    r: wp.int32,
+    faces: wp.array[wp.int32],
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    laplacian_values: wp.array[wp.float64],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    area_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # Row ``r`` of ``lscm_hessian_csr``, by one thread at ``lanes == 0`` or by the lanes of
+    # ``lanes`` (``reduce.warp_walk``): ``-L``'s entries are a copy at a fixed offset, and
+    # ``-2 A``'s are placed by ``lscm_boundary_entries_lanes``.
+    vertex = r
+    shift = wp.int32(0)
+    base = wp.int32(0)
+    sign = wp.float64(-0.5)
+    if r >= n_vertices:
+        vertex = r - n_vertices
+        shift = n_vertices
+        base = laplacian_offsets[n_vertices] + area_offsets[n_vertices]
+        sign = wp.float64(0.5)
+    lap_begin = laplacian_offsets[vertex]
+    lap_end = laplacian_offsets[vertex + 1]
+    first, stride = warp_walk(lanes)
+    if first == 0:
+        out_offsets[r + 1] = base + lap_end + area_offsets[vertex + 1]
+    slot = base + lap_begin + area_offsets[vertex]
+    if r >= n_vertices:
+        slot = lscm_boundary_entries_lanes(
+            lanes,
+            faces,
+            laplacian_offsets,
+            laplacian_columns,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            vertex,
+            0,
+            sign,
+            slot,
+            out_columns,
+            out_values,
+        )
+    for e in range(lap_begin + first, lap_end, stride):
+        at = slot + e - lap_begin
+        out_columns[at] = laplacian_columns[e] + shift
+        out_values[at] = -laplacian_values[e]
+    slot += lap_end - lap_begin
+    if r < n_vertices:
+        lscm_boundary_entries_lanes(
+            lanes,
+            faces,
+            laplacian_offsets,
+            laplacian_columns,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            vertex,
+            n_vertices,
+            sign,
+            slot,
+            out_columns,
+            out_values,
+        )
 
 
 @wp.kernel
@@ -1510,43 +1766,53 @@ def lscm_hessian_csr(
     # sorted row, so each row stays sorted. ``area_offsets`` is the scan of
     # ``lscm_laplacian_rows_and_counts``: a row's start is ``L.offsets[r] + area_offsets[r]``
     # above and ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below.
-    # Thread 0 also writes the leading zero.
+    # Thread 0 also writes the leading zero. A row over a long row of ``L`` (``array.csr_row_long``,
+    # a fan's hub) is written by the warp (``kernels/laplacian``'s warp form), the same entries in
+    # the same slots.
     r = wp.int32(wp.tid())
-    vertex = r
-    shift = wp.int32(0)
-    base = wp.int32(0)
-    sign = wp.float64(-0.5)
-    if r >= n_vertices:
-        vertex = r - n_vertices
-        shift = n_vertices
-        base = laplacian_offsets[n_vertices] + area_offsets[n_vertices]
-        sign = wp.float64(0.5)
-    lap_begin = laplacian_offsets[vertex]
-    lap_end = laplacian_offsets[vertex + 1]
+    vertex = wp.where(r >= n_vertices, r - n_vertices, r)
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(laplacian_offsets, vertex, lanes)
+    if long_rows == 0 or not csr_row_long(laplacian_offsets, vertex):
+        lscm_hessian_row_lanes(
+            0,
+            r,
+            faces,
+            laplacian_offsets,
+            laplacian_columns,
+            laplacian_values,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            area_offsets,
+            n_vertices,
+            out_offsets,
+            out_columns,
+            out_values,
+        )
+    while long_rows != 0:
+        row = warp_lowest_row(lanes, long_rows, r)
+        lscm_hessian_row_lanes(
+            lanes,
+            row,
+            faces,
+            laplacian_offsets,
+            laplacian_columns,
+            laplacian_values,
+            run_start,
+            keys,
+            n_keys,
+            order,
+            area_offsets,
+            n_vertices,
+            out_offsets,
+            out_columns,
+            out_values,
+        )
+        long_rows = long_rows & (long_rows - 1)
     if r == 0:
         out_offsets[0] = 0
-    out_offsets[r + 1] = base + lap_end + area_offsets[vertex + 1]
-    slot = base + lap_begin + area_offsets[vertex]
-    if r >= n_vertices:
-        for e in range(lap_begin, lap_end):
-            c = laplacian_columns[e]
-            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, vertex, c, e)
-            if side != 0:
-                out_columns[slot] = c
-                out_values[slot] = wp.where(side > 0, sign, -sign)
-                slot += 1
-    for e in range(lap_begin, lap_end):
-        out_columns[slot] = laplacian_columns[e] + shift
-        out_values[slot] = -laplacian_values[e]
-        slot += 1
-    if r < n_vertices:
-        for e in range(lap_begin, lap_end):
-            c = laplacian_columns[e]
-            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, vertex, c, e)
-            if side != 0:
-                out_columns[slot] = c + n_vertices
-                out_values[slot] = wp.where(side > 0, sign, -sign)
-                slot += 1
 
 
 @wp.kernel

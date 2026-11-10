@@ -1217,12 +1217,9 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Hub rows still walked by one thread** (2026-11-10): `kernels/energies.lscm_laplacian_rows_and_counts`
-  (its boundary count loop; its cotangent row could take `laplacian.signed_cotmatrix_rows`) and
-  the smoothing-norm kernel in `kernels/energies.py`, which reads its row back in the same thread
-  (a warp-written row would need a `__syncwarp`). On `fan_hub`, `connection_laplacian`'s warp walk
-  is still 14.7 of 18 ms kernel time and `halfedge_tangent_angles` 3 ms; the explicit smoothing
-  passes' warp walk ~0.4 ms a hub.
+- **Hub rows still slow on `fan_hub`** (2026-11-10): `connection_laplacian`'s warp walk is still
+  14.7 of 18 ms kernel time and `halfedge_tangent_angles` 3 ms; the explicit smoothing passes'
+  warp walk ~0.4 ms a hub.
 - **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
   ~14 us a round (65 536-point star: 14 419 rounds, 203 ms): five block barriers plus ~10
   open-corner grid walks, most of them convex corners still blocked. A per-corner blocker cache did

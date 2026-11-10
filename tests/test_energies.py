@@ -27,6 +27,7 @@ import warp as wp
 
 import ordito as od
 from ordito._common import scan_count_checked
+from ordito.kernels import array as kernel_array
 from tests.comparisons import sparse_allclose
 from tests.conftest import BOUNDARY_MESHES, MESHES
 from tests.conversions import (
@@ -165,6 +166,49 @@ def test_laplacian_smoothing_loss_matches_pytorch3d(
 
     assert loss_p3d > 1e-3
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
+
+
+@pytest.mark.parametrize("method", ["uniform", "cot"])
+def test_laplacian_smoothing_loss_on_a_hub_matches_its_definition(
+    device: str, method: Literal["uniform", "cot"]
+) -> None:
+    """
+    Class B: the residual on a cone whose two hub rows are long, against igl's operators.
+
+    A cone of 1 100 sections has an apex and a base centre past
+    ``kernels/array.CSR_LONG_ROW_ENTRIES``, so on CUDA each hub's row is walked by a warp: the
+    stored umbrella row in the fused sum (``kernels/energies.smoothing_norm_term``), the cotangent
+    row written and read back in ``laplacian_smoothing_cot_norms``. The reference is the residual's
+    definition in ``float64``, averaged: ``uniform`` the neighbour mean less the vertex, from
+    ``igl.adjacency_matrix``; ``cot`` ``(L v)_i / s_i`` with ``s_i`` the negated diagonal of
+    ``igl.cotmatrix`` (the existing pytorch3d test's transform: its Laplacian is twice igl's, and
+    the ratio cancels it). pytorch3d itself reads ``cot`` ``4.5e-5`` off here on both devices, its
+    ``float32`` sums on a loss of ``9e-4``; ``cotcurv`` is left out for the same floor in ordito's
+    own ``float32`` row (``4e-5`` on the CPU's serial walk). The cone sits off the origin, where
+    the undefined-averaging fallback ``-v_i`` is not the hub's residual: a ``cot`` diagonal or
+    accumulator summed by one lane moves the loss by about 50 %.
+    """
+    mesh_tm = tm.creation.cone(radius=1.0, height=1.0, sections=1100)
+    offset_np = np.array([0.3, -0.2, 0.5])
+    vertices_np = (mesh_tm.vertices + offset_np).astype(np.float32).astype(np.float64)
+    faces_np = np.asarray(mesh_tm.faces)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    if method == "uniform":
+        adjacency_igl = igl.adjacency_matrix(faces_np).tocsr().astype(np.float64)
+        degrees_np = np.diff(adjacency_igl.indptr)
+        residuals_np = (adjacency_igl @ vertices_np) / degrees_np[:, None] - vertices_np
+    else:
+        laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
+        degrees_np = np.diff(laplacian_igl.indptr) - 1
+        row_sums_np = -np.asarray(laplacian_igl.diagonal())
+        assert (row_sums_np > 0.0).all()
+        residuals_np = (laplacian_igl @ vertices_np) / row_sums_np[:, None]
+    # Non-vacuity: the apex and the base centre are long rows.
+    assert (degrees_np >= int(kernel_array.CSR_LONG_ROW_ENTRIES)).sum() == 2
+    loss_np = float(np.linalg.norm(residuals_np, axis=1).mean())
+
+    loss_wp = od.energies.laplacian_smoothing_loss(vertices_wp, faces_wp, method)
+    assert np.allclose(loss_wp, loss_np, rtol=1e-5, atol=0.0)
 
 
 def test_laplacian_smoothing_loss_methods_are_three_quantities(
@@ -748,6 +792,55 @@ def test_lscm_hessian_matches_igl(
         pattern=mesh.mesh_operator_pattern,
     )
     assert sparse_allclose(bsr_to_csr(hessian_cached_wp), hessian_igl, rtol=1e-5, atol=1e-5)
+
+
+def test_lscm_hessian_on_a_hub_matches_its_definition(device: str) -> None:
+    """
+    Class B: ``-repdiag(L, 2) - 2A`` around a hub with long rows and many boundary spokes.
+
+    Forty fans of thirty faces about one vertex, separated by gaps, give the hub a row of 1 240
+    entries, past ``kernels/array.CSR_LONG_ROW_ENTRIES``, of which 80 are boundary spokes: on CUDA
+    the hub's Laplacian row, its boundary count and both of its Hessian rows are walked by a warp
+    (``kernels/energies.lscm_laplacian_rows_and_counts``, ``lscm_hessian_csr``), each ``-2A``
+    entry placed by its rank among a stride's. ``igl.lscm`` refuses the mesh (the fans meet only
+    at the hub, so its solve is singular), so the reference is the Hessian's definition: igl's
+    cotangent Laplacian, and ``-2A`` from the oriented boundary halfedges -- a halfedge whose
+    reverse no face holds -- as ``test_lscm_hessian_matches_igl`` reads it. A boundary entry the
+    stride drops or misplaces, or a count summed by one lane, changes a hub entry by 0.5.
+    """
+    vertices_list: list[list[float]] = [[0.0, 0.0, 0.3]]
+    faces_list: list[list[int]] = []
+    n_fans, fan_faces = 40, 30
+    span = 2.0 * np.pi / n_fans
+    for fan in range(n_fans):
+        base = len(vertices_list)
+        for angle in fan * span + np.linspace(0.0, 0.7 * span, fan_faces + 1):
+            radius = 1.0 + 0.1 * np.sin(7.0 * angle)
+            vertices_list.append(
+                [radius * np.cos(angle), radius * np.sin(angle), 0.05 * np.cos(3.0 * angle)]
+            )
+        faces_list.extend([0, base + j, base + j + 1] for j in range(fan_faces))
+    vertices_np = np.asarray(vertices_list, dtype=np.float32).astype(np.float64)
+    faces_np = np.asarray(faces_list, dtype=np.int64)
+    n = vertices_np.shape[0]
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
+    halfedges_np = faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    directed = {(int(a), int(b)) for a, b in halfedges_np}
+    boundary_np = np.asarray([(a, b) for a, b in directed if (b, a) not in directed])
+    tails_np, heads_np = boundary_np[:, 0], boundary_np[:, 1]
+    rows_np = np.concatenate([tails_np, heads_np + n, heads_np, tails_np + n])
+    columns_np = np.concatenate([heads_np + n, tails_np, tails_np + n, heads_np])
+    halves_np = np.repeat([-0.5, -0.5, 0.5, 0.5], tails_np.size)
+    area_term_np = sp.csr_matrix((halves_np, (rows_np, columns_np)), shape=(2 * n, 2 * n))
+    hessian_np = sp.csr_matrix(-sp.block_diag([laplacian_igl, laplacian_igl]) + area_term_np)
+    # Non-vacuity: the hub row is long, and 80 of its entries are boundary spokes.
+    assert np.diff(laplacian_igl.tocsr().indptr)[0] >= int(kernel_array.CSR_LONG_ROW_ENTRIES)
+    assert (tails_np == 0).sum() + (heads_np == 0).sum() == 2 * n_fans
+
+    hessian_wp = bsr_to_csr(od.energies.lscm_hessian(vertices_wp, faces_wp))
+    assert sparse_allclose(hessian_wp, hessian_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
