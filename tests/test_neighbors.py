@@ -754,10 +754,17 @@ def test_query_nearest_per_query_radius(device: str, backend: Literal["bvh", "ha
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parametrize("k", [1, 4, 8, 9, 16, 17, 32, 33, 64, 65])
+@pytest.mark.parametrize("ordered", [False, True])
 @pytest.mark.parity("query_nearest_bvh_k7", "scipy")
 @pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
 @pytest.mark.parity("query_nearest_bvh_k64", "scipy")
-def test_query_nearest_row_buckets(device: str, backend: Literal["bvh", "hashgrid"], k: int):
+def test_query_nearest_row_buckets(
+    device: str,
+    backend: Literal["bvh", "hashgrid"],
+    k: int,
+    ordered: bool,
+    monkeypatch: pytest.MonkeyPatch,
+):
     """
     Class A. Every candidate-row bucket size and one ``k`` past each, against ``KDTree``.
 
@@ -769,8 +776,11 @@ def test_query_nearest_row_buckets(device: str, backend: Literal["bvh", "hashgri
 
     The cloud is random in a box, so no two points tie in ``float32`` distance from a query and the
     index comparison is exact; ties are covered by
-    [`test_query_nearest_ties`][tests.test_neighbors.test_query_nearest_ties].
+    [`test_query_nearest_ties`][tests.test_neighbors.test_query_nearest_ties]. ``ordered`` drops
+    the gates of ``_common.search_order`` so every kernel answers its rows in Hilbert order,
+    written back by row; the orders taken are counted so the arm is not vacuous.
     """
+    orders = _order_every_search(monkeypatch) if ordered else []
     rng = np.random.default_rng(11)
     points = rng.random((300, 3), dtype=np.float32) * 5.0
     queries = rng.random((40, 3), dtype=np.float32) * 5.0
@@ -779,10 +789,27 @@ def test_query_nearest_row_buckets(device: str, backend: Literal["bvh", "hashgri
     queries_wp = points_to_warp(queries, device)
     query_nearest = partial(od.neighbors.query_nearest, backend=backend)
     query_indices_wp, query_distances_wp = query_nearest(points_wp, queries_wp, k=k)
+    assert len(orders) == int(ordered)
     query_distances_np, query_indices_np = KDTree(points).query(queries, k=k)
 
     assert np.array_equal(query_indices_wp.numpy(), np.asarray(query_indices_np))
     assert np.allclose(query_distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
+
+
+def _order_every_search(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Drop ``_common.search_order``'s gates for every search, and list the orders taken."""
+    monkeypatch.setattr(_common, "SEARCH_ORDER_MIN_QUERIES", 0)
+    monkeypatch.setattr(_common, "SEARCH_ORDER_LONG_FRACTION", 0.0)
+    monkeypatch.setattr(od.neighbors, "_KNN_ORDER_MIN_QUERIES", 0)
+    orders: list[int] = []
+    space_filling_order = _common.space_filling_order
+
+    def spy(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+        orders.append(points.size)
+        return space_filling_order(points)
+
+    monkeypatch.setattr(_common, "space_filling_order", spy)
+    return orders
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1143,6 +1170,7 @@ def test_knn_sorted_insert_rejects_nan_instead_of_writing_past_its_row(device: s
             kernel_neighbors.START_OFF,
             None,
             wp.int32(1),  # one thread for the one query
+            None,  # index order
             wp.zeros(1, dtype=wp.int32, device=device),
             indices_wp,
             distances_wp,
@@ -1330,7 +1358,10 @@ def test_query_nearest_k1_default_takes_the_descent(
     assert len(grids) == 2
 
 
-def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> None:
+@pytest.mark.parametrize("ordered", [False, True])
+def test_query_nearest_defers_far_rows_to_a_closest_point_query(
+    device: str, ordered: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     Class A, against ``scipy.spatial.KDTree``: a ``k = 1`` row the grid gives up on is still exact.
 
@@ -1338,8 +1369,11 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     descent of a point tree, which builds a ``wp.Bvh``. Counting those builds is what makes the
     comparison non-vacuous: the displaced queries must reach the second pass and the on-cloud ones
     must not, or the test is checking the grid twice. ``max_radius`` is honoured on the deferred
-    rows too -- a row whose nearest point is out of range comes back unfilled.
+    rows too -- a row whose nearest point is out of range comes back unfilled. ``ordered`` takes
+    the grid and its finish in Hilbert order.
     """
+    if ordered:
+        _order_every_search(monkeypatch)
     rng = np.random.default_rng(12)
     points_np = rng.random((4000, 3), dtype=np.float32)
     far_np = np.ascontiguousarray(points_np[:500] + 5.0, dtype=np.float32)
@@ -1379,8 +1413,9 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     assert np.isinf(distances_wp.numpy()[~in_range]).all()
 
 
+@pytest.mark.parametrize("ordered", [False, True])
 def test_query_nearest_defers_unfinished_rows_to_a_tree(
-    device: str, monkeypatch: pytest.MonkeyPatch
+    device: str, ordered: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Class A, against ``scipy.spatial.KDTree``: a ``k > 1`` row the grid defers is still exact.
@@ -1401,7 +1436,10 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
       take the linear scan.
 
     ``max_radius`` is honoured on both finishes, including rows with no point in range at all.
+    ``ordered`` takes the grid and both finishes in Hilbert order.
     """
+    if ordered:
+        _order_every_search(monkeypatch)
     rng = np.random.default_rng(23)
     n = 20_000
     decades = 2.0 * np.log(10.0)

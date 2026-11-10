@@ -1797,7 +1797,8 @@ def test_search_order_orders_only_scrambled_queries(
     input, a permutation of it the scrambled one; the gates are lowered to reach them at this
     size. The scrambled order must come back as a permutation whose consecutive points are near
     neighbours again, the coherent one as ``None``; past the CUDA gate every order is taken, and on
-    the CPU none is, whatever the size.
+    the CPU none is, whatever the size. ``bounds_and_search_order`` must choose as ``search_order``
+    does and read the box ``bounds.aabb`` reads, and both must take a caller's gates.
     """
     t_np = np.linspace(0.0, 40.0 * np.pi, 4096)
     helix_np = np.stack([np.cos(t_np), np.sin(t_np), 0.05 * t_np], axis=1).astype(np.float32)
@@ -1818,8 +1819,18 @@ def test_search_order_orders_only_scrambled_queries(
     assert np.array_equal(np.sort(order_np), np.arange(len(helix_np)))
     assert mean_step(scrambled_np[order_np]) < 0.1 * mean_step(scrambled_np)
 
+    # The fold of the test into a box's readback chooses alike and reads the box ``aabb`` reads.
+    for queries_wp, scattered in ((helix_wp, False), (scrambled_wp, True)):
+        bounds, folded_wp = _common.bounds_and_search_order(helix_wp, queries_wp)
+        assert bounds == od.bounds.aabb(helix_wp)
+        assert (folded_wp is not None) == scattered
+        if folded_wp is not None:
+            assert np.array_equal(folded_wp.numpy(), order_np)
+    assert _common.bounds_and_search_order(helix_wp, scrambled_wp, min_queries=1 << 13)[1] is None
+
     monkeypatch.setattr(_common, "SEARCH_ORDER_ALWAYS_QUERIES_CUDA", 0)
     assert (_common.search_order(helix_wp) is not None) == wp.get_device(device).is_cuda
+    assert _common.search_order(helix_wp, always_queries_cuda=1 << 13) is None
 
 
 def test_cross_device_inputs_are_rejected() -> None:
