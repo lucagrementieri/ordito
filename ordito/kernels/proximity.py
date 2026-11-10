@@ -128,19 +128,22 @@ def closest_offset_face_d(
     # from ``face``, any face of the mesh: a ``float32`` query's (``closest_point_query``), which is
     # not exact (its face can be one whose true distance is a few 1e-5 longer, on a needle), or a
     # nearby answer from before. The face only bounds the answer: every face nearer than it meets
-    # the box of that radius about ``p``, and the nearest of those in ``float64`` is the closest
-    # point, ``face`` kept on a tie. The box grows by a relative ``1e-6`` to cover its own
+    # the ball of that radius about ``p``, and the nearest of those in ``float64`` is the closest
+    # point, ``face`` kept on a tie. The ball grows by a relative ``1e-6`` to cover its own
     # rounding to ``float32``. Shared by ``registration``'s landmark matches and ``levelset``'s
-    # ``float64`` lattice band (through ``closest_offset_d``).
+    # ``float64`` lattice band (through ``closest_offset_d``). The ball's walk over the mesh's
+    # tree, not the box's ``mesh_query_aabb``: the same faces nearest; ``icp(method="pyvista")``
+    # 0.85-0.96x on the spheres and 0.49-0.87x on bunny / dragon (2026-11-10). A seed of the last
+    # match's point instead of its face (one face evaluation and the face table fewer, a looser
+    # ball) measured 0.96-0.99x of this on small meshes and 1.02x on dragon.
     best = face_offset_d(mesh_id, face, p)
     best_face = face
     best_sq = wp.length_sq(best)
     radius = wp.sqrt(best_sq)
     margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
-    reach = wp.vec3d(radius + margin, radius + margin, radius + margin)
-    query = wp.mesh_query_aabb(mesh_id, wp.vec3(p - reach), wp.vec3(p + reach))
+    query = wp.bvh_query_sphere(wp.mesh_get_bvh(mesh_id), wp.vec3(p), wp.float32(radius + margin))
     candidate = wp.int32(0)
-    while wp.mesh_query_next(query, candidate):
+    while wp.bvh_query_next(query, candidate):
         offset = face_offset_d(mesh_id, candidate, p)
         offset_sq = wp.length_sq(offset)
         if offset_sq < best_sq:

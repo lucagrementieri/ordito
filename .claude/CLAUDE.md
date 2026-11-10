@@ -1232,13 +1232,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   open-corner grid walks, most of them convex corners still blocked. A per-corner blocker cache did
   not cut the walks. Open: an O(1) test for a blocked corner, or fewer barriers a round. The packed
   multi-ring loop (`_triangulate_long_rings`) has no tail.
-- **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact walk a landmark
-  an iteration, a chain of dependent node loads on one SM (seeded by its last face since
-  2026-11-10). Unmerged candidate: branch `worktree-agent-a34a7bc16bc7b74b2` (949188ef) re-matches
-  in one `bvh_query_sphere` walk of radius `|p - previous match|` over `mesh_get_bvh`
-  (`kernels/registration.landmark_rematch`, `proximity.nearest_offset_within`), measured 0.54x
-  `sphere_small` and 0.56-0.65x elsewhere against the pre-seed code; it conflicts with the seeded
-  search and needs an A/B against it.
+- **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
+  landmark an iteration (seeded by its last face, `proximity.closest_offset_face_d`, since
+  2026-11-10), a chain of dependent node loads on one SM; a multi-block layout does not shorten a
+  chain, a cheaper start node would.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
