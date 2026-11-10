@@ -179,6 +179,7 @@ def cut_along_edges(
     edges: odt.Array2dInt32,
     *,
     twins: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def cut_along_edges(
@@ -187,14 +188,37 @@ def cut_along_edges(
     edges: odt.Array2dInt32,
     *,
     twins: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32]]: ...
+@overload
+def cut_along_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edges: odt.Array2dInt32,
+    *,
+    twins: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def cut_along_edges(
+    vertices: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    edges: odt.Array2dInt32,
+    *,
+    twins: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def cut_along_edges(
     vertices: wp.array[wp.vec3] | wp.array[wp.vec3d],
     faces: wp.array[wp.int32],
     edges: odt.Array2dInt32,
     *,
     twins: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32]]:
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Split the mesh along an edge set, duplicating vertices so the two sides no longer share them.
 
@@ -227,6 +251,9 @@ def cut_along_edges(
         on the connectivity alone, so a caller running several passes over one topology builds it
         once -- and [`Trimesh.halfedge_twins`][ordito.mesh.Trimesh.halfedge_twins] has it cached.
         Passing it also skips the edge-manifold check and the host readback that check costs.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the cut mesh.
 
     Returns
     -------
@@ -239,6 +266,9 @@ def cut_along_edges(
     faces : wp.array[wp.int32]
         ``(3 * n_faces,)`` flat triangle index buffer over the new vertices. Same length, same
         winding and same face order as the input; only the indices change.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex it was split from, and the faces are the input faces in order.
 
     Raises
     ------
@@ -285,6 +315,12 @@ def cut_along_edges(
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0:
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                od.interpolation.Provenance.identity(vertices.size, 0, device),
+            )
         return _launch.clone(vertices), _launch.clone(faces)
 
     n_vertices = vertices.size
@@ -325,7 +361,27 @@ def cut_along_edges(
         inputs=[faces, roots, root_ranks, vertices, corner_index, out_vertices],
         device=device,
     )
-    return out_vertices, corner_index
+    if not return_provenance:
+        return out_vertices, corner_index
+    # The same scatter over the vertex indices names each output vertex's source.
+    source = _launch.empty(out_vertices.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_seams.SCATTER_CORNER_VALUES[wp.int32],
+        dim=n_halfedges,
+        inputs=[
+            faces,
+            roots,
+            root_ranks,
+            od.array.arange(n_vertices, device=device),
+            corner_index,
+            source,
+        ],
+        device=device,
+    )
+    provenance = od.interpolation.Provenance(
+        source, od.array.arange(n_halfedges // 3, device=device), None, n_vertices, n_halfedges // 3
+    )
+    return out_vertices, corner_index, provenance
 
 
 def uv_seam_edges(

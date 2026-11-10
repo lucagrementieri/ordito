@@ -19,6 +19,7 @@ from scipy.spatial import KDTree
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import (
+    assert_provenance_describes,
     assert_same_loop_set,
     canonical_winding,
     lexsort_rows,
@@ -886,7 +887,7 @@ def test_face_selections_of_nothing_are_empty(device: str) -> None:
     """
     Not a library comparison: selecting nothing, or from no faces, gives an empty answer.
 
-    No face index (with and without ``return_index``), no face group or no vertex index; and a
+    No face index (with and without ``return_provenance``), no face group or no vertex index; and a
     mesh with no faces through the seam, vertex-mask and component entry points.
     """
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
@@ -909,10 +910,11 @@ def test_face_selections_of_nothing_are_empty(device: str) -> None:
     face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, empty_wp)
     assert face_indices_wp.shape == (0,)
 
-    indexed_vertices_wp, indexed_faces_wp, index_wp = od.selection.submesh_from_face_indices(
-        vertices_wp, faces_wp, empty_wp, return_index=True
+    indexed_vertices_wp, indexed_faces_wp, provenance = od.selection.submesh_from_face_indices(
+        vertices_wp, faces_wp, empty_wp, return_provenance=True
     )
-    assert (indexed_vertices_wp.size, indexed_faces_wp.size, index_wp.size) == (0, 0, 0)
+    assert (indexed_vertices_wp.size, indexed_faces_wp.size) == (0, 0)
+    assert (provenance.vertex_index.size, provenance.face_index.size) == (0, 0)
 
     # A mesh with no faces: no seam edge, no face to keep, no component to exclude.
     assert od.selection.region_boundary_edges(empty_wp, warp_empty(0, wp.bool, device)).shape == (
@@ -942,7 +944,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
 
     | | vertices returned | how the input's numbering is recovered |
     |---|---|---|
-    | ordito | 461 | ``return_index=True`` returns the map |
+    | ordito | 461 | ``return_provenance=True`` returns the map |
     | pyvista ``extract_cells`` | 461 | ``vtkOriginalPointIds`` on the result's point data |
     | open3d ``select_faces_by_mask`` | 461 | **no map at all** -- matched by position |
 
@@ -982,11 +984,11 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     assert 0 < indices_np.size < n_faces  # non-vacuity: a strict subset
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 
-    sub_vertices_wp, sub_faces_wp, vertex_map_wp = od.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, indices_wp, return_index=True
+    sub_vertices_wp, sub_faces_wp, provenance = od.selection.submesh_from_face_indices(
+        mesh_wp.points, mesh_wp.indices, indices_wp, return_provenance=True
     )
     # ordito's faces, lifted back into the input's vertex numbering.
-    faces_wp = vertex_map_wp.numpy()[sub_faces_wp.numpy().reshape(-1, 3)]
+    faces_wp = provenance.vertex_index.numpy()[sub_faces_wp.numpy().reshape(-1, 3)]
     assert sub_vertices_wp.size < mesh_tm.vertices.shape[0]  # it really compacted
 
     mask_np = np.zeros(n_faces, dtype=bool)
@@ -1013,8 +1015,8 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     assert positions_o3d.shape[0] == sub_vertices_wp.size
     assert extracted_pv.n_points == sub_vertices_wp.size
     # And the same compaction element-wise: the same vertex map, so the same faces row for row.
-    assert np.array_equal(vertex_map_wp.numpy(), original_pv)
-    assert np.array_equal(vertex_map_wp.numpy(), original_o3d)
+    assert np.array_equal(provenance.vertex_index.numpy(), original_pv)
+    assert np.array_equal(provenance.vertex_index.numpy(), original_o3d)
     assert np.array_equal(sub_vertices_wp.numpy(), positions_o3d.astype(np.float32))
     for reference_faces in (faces_o3d, faces_pv):
         assert np.array_equal(reference_faces, faces_wp)
@@ -1126,7 +1128,7 @@ def test_submeshes_from_face_groups_matches_single(
     )
 
 
-def test_submesh_return_index_carries_an_attribute(
+def test_submesh_provenance_carries_an_attribute(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
@@ -1149,21 +1151,22 @@ def test_submesh_return_index_carries_an_attribute(
     device = mesh_wp.points.device
     face_mask_wp = wp.array(face_mask_np, dtype=wp.bool, device=device)
 
-    sub_vertices_wp, sub_faces_wp, vertex_index_wp = od.selection.submesh_from_face_mask(
-        mesh_wp.points, mesh_wp.indices, face_mask_wp, return_index=True
+    sub_vertices_wp, sub_faces_wp, provenance = od.selection.submesh_from_face_mask(
+        mesh_wp.points, mesh_wp.indices, face_mask_wp, return_provenance=True
     )
-    vertex_index_np = vertex_index_wp.numpy()
+    vertex_index_np = provenance.vertex_index.numpy()
     assert vertex_index_np.shape == (sub_vertices_wp.size,)
     assert np.all(np.diff(vertex_index_np) > 0)  # ascending, so it is a sorted lookup
 
     # The round trip: an attribute gathered through the map is the submesh's own answer.
-    carried_wp = od.array.gather(mesh_wp.points, vertex_index_wp)
+    carried_wp = provenance.vertex_values(mesh_wp.points)
     assert np.allclose(carried_wp.numpy(), sub_vertices_wp.numpy())
+    assert np.array_equal(provenance.face_index.numpy(), np.flatnonzero(face_mask_np))
 
-    _index_vertices_wp, _index_faces_wp, index_map_wp = od.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, od.array.flatnonzero(face_mask_wp), return_index=True
+    _index_vertices_wp, _index_faces_wp, index_provenance = od.selection.submesh_from_face_indices(
+        mesh_wp.points, mesh_wp.indices, od.array.flatnonzero(face_mask_wp), return_provenance=True
     )
-    assert np.array_equal(index_map_wp.numpy(), vertex_index_np)
+    assert np.array_equal(index_provenance.vertex_index.numpy(), vertex_index_np)
     assert sub_faces_wp.size > 0
 
 
@@ -1581,6 +1584,36 @@ def test_submesh_from_vertex_mask(
     assert exp_faces_wp.size > 0
     assert np.allclose(got_vertices_wp.numpy(), exp_vertices_wp.numpy())
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
+
+
+@pytest.mark.parametrize("face_mode", ["all", "any"])
+def test_submesh_from_vertex_selection_reports_provenance(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], face_mode: Literal["all", "any"]
+) -> None:
+    """
+    Not a library comparison: the provenance describes the submesh, and both entry points agree.
+
+    Each output vertex is a copy of the input vertex it names, each output face is the input face
+    it names, and the index form reports what the mask form does.
+    """
+    _, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    mask_np = mesh_wp.points.numpy()[:, 2] > np.median(mesh_wp.points.numpy()[:, 2])
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    new_v, new_f, provenance = od.selection.submesh_from_vertex_mask(
+        mesh_wp.points, mesh_wp.indices, mask_wp, face_mode=face_mode, return_provenance=True
+    )
+    assert 0 < new_f.size < mesh_wp.indices.size
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+    _, _, indexed = od.selection.submesh_from_vertex_indices(
+        mesh_wp.points,
+        mesh_wp.indices,
+        od.array.flatnonzero(mask_wp),
+        face_mode=face_mode,
+        return_provenance=True,
+    )
+    assert np.array_equal(indexed.vertex_index.numpy(), provenance.vertex_index.numpy())
+    assert np.array_equal(indexed.face_index.numpy(), provenance.face_index.numpy())
 
 
 @pytest.mark.parametrize(

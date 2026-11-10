@@ -48,7 +48,7 @@ def run(device: str) -> dict[str, Any]:
     patch = wp.array(is_patch, dtype=wp.bool, device=device)
     max_edge = 1.5 * od.edges.mean_edge_length(vertices, faces)
 
-    everywhere = od.remesh.subdivide_to_size(vertices, filled, max_edge, return_index=True)
+    everywhere = od.remesh.subdivide_to_size(vertices, filled, max_edge, return_provenance=True)
     in_region = od.remesh.subdivide_region_to_size(vertices, filled, patch, max_edge)
     to_density = od.remesh.refine_region_to_density(vertices, filled, patch)
     for name, (_, new_faces, *_) in {
@@ -63,7 +63,11 @@ def run(device: str) -> dict[str, Any]:
     return {
         "filled": filled.numpy().reshape(-1, 3),
         "is_patch": is_patch,
-        "everywhere": tuple(a.numpy() for a in everywhere),
+        "everywhere": (
+            everywhere[0].numpy(),
+            everywhere[1].numpy(),
+            everywhere[2].face_index.numpy(),
+        ),
         "in_region": tuple(a.numpy() for a in in_region),
         "to_density": tuple(a.numpy() for a in to_density),
         "rim": rim,

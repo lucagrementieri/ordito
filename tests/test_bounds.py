@@ -15,6 +15,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from tests.comparisons import assert_provenance_describes
 from tests.conversions import (
     numpy_to_warp,
     points_to_warp,
@@ -571,6 +572,21 @@ def test_crop_mesh_is_the_all_corners_submesh_of_the_box_mask(
     assert 0 < expected_faces_wp.size < faces_wp.size  # not vacuous
     assert np.array_equal(sub_faces_wp.numpy(), expected_faces_wp.numpy())
     assert np.array_equal(sub_vertices_wp.numpy(), expected_vertices_wp.numpy())
+
+
+def test_crop_mesh_reports_provenance(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a library comparison: the crop's provenance describes the mesh it returned."""
+    mesh_tm, mesh_wp = sphere_irregular
+    center = mesh_tm.centroid
+    new_v, new_f, provenance = od.bounds.crop_mesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.vec3(*(center - 0.4).tolist()),
+        wp.vec3(*(center + 2.0).tolist()),
+        return_provenance=True,
+    )
+    assert 0 < new_f.size < mesh_wp.indices.size
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
 
 
 def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:

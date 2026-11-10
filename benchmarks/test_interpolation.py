@@ -62,6 +62,7 @@ import numpy as np
 import pymeshlab as ml
 import pytest
 import pyvista as pv
+import trimesh as tm
 import warp as wp
 
 import ordito as od
@@ -311,6 +312,37 @@ def test_transfer_onto_vertices(bench_case: BenchCase) -> None:
     assert transferred.shape == (n_vertices,)
 
 
+@pytest.mark.benchmark(group="interpolate_barycentric")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_interpolate_barycentric(bench_case: BenchCase) -> None:
+    """
+    A per-vertex field at one surface point per face, from the face and barycentric coordinates.
+
+    The positions are the field, which is what ``trimesh.triangles.barycentric_to_points`` computes
+    from the triangle soup (built outside the timed region, as ordito's indexed input is); the row
+    is a ``3F`` gather and a weighted sum on both sides.
+    """
+    rng = np.random.default_rng(_FIELD_SEED)
+    barycentric_np = rng.dirichlet(np.ones(3), bench_case.n_faces).astype(np.float32)
+    if bench_case.kind == "trimesh":
+        triangles_np = bench_case.vertices_np[bench_case.faces_np]
+        points_tm = bench_case.run(
+            lambda: tm.triangles.barycentric_to_points(triangles_np, barycentric_np)
+        )
+        assert points_tm.shape == (bench_case.n_faces, 3)
+        return
+    device = bench_case.device
+    faces = bench_case.faces_wp
+    face_index = od.array.arange(bench_case.n_faces, device=device)
+    barycentric = wp.array(barycentric_np, dtype=wp.vec3, device=device)
+    points = bench_case.run(
+        lambda: od.interpolation.interpolate_barycentric(
+            faces, face_index, barycentric, bench_case.vertices_wp
+        )
+    )
+    assert points.shape == (bench_case.n_faces,)
+
+
 @pytest.mark.benchmark(group="transfer_through_operator")
 @pytest.mark.benchlibs("ordito")
 def test_transfer_through_operator(bench_case: BenchCase) -> None:
@@ -318,7 +350,7 @@ def test_transfer_through_operator(bench_case: BenchCase) -> None:
     Carry a per-vertex field through one Loop pass, using the pass's own interpolation operator.
 
     Two numbers worth having next to each other, and the group times only the second: assembling the
-    operator (``subdivide_loop(return_operator=True)``, done in ``setup`` so it is *not* timed) and
+    operator (``subdivide_loop(return_provenance=True)``, in ``setup`` so it is *not* timed) and
     applying it to a field. Read the timed number against ``transfer_onto_vertices`` above, which
     answers the same question -- "the field, on the subdivided mesh" -- through a closest-point
     projection instead, and is both lossy and far more expensive because it walks a BVH per vertex.
@@ -338,16 +370,180 @@ def test_transfer_through_operator(bench_case: BenchCase) -> None:
     values = _vertex_field_wp(bench_case)
 
     def build() -> odt.BsrMatrix[wp.float32]:
-        _new_vertices, _new_faces, operator = od.remesh.subdivide_loop(
-            vertices, faces, return_operator=True
+        _new_vertices, _new_faces, provenance = od.remesh.subdivide_loop(
+            vertices, faces, return_provenance=True
         )
-        return operator
+        assert provenance.vertex_operator is not None
+        return provenance.vertex_operator
 
     n_out = int(build().nrow)
     transferred = bench_case.run(
         lambda operator: od.interpolation.transfer_through_operator(values, operator), setup=build
     )
     assert transferred.shape == (n_out,)
+
+
+def _subdivision_provenance(bench_case: BenchCase) -> od.interpolation.Provenance:
+    """Return one subdivision's provenance of the case's mesh, built outside the timed region."""
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    return od.remesh.subdivide(vertices, faces, return_provenance=True)[2]
+
+
+@pytest.mark.benchmark(group="transfer_through_index")
+@pytest.mark.benchlibs("ordito")
+def test_transfer_through_index(bench_case: BenchCase) -> None:
+    """A per-vertex label copied through a subdivision's vertex map: one gather. No reference."""
+    skip_larger_than(bench_case, "bunny", "one subdivision quadruples the face count")
+    provenance = _subdivision_provenance(bench_case)
+    labels = od.array.arange(bench_case.n_vertices, device=bench_case.device)
+    carried = bench_case.run(
+        lambda: od.interpolation.transfer_through_index(labels, provenance.vertex_index)
+    )
+    assert carried.shape == (provenance.vertex_index.size,)
+
+
+@pytest.mark.benchmark(group="index_operators")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("direction", ["from_index", "representatives"])
+def test_index_operators(bench_case: BenchCase, direction: str) -> None:
+    """
+    A subdivision's vertex map as an operator, and its operator back to the map. No reference row.
+
+    ``operator_from_index`` is a count, a scan and a write with no readback;
+    ``operator_representatives`` one pass over the rows.
+    """
+    skip_larger_than(bench_case, "bunny", "one subdivision quadruples the face count")
+    provenance = _subdivision_provenance(bench_case)
+    if direction == "from_index":
+        operator = bench_case.run(
+            lambda: od.interpolation.operator_from_index(
+                provenance.vertex_index, bench_case.n_vertices
+            )
+        )
+        assert int(operator.nrow) == provenance.vertex_index.size
+        return
+    assert provenance.vertex_operator is not None
+    vertex_operator = provenance.vertex_operator
+    representatives = bench_case.run(
+        lambda: od.interpolation.operator_representatives(vertex_operator)
+    )
+    assert representatives.shape == (provenance.vertex_index.size,)
+
+
+@pytest.mark.benchmark(group="compose_operators")
+@pytest.mark.benchlibs("ordito")
+def test_compose_operators(bench_case: BenchCase) -> None:
+    """Two subdivisions' operators multiplied: what ``Provenance.then`` does. No reference row."""
+    skip_larger_than(bench_case, "sphere_small", "two subdivisions multiply the faces by sixteen")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    once_v, once_f, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
+    _twice_v, _twice_f, second = od.remesh.subdivide(once_v, once_f, return_provenance=True)
+    assert first.vertex_operator is not None
+    assert second.vertex_operator is not None
+    first_operator, second_operator = first.vertex_operator, second.vertex_operator
+    composed = bench_case.run(
+        lambda: od.interpolation.compose_operators(first_operator, second_operator)
+    )
+    assert int(composed.nrow) == second.vertex_index.size
+
+
+@pytest.mark.benchmark(group="provenance_vertex_values")
+@pytest.mark.benchlibs("ordito")
+def test_provenance_vertex_values(bench_case: BenchCase) -> None:
+    """
+    A colour and a label carried through a subdivision's provenance: the weights, then the gather.
+
+    No reference row: no library reports a topology edit's provenance. The ``wp.vec3`` field goes
+    through the sparse midpoint weights and the ``int32`` labels through the representatives, the
+    two paths every carried attribute takes.
+    """
+    skip_larger_than(bench_case, "bunny", "one subdivision quadruples the face count")
+    provenance = _subdivision_provenance(bench_case)
+    colors = bench_case.vertices_wp
+    labels = od.array.arange(bench_case.n_vertices, device=bench_case.device)
+    carried, carried_labels = bench_case.run(
+        lambda: (provenance.vertex_values(colors), provenance.vertex_values(labels))
+    )
+    assert carried.shape == carried_labels.shape == (provenance.vertex_index.size,)
+
+
+@pytest.mark.benchmark(group="provenance_face_values")
+@pytest.mark.benchlibs("ordito")
+def test_provenance_face_values(bench_case: BenchCase) -> None:
+    """A per-face label copied onto a subdivision's faces: one gather. No reference row."""
+    skip_larger_than(bench_case, "bunny", "one subdivision quadruples the face count")
+    provenance = _subdivision_provenance(bench_case)
+    labels = od.array.arange(bench_case.n_faces, device=bench_case.device)
+    carried = bench_case.run(lambda: provenance.face_values(labels))
+    assert carried.shape == (provenance.face_index.size,)
+
+
+@pytest.mark.benchmark(group="provenance_then")
+@pytest.mark.benchlibs("ordito")
+def test_provenance_then(bench_case: BenchCase) -> None:
+    """
+    Two subdivisions' provenances chained into one: the operators multiplied. No reference row.
+
+    The product is a triplet count, its scan and readback, and a sort-based assembly, so the row
+    is several launches over the twice-refined vertex count.
+    """
+    skip_larger_than(bench_case, "sphere_small", "two subdivisions multiply the faces by sixteen")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    once_v, once_f, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
+    _twice_v, _twice_f, second = od.remesh.subdivide(once_v, once_f, return_provenance=True)
+    chained = bench_case.run(lambda: first.then(second))
+    assert chained.vertex_index.size == second.vertex_index.size
+
+
+@pytest.mark.benchmark(group="provenance_constructors")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize(
+    "constructor", ["identity", "from_rows", "from_edge_points", "from_clusters"]
+)
+def test_provenance_constructors(bench_case: BenchCase, constructor: str) -> None:
+    """
+    Each provenance constructor at the mesh's own size. No reference row.
+
+    Rows of two sources a vertex, an edge point a unique edge, a cluster per pair of vertices, and
+    the identity.
+    """
+    device = bench_case.device
+    n_vertices, n_faces = bench_case.n_vertices, bench_case.n_faces
+    face_index = od.array.arange(n_faces, device=device)
+    provenance_type = od.interpolation.Provenance
+    if constructor == "identity":
+        provenance = bench_case.run(lambda: provenance_type.identity(n_vertices, n_faces, device))
+    elif constructor == "from_rows":
+        rng = np.random.default_rng(_FIELD_SEED)
+        sources = odt.as_array2d(
+            wp.array(
+                rng.integers(0, n_vertices, (n_vertices, 2)).astype(np.int32),
+                dtype=wp.int32,
+                device=device,
+            ),
+            wp.int32,
+        )
+        weights = odt.as_array2d(
+            wp.full((n_vertices, 2), 0.5, dtype=wp.float32, device=device), wp.float32
+        )
+        provenance = bench_case.run(
+            lambda: provenance_type.from_rows(sources, weights, face_index, n_vertices, n_faces)
+        )
+    elif constructor == "from_edge_points":
+        edges = od.edges.edges_unique(bench_case.faces_wp)[0]
+        provenance = bench_case.run(
+            lambda: provenance_type.from_edge_points(n_vertices, edges, face_index, n_faces)
+        )
+    else:
+        cluster = wp.array(
+            (np.arange(n_vertices) // 2).astype(np.int32), dtype=wp.int32, device=device
+        )
+        provenance = bench_case.run(
+            lambda: provenance_type.from_clusters(
+                cluster, (n_vertices + 1) // 2, face_index, n_faces
+            )
+        )
+    assert provenance.n_vertices == n_vertices
 
 
 @pytest.mark.benchmark(group="interpolate_from_points")

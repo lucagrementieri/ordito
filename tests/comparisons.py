@@ -37,7 +37,9 @@ import trimesh as tm
 import warp as wp
 from scipy.spatial import cKDTree
 
+import ordito as od
 import ordito.typing as odt
+from tests.conversions import bsr_to_csr
 
 
 def lexsort_rows(rows_np: np.ndarray) -> np.ndarray:
@@ -765,3 +767,64 @@ def meshlab_umbrella(
     )
     weighted_sp.eliminate_zeros()
     return sp.csr_matrix(sp.diags(1.0 / np.asarray(weighted_sp.sum(axis=1)).ravel()) @ weighted_sp)
+
+
+def assert_provenance_describes(
+    provenance: od.interpolation.Provenance,
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    new_vertices_wp: wp.array[wp.vec3],
+    new_faces_wp: wp.array[wp.int32],
+    *,
+    positions_reproduce: bool = True,
+    faces_inside_sources: bool = True,
+    atol: float = 1e-5,
+) -> None:
+    """
+    Assert a topology edit's provenance describes the mesh the edit returned.
+
+    Its counts match both meshes, every source is in range, and the face map is the stronger of
+    two claims: each output face lies inside the input face it names (its centroid's barycentric
+    coordinates there are all non-negative, its corners on the face's plane). With
+    ``positions_reproduce`` the input positions carried through it are the output positions -- the
+    claim that a float field follows the edit by the weights it was formed with; a decimation that
+    places vertices by its own rule passes ``False``, and an edit that moves faces off their sources
+    (a collapse) passes ``faces_inside_sources=False``.
+    """
+    n_vertices, n_faces = vertices_wp.size, faces_wp.size // 3
+    n_out_vertices, n_out_faces = new_vertices_wp.size, new_faces_wp.size // 3
+    assert (provenance.n_vertices, provenance.n_faces) == (n_vertices, n_faces)
+    vertex_index_np = provenance.vertex_index.numpy()
+    face_index_np = provenance.face_index.numpy()
+    assert vertex_index_np.shape == (n_out_vertices,)
+    assert face_index_np.shape == (n_out_faces,)
+    assert vertex_index_np.size == 0 or (
+        0 <= vertex_index_np.min() and vertex_index_np.max() < n_vertices
+    )
+    assert face_index_np.size == 0 or (0 <= face_index_np.min() and face_index_np.max() < n_faces)
+    if provenance.vertex_operator is not None:
+        operator = provenance.vertex_operator
+        assert (int(operator.nrow), int(operator.ncol)) == (n_out_vertices, n_vertices)
+        row_sums = np.asarray(bsr_to_csr(operator).sum(axis=1)).ravel()
+        assert np.allclose(row_sums, 1.0, rtol=1e-5, atol=1e-5)
+    if positions_reproduce:
+        carried_np = provenance.vertex_values(vertices_wp).numpy()
+        assert np.allclose(carried_np, new_vertices_wp.numpy(), rtol=0.0, atol=atol)
+    if faces_inside_sources and n_out_faces > 0:
+        points_np = vertices_wp.numpy().astype(np.float64)
+        sources_np = points_np[faces_wp.numpy().reshape(-1, 3)[face_index_np]]
+        corners_np = new_vertices_wp.numpy().astype(np.float64)[new_faces_wp.numpy().reshape(-1, 3)]
+        normals_np = np.cross(
+            sources_np[:, 1] - sources_np[:, 0], sources_np[:, 2] - sources_np[:, 0]
+        )
+        scale = np.linalg.norm(normals_np, axis=1)
+        keep = scale > 1e-12  # a degenerate source face has no plane to test against
+        unit_np = normals_np[keep] / scale[keep, None]
+        offsets_np = np.einsum("fcj,fj->fc", corners_np[keep] - sources_np[keep, :1], unit_np)
+        assert np.abs(offsets_np).max(initial=0.0) <= atol
+        centroids_np = corners_np[keep].mean(axis=1)
+        a, b, c = sources_np[keep, 0], sources_np[keep, 1], sources_np[keep, 2]
+        area = np.einsum("fj,fj->f", np.cross(b - a, c - a), unit_np)
+        for p, q in ((b, c), (c, a), (a, b)):
+            weight = np.einsum("fj,fj->f", np.cross(q - p, centroids_np - p), unit_np) / area
+            assert weight.min(initial=0.0) >= -atol

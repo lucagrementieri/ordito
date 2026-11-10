@@ -17,7 +17,12 @@ from scipy.spatial import cKDTree
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import assert_nearest_bijection, lexsort_rows, same_partition
+from tests.comparisons import (
+    assert_nearest_bijection,
+    assert_provenance_describes,
+    lexsort_rows,
+    same_partition,
+)
 from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -384,6 +389,30 @@ def test_cut_along_edges_round_trips_through_a_weld(unit_box: tuple[tm.Trimesh, 
     )
     assert welded_vertices_wp.size == vertices_wp.size
     assert _face_component_count(welded_vertices_wp, welded_faces_wp) == 1
+
+
+def test_cut_along_edges_reports_provenance(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: each cut vertex is a copy of the vertex it was split from.
+
+    A random edge set opens the sphere; the provenance reproduces the cut mesh's positions, keeps
+    the faces in order, and names exactly the source of every corner.
+    """
+    _, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    unique_edges_np = od.edges.edges_unique(mesh_wp.indices)[0].numpy()
+    rng = np.random.default_rng(3)
+    chosen_np = unique_edges_np[rng.random(len(unique_edges_np)) < 0.2]
+    edges_wp = odt.as_array2d(
+        wp.array(np.ascontiguousarray(chosen_np), dtype=wp.int32, device=device), wp.int32
+    )
+    new_v, new_f, provenance = od.seams.cut_along_edges(
+        mesh_wp.points, mesh_wp.indices, edges_wp, return_provenance=True
+    )
+    assert new_v.size > mesh_wp.points.size
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+    source_np = provenance.vertex_index.numpy()
+    assert np.array_equal(source_np[new_f.numpy()], mesh_wp.indices.numpy())
 
 
 def _ordered_loop_np(edges_np: np.ndarray) -> list[int]:

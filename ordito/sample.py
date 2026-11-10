@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 import secrets
-from typing import cast
+from typing import Literal, cast, overload
 
 import numpy as np
 import warp as wp
@@ -232,13 +232,38 @@ def _fibonacci_lattice(count: int, z_span: float, device: wp.DeviceLike) -> wp.a
     return out_directions
 
 
+@overload
 def sample_surface(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     count: int,
     face_weight: wp.array[wp.float32] | None = None,
     seed: int | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_barycentric: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def sample_surface(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    count: int,
+    face_weight: wp.array[wp.float32] | None = None,
+    seed: int | None = None,
+    *,
+    return_barycentric: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]]: ...
+def sample_surface(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    count: int,
+    face_weight: wp.array[wp.float32] | None = None,
+    seed: int | None = None,
+    *,
+    return_barycentric: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]]
+):
     """
     Sample points uniformly on a triangle mesh surface (area-weighted faces).
 
@@ -259,6 +284,10 @@ def sample_surface(
         the triangle areas are used.
     seed
         RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.
+    return_barycentric
+        If ``True``, also return each sample's barycentric coordinates in its face, which is what
+        [`interpolate_barycentric`][ordito.interpolation.interpolate_barycentric] reads a
+        per-vertex field (a colour, a UV, a normal) at the samples with.
 
     Returns
     -------
@@ -266,6 +295,9 @@ def sample_surface(
         ``(count,)`` sampled positions on the mesh surface.
     face_index
         ``(count,)`` triangle index for each sample.
+    barycentric
+        ``(count,)`` coordinates of each sample in its face, in corner order; only when
+        ``return_barycentric`` is ``True``.
 
     Raises
     ------
@@ -305,13 +337,20 @@ def sample_surface(
             f"face_weight length must match number of triangles (expected {n_faces}, "
             f"got {face_weight.size})"
         )
+    barycentric = (
+        _launch.empty(count, dtype=wp.vec3, device=vertices.device) if return_barycentric else None
+    )
     if count == 0:
-        return (
-            _launch.empty(0, dtype=wp.vec3, device=vertices.device),
-            _launch.empty(0, dtype=wp.int32, device=vertices.device),
+        points = _launch.empty(0, dtype=wp.vec3, device=vertices.device)
+        face_index = _launch.empty(0, dtype=wp.int32, device=vertices.device)
+    else:
+        cdf, total = _face_cdf(vertices, faces, face_weight)
+        points, face_index = _draw_surface_samples(
+            vertices, faces, cdf, total, count, seed, barycentric
         )
-    cdf, total = _face_cdf(vertices, faces, face_weight)
-    return _draw_surface_samples(vertices, faces, cdf, total, count, seed)
+    if barycentric is None:
+        return points, face_index
+    return points, face_index, barycentric
 
 
 def sample_surface_poisson_disk(
@@ -1019,8 +1058,13 @@ def _draw_surface_samples(
     total: float,
     count: int,
     seed: int | None,
+    out_barycentric: wp.array[wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """``sample_surface``'s draw: ``count`` points by inverse-transform sampling of ``cdf``."""
+    """
+    ``sample_surface``'s draw: ``count`` points by inverse-transform sampling of ``cdf``.
+
+    ``out_barycentric``, when given, receives each point's barycentric coordinates in its face.
+    """
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     out_face_indices = _launch.empty(count, dtype=wp.int32, device=vertices.device)
     _launch.launch(
@@ -1034,6 +1078,7 @@ def _draw_surface_samples(
             resolve_seed(seed),
             out_points,
             out_face_indices,
+            out_barycentric,
         ],
         device=vertices.device,
     )

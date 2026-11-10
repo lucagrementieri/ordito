@@ -57,6 +57,7 @@ class MeshData(TypedDict, total=False):
     faces: wp.array[wp.int32]
     vertex_normals: wp.array[wp.vec3]
     uv: wp.array[wp.vec2]
+    corner_uv: wp.array[wp.vec2]
     colors: wp.array[wp.vec3] | wp.array[wp.vec4]
     face_normals: wp.array[wp.vec3]
 
@@ -86,9 +87,19 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
         - ``faces`` : ``(3 * n_faces,)`` flat ``wp.array[wp.int32]`` (triangle cells only).
         - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.
         - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).
+        - ``corner_uv`` : ``(3 * n_faces,)`` ``wp.array[wp.vec2]``, one texcoord per face corner,
+          from an OBJ file's ``vt`` indices -- the form of a UV atlas, whose seams give one vertex
+          several texcoords.
+          [`split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values]
+          turns it into per-vertex ``uv``.
         - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``
           (and optional ``alpha``); integer channels are normalized to ``[0, 1]``.
         - ``face_normals`` : ``wp.array[wp.vec3]`` — only when the file stored per-face normals.
+
+    Raises
+    ------
+    ValueError
+        If an OBJ file's face names a vertex or a texcoord it does not define.
 
     See Also
     --------
@@ -99,6 +110,10 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     Only triangle cells are consumed; non-triangle cell blocks are ignored. ``meshio`` reads
     attributes verbatim and never computes them, so ``face_normals`` appears only when the
     file itself contained per-face normals.
+
+    An OBJ file is read here rather than by ``meshio``, which refuses one whose ``vt`` count
+    differs from its ``v`` count -- every UV-mapped OBJ with a seam. Its positions, triangles and
+    ``corner_uv`` are returned; polygons with more than three corners are ignored as above.
 
     Examples
     --------
@@ -127,6 +142,8 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     print(data["faces"].shape, data["vertex_normals"].shape)  # (36,) (8,)
     ```
     """
+    if Path(path).suffix.lower() == ".obj":
+        return _load_obj_data(path, device)
     meshio = _import_meshio()
     mesh = meshio.read(path)
 
@@ -176,6 +193,62 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
         )
 
     return result
+
+
+def _load_obj_data(path: str | Path, device: wp.DeviceLike) -> MeshData:
+    """Return ``load_mesh_data`` of an OBJ file: positions, triangles and per-corner texcoords."""
+    points, faces, corner_uv = _read_obj(path)
+    result: MeshData = {"vertices": _launch.array(points, dtype=wp.vec3, device=device)}
+    if faces.size > 0:
+        _require_valid_faces_host(faces, len(points), "load_mesh_data")
+        result["faces"] = _launch.array(faces.astype(np.int32), dtype=wp.int32, device=device)
+        if corner_uv is not None:
+            result["corner_uv"] = _launch.array(corner_uv, dtype=wp.vec2, device=device)
+    return result
+
+
+def _read_obj(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """
+    Parse an OBJ file's ``v``, ``vt`` and triangular ``f`` lines on the host.
+
+    Returns ``(points, faces, corner_uv)``: ``(n, 3)`` ``float32`` positions, ``(3 * n_faces,)``
+    ``int64`` zero-based corners (unvalidated) and ``(3 * n_faces, 2)`` ``float32`` texcoords, or
+    ``None`` unless every corner names one. Negative (relative) indices count back from the
+    elements read so far, as the format defines.
+    """
+    positions: list[list[float]] = []
+    texcoords: list[list[float]] = []
+    corners: list[int] = []
+    corner_texcoords: list[int] = []
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            tokens = line.split()
+            if not tokens:
+                continue
+            if tokens[0] == "v":
+                positions.append([float(x) for x in tokens[1:4]])
+            elif tokens[0] == "vt":
+                texcoords.append([float(x) for x in tokens[1:3]])
+            elif tokens[0] == "f" and len(tokens) == 4:
+                for token in tokens[1:]:
+                    fields = token.split("/")
+                    index = int(fields[0])
+                    corners.append(index - 1 if index > 0 else len(positions) + index)
+                    if len(fields) > 1 and fields[1]:
+                        t = int(fields[1])
+                        corner_texcoords.append(t - 1 if t > 0 else len(texcoords) + t)
+                    else:
+                        corner_texcoords.append(-1)
+    points = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+    faces = np.asarray(corners, dtype=np.int64)
+    corner_index = np.asarray(corner_texcoords, dtype=np.int64)
+    corner_uv = None
+    if texcoords and corners and (corner_index >= 0).all():
+        table = np.asarray(texcoords, dtype=np.float32).reshape(-1, 2)
+        if int(corner_index.max()) >= len(table):
+            raise ValueError(f"OBJ file {path!r} names a texcoord past its {len(table)} vt lines")
+        corner_uv = np.ascontiguousarray(table[corner_index])
+    return points, faces, corner_uv
 
 
 def _stack_columns(data: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
@@ -263,6 +336,15 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)
     ```
     """
+    if Path(path).suffix.lower() == ".obj":
+        points, faces_np, _ = _read_obj(path)
+        if faces_np.size == 0:
+            raise ValueError(f"Mesh file {path!r} has no triangle faces; cannot build a wp.Mesh.")
+        _require_valid_faces_host(faces_np, len(points), "load_mesh")
+        return wp.Mesh(
+            points=_launch.array(points, dtype=wp.vec3, device=device),
+            indices=_launch.array(faces_np.astype(np.int32), dtype=wp.int32, device=device),
+        )
     meshio = _import_meshio()
     mesh = meshio.read(path)
     faces_np = mesh.cells_dict.get("triangle")

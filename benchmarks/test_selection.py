@@ -246,8 +246,8 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
     **compact** the vertex buffer. So the rows are like-for-like on the work; what differs is
     the interface, in two ways that both cost something. open3d takes a *mask* rather than an index
     list, so building one is part of its row -- an ``O(n_faces)`` scatter against ordito's
-    ``O(len(indices))`` gather. And open3d returns **no vertex map**, where ordito's
-    ``return_index`` and pyvista's ``vtkOriginalPointIds`` both do, which is why the correctness
+    ``O(len(indices))`` gather. And open3d returns **no vertex map**, where ordito's provenance
+    and pyvista's ``vtkOriginalPointIds`` both do, which is why the correctness
     comparison has to match its positions instead (``tests/test_selection.py``).
 
     **pymeshlab is absent for an interface reason rather than a cost one.** It has no array-valued

@@ -7,6 +7,7 @@ import meshio
 import numpy as np
 import pytest
 import pytorch3d.io as p3d_io
+import trimesh as tm
 import warp as wp
 
 import ordito as od
@@ -68,6 +69,41 @@ def test_load_mesh_data_roundtrip(tmp_path: Path, device: str):
     )
     # meshio never computes face normals and none were written.
     assert "face_normals" not in data_wp
+
+
+def test_load_mesh_data_reads_obj_corner_texcoords(tmp_path: Path, device: str) -> None:
+    """
+    Class A against trimesh's OBJ reader: one texcoord per face corner, seams kept.
+
+    A square of two triangles whose shared edge is a UV seam (one vertex has two texcoords), with a
+    quad that is ignored. trimesh, loading without merging, splits the seam vertices and reports a
+    texcoord per vertex; the corner texcoords here equal its texcoords at its own corners, and the
+    positions and faces are the file's.
+    """
+    path = tmp_path / "square.obj"
+    path.write_text(
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\n"
+        "vt 0 0\nvt 1 0\nvt 0 1\nvt 0.5 0.5\nvt 0.9 0.9\n"
+        "f 1/1 2/2 3/3\nf 2/4 4/5 -2/3\nf 1/1 2/2 4/5 3/3\n"
+    )
+    data = od.io.load_mesh_data(path, device=device)
+    assert sorted(data) == ["corner_uv", "faces", "vertices"]
+    assert "faces" in data
+    assert "corner_uv" in data
+    faces_np = data["faces"].numpy()
+    assert faces_np.tolist() == [0, 1, 2, 1, 3, 2]
+    mesh_tm = tm.load(path, process=False, force="mesh")
+    assert isinstance(mesh_tm, tm.Trimesh)
+    triangles_tm = mesh_tm.vertices[mesh_tm.faces[:2]].reshape(-1, 3)
+    uv_tm = np.asarray(getattr(mesh_tm.visual, "uv"))  # noqa: B009 - TextureVisuals is untyped
+    corner_uv_tm = uv_tm[mesh_tm.faces[:2]].reshape(-1, 2)
+    assert np.allclose(data["vertices"].numpy()[faces_np], triangles_tm)
+    assert np.allclose(data["corner_uv"].numpy(), corner_uv_tm, rtol=1e-6, atol=1e-6)
+
+    bad = tmp_path / "bad.obj"
+    bad.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/1 2/2 3/1\n")
+    with pytest.raises(ValueError, match="texcoord"):
+        od.io.load_mesh_data(bad, device=device)
 
 
 @pytest.mark.parity(

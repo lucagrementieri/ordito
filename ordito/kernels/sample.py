@@ -87,7 +87,9 @@ def sample_surface(
     seed: wp.int32,
     out_points: wp.array[wp.vec3],
     out_face_indices: wp.array[wp.int32],
+    out_barycentric: wp.array[wp.vec3],
 ) -> None:
+    # A non-empty ``out_barycentric`` receives each point's coordinates in its face, corner order.
     tid = wp.int32(wp.tid())
     state = wp.rand_init(seed, tid)
     # ``wp.sample_cdf`` over the *unnormalized* prefix sum: the same single ``randf`` draw, so the
@@ -103,6 +105,8 @@ def sample_surface(
 
     out_face_indices[tid] = fi
     out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
+    if out_barycentric.shape[0] > 0:
+        out_barycentric[tid] = wp.vec3(w, uv.x, uv.y)
 
 
 @wp.kernel(module="unique")

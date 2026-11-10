@@ -58,6 +58,9 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | move, rotate, scale, mirror | [`transform`][ordito.transform]: [`transform_mesh`][ordito.transform.transform_mesh], [`rotation_matrix`][ordito.transform.rotation_matrix] |
 | combine meshes, or split into parts | [`combine.concatenate`][ordito.combine.concatenate], [`combine.split`][ordito.combine.split] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
+| carry colours, UVs, labels or any per-vertex or per-face field through an edit | ``return_provenance=True`` and [`interpolation.Provenance`][ordito.interpolation.Provenance] |
+| turn per-corner values (a UV atlas, hard normals) into per-vertex ones, or weld them back | [`repair.split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values], [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices] with ``vertex_values`` |
+| read a per-vertex field at surface samples or query hits | [`interpolation.interpolate_barycentric`][ordito.interpolation.interpolate_barycentric], [`sample.sample_surface`][ordito.sample.sample_surface] with ``return_barycentric=True`` |
 | remesh to uniform edge lengths | [`remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh] |
 | simplify (decimate) | [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate], [`cluster_decimate`][ordito.remesh.cluster_decimate] |
 | subdivide | [`remesh.subdivide`][ordito.remesh.subdivide], [`subdivide_loop`][ordito.remesh.subdivide_loop], [`subdivide_to_size`][ordito.remesh.subdivide_to_size] |
@@ -170,7 +173,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | [energies](api/ordito/energies.md) | Mesh energies: the scalar regularization losses, and the operators the solvers minimize. |
 | [linalg](api/ordito/linalg.md) | Sparse solvers: constrained quadratic minimization, conjugate gradients, preconditioners. |
 | [cholesky](api/ordito/cholesky.md) | Sparse Cholesky factorization of symmetric positive-definite operators, on the device. |
-| [interpolation](api/ordito/interpolation.md) | Moving a field between faces, vertices and edges, or from scattered points. |
+| [interpolation](api/ordito/interpolation.md) | Moving a field between faces, vertices and edges, across a topology edit, or from scattered points. |
 | [parametrization](api/ordito/parametrization.md) | Flattening a mesh into the plane: harmonic, Tutte, ARAP and LSCM. |
 
 ### Geodesics & heat-method solvers

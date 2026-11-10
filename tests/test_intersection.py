@@ -26,6 +26,7 @@ from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from tests.comparisons import (
     assert_nearest_bijection,
+    assert_provenance_describes,
     assert_unordered_rows_equal,
     hausdorff_two_sided,
     lexsort_rows,
@@ -1809,6 +1810,39 @@ def test_split_mesh_with_plane_refines_without_cracking(
     assert od.measures.euler_characteristic(faces_wp) == od.measures.euler_characteristic(
         mesh_wp.indices
     )
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_splits_report_provenance(mesh_name: str, request: pytest.FixtureRequest) -> None:
+    """
+    Not a library comparison: no reference reports where a split's crossings came from.
+
+    Both splits' crossings are carried by their edge's endpoints at the crossing's parameter,
+    which reproduces their positions, and every child face lies in the face it was cut from. A
+    field carried through the field split reads the isovalue at every crossing.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.points.device
+    heights_np = (mesh_wp.points.numpy() - mesh_tm.centroid) @ np.array([0.3, 0.2, 1.0])
+    heights_wp = wp.array(heights_np.astype(np.float32), dtype=wp.float32, device=device)
+    new_v, new_f, _positive, provenance = od.intersection.split_faces_along_field(
+        mesh_wp.points, mesh_wp.indices, heights_wp, 0.05, return_provenance=True
+    )
+    n_new = new_v.size - mesh_wp.points.size
+    assert n_new > 0
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+    carried_np = provenance.vertex_values(heights_wp).numpy()
+    assert np.allclose(carried_np[mesh_wp.points.size :], 0.05, rtol=0.0, atol=1e-5)
+
+    plane_v, plane_f, _above, plane = od.intersection.split_mesh_with_plane(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.vec3(0.3, 0.2, 1.0),
+        wp.vec3(*mesh_tm.centroid.tolist()),
+        return_provenance=True,
+    )
+    assert plane_v.size > mesh_wp.points.size
+    assert_provenance_describes(plane, mesh_wp.points, mesh_wp.indices, plane_v, plane_f)
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])

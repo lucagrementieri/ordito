@@ -169,7 +169,7 @@ is_patch = np.arange(filled.shape[0] // 3) >= faces.shape[0] // 3  # fill faces 
 patch = wp.array(is_patch, dtype=wp.bool, device=device)
 max_edge = 1.5 * od.edges.mean_edge_length(vertices, faces)
 
-everywhere = od.remesh.subdivide_to_size(vertices, filled, max_edge, return_index=True)
+everywhere = od.remesh.subdivide_to_size(vertices, filled, max_edge, return_provenance=True)
 in_region = od.remesh.subdivide_region_to_size(vertices, filled, patch, max_edge)
 to_density = od.remesh.refine_region_to_density(vertices, filled, patch)
 for name, (_, new_faces, *_) in {

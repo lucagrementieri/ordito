@@ -1392,6 +1392,26 @@ def split_crossed_edge_vertices(
         )
 
 
+@wp.kernel
+def crossed_edge_rows(
+    keys: wp.array[wp.int64],
+    rank: wp.array[wp.int32],
+    key_base: wp.int64,
+    out_edges: wp.array2d[wp.int32],
+) -> None:
+    # The edge each crossing vertex of ``split_crossed_edge_vertices`` lies on, as the endpoint
+    # pair it interpolates between, at the crossing's slot: the split's provenance.
+    q = wp.int32(wp.tid())
+    key = keys[q]
+    if key >= key_base * key_base:
+        return
+    slot, first = kernel_array.scanned_count(rank, q)
+    if first != 0:
+        slot = slot + first - 1
+        out_edges[slot, 0] = wp.int32(key % key_base)
+        out_edges[slot, 1] = wp.int32(key // key_base)
+
+
 @wp.func
 def emit_split_cut_edges(
     faces: wp.array[wp.int32],
@@ -1487,14 +1507,17 @@ def emit_split_faces(
     n_edges: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
+    out_face_index: wp.array[wp.int32],
 ) -> None:
     # Every face's output rows in one launch, one thread per face, placed by its class and rank
     # (``split_face_rank``): the uncut faces (positive, then negative) one row each, then the edge
     # cuts three rows each, then the corner cuts two, so each class's rows start where the previous
     # class's end, and cut face ``j``'s crossing vertices sit at ``3 j``. Without crossed edges
     # (``n_uncut`` the face count) it writes the side labels alone, the faces being unchanged.
+    # A non-empty ``out_face_index`` receives each row's input face, the split's provenance.
     f = wp.int32(wp.tid())
     face_class, rank = split_face_rank(ranks, f)
+    record = out_face_index.shape[0] > 0
     if face_class == SPLIT_CLASS_POSITIVE or face_class == SPLIT_CLASS_NEGATIVE:
         row = rank
         if face_class == SPLIT_CLASS_NEGATIVE:
@@ -1507,14 +1530,22 @@ def emit_split_faces(
         out_new_faces[row, 1] = i1
         out_new_faces[row, 2] = i2
         out_positive[row] = face_class == SPLIT_CLASS_POSITIVE
+        if record:
+            out_face_index[row] = f
         return
     s0, s1, s2 = level_set_signs(faces, vertex_dots, f)
     if face_class == SPLIT_CLASS_CUT_EDGES:
+        if record:
+            for child in range(3):
+                out_face_index[n_uncut + 3 * rank + child] = f
         emit_split_cut_edges(
             faces, f, s0, s1, s2, cut_vertices, rank, n_uncut + 3 * rank, out_new_faces,
             out_positive,
         )  # fmt: skip
         return
+    if record:
+        for child in range(2):
+            out_face_index[n_uncut + 3 * n_edges + 2 * rank + child] = f
     emit_split_cut_corner(
         faces, f, s0, s1, s2, cut_vertices, n_edges + rank,
         n_uncut + 3 * n_edges + 2 * rank, out_new_faces, out_positive,

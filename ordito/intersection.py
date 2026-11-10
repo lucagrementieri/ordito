@@ -43,6 +43,7 @@ from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import points as kernel_points
+from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import triangles as kernel_triangles
 
 if TYPE_CHECKING:
@@ -1698,6 +1699,7 @@ def slice_mesh_with_plane(
     )
 
 
+@overload
 def split_mesh_with_plane(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1705,7 +1707,32 @@ def split_mesh_with_plane(
     plane_origin: wp.vec3,
     *,
     tolerance: float = TOLERANCE_MERGE,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def split_mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    tolerance: float = TOLERANCE_MERGE,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
+def split_mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    tolerance: float = TOLERANCE_MERGE,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
     """
     Insert a plane's cross-section into the mesh as real edges, keeping both sides.
 
@@ -1741,6 +1768,9 @@ def split_mesh_with_plane(
         it, which is what keeps a plane through an existing vertex from producing slivers. Defaults
         to [`TOLERANCE_MERGE`][ordito.constants.TOLERANCE_MERGE]; scale it with the model when the
         coordinates are large.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1761,6 +1791,10 @@ def split_mesh_with_plane(
         the tie with, so [`slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane] drops
         it from the output entirely, on either side, while this function — which keeps every face
         somewhere — assigns it to ``True`` by convention.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each crossing interpolates the endpoints of
+        the edge it lies on, at its position along the edge, and each output face comes from the
+        input face it was cut from.
 
     Raises
     ------
@@ -1817,6 +1851,13 @@ def split_mesh_with_plane(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                _launch.empty(n_faces, dtype=wp.bool, device=device),
+                od.interpolation.Provenance.identity(n_vertices, n_faces, device),
+            )
         return (
             _launch.clone(vertices),
             _launch.clone(faces),
@@ -1906,6 +1947,9 @@ def split_mesh_with_plane(
         )
         new_faces = _launch.empty(3 * n_out, dtype=wp.int32, device=device)
         above = _launch.empty(n_out, dtype=wp.bool, device=device)
+        face_index = (
+            _launch.empty(n_out, dtype=wp.int32, device=device) if return_provenance else None
+        )
         # The same launch labels each child as it writes it.
         _launch.launch(
             kernel_intersections.emit_plane_split_faces,
@@ -1920,12 +1964,17 @@ def split_mesh_with_plane(
                 plane_origin,
                 new_faces,
                 new_faces.reshape((n_out, 3)),
-                None,
+                face_index,
                 above,
             ],
             device=device,
         )
-        return new_vertices, new_faces, above
+        if face_index is None:
+            return new_vertices, new_faces, above
+        provenance = _crossing_provenance(
+            vertices, new_vertices, keys, rank, key_base, n_new, face_index, n_faces
+        )
+        return new_vertices, new_faces, above, provenance
 
     above = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
@@ -1934,6 +1983,9 @@ def split_mesh_with_plane(
         inputs=[new_vertices, new_faces, plane_normal, plane_origin, tol, above],
         device=device,
     )
+    if return_provenance:
+        provenance = od.interpolation.Provenance.identity(n_vertices, n_faces, device)
+        return new_vertices, new_faces, above, provenance
     return new_vertices, new_faces, above
 
 
@@ -2314,12 +2366,37 @@ def _is_planar_loop(points: np.ndarray) -> bool:
     return float(np.abs(centred @ vectors[:, 0]).max()) <= _CAP_PLANAR_TOLERANCE * extent
 
 
+@overload
 def split_faces_along_field(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     values: wp.array[wp.float32] | wp.array[wp.float64],
     isovalue: float = 0.0,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def split_faces_along_field(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float = 0.0,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
+def split_faces_along_field(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float = 0.0,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
     """
     Cut every face the level set crosses, keeping **both** sides as one connected mesh.
 
@@ -2352,6 +2429,9 @@ def split_faces_along_field(
     isovalue
         Level to cut at. A vertex whose value equals it counts as positive, so a face lying wholly
         in the level set is kept whole on the positive side rather than cut along itself.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2364,6 +2444,10 @@ def split_faces_along_field(
         triangles they split into.
     positive : wp.array[wp.bool]
         ``(m,)`` mask, ``True`` for the faces on the ``values >= isovalue`` side.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each crossing interpolates the endpoints of
+        the edge it lies on, at its position along the edge, and each output face comes from the
+        input face it was cut from.
 
     Raises
     ------
@@ -2404,12 +2488,32 @@ def split_faces_along_field(
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
     if faces.size == 0 or vertices.size == 0:
+        empty_faces = _launch.empty(0, dtype=wp.int32, device=device)
+        if return_provenance:
+            provenance = od.interpolation.Provenance(
+                od.array.arange(vertices.size, device=device),
+                empty_faces,
+                None,
+                vertices.size,
+                faces.size // 3,
+            )
+            return (
+                _launch.clone(vertices),
+                empty_faces,
+                _launch.empty(0, dtype=wp.bool, device=device),
+                provenance,
+            )
         return (
             _launch.clone(vertices),
-            _launch.empty(0, dtype=wp.int32, device=device),
+            empty_faces,
             _launch.empty(0, dtype=wp.bool, device=device),
         )
-    return _split_with_vertex_field(vertices, faces, _shifted_field(values, isovalue))
+    new_vertices, new_faces, positive, provenance = _split_with_vertex_field(
+        vertices, faces, _shifted_field(values, isovalue), with_provenance=return_provenance
+    )
+    if provenance is None:
+        return new_vertices, new_faces, positive
+    return new_vertices, new_faces, positive, provenance
 
 
 def _shifted_field(
@@ -2441,14 +2545,21 @@ def _shifted_field(
 
 
 def _split_with_vertex_field(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], vertex_dots: wp.array[wp.float32]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    *,
+    with_provenance: bool = False,
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance | None
+]:
     """
     Cut along ``vertex_dots == 0``, keeping both sides; the engine behind the public split.
 
     Each face's class is a one-hot ``wp.vec4i`` scanned in place, which ranks every face within
     its class and ends in the four class counts, read together; every later launch runs over the
-    faces and places each by its class and rank, so no index partition is built.
+    faces and places each by its class and rank, so no index partition is built. The provenance
+    is ``None`` unless ``with_provenance``.
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -2480,10 +2591,16 @@ def _split_with_vertex_field(
                 0,
                 odt.empty_2d((0, 3), wp.int32, device=device),
                 positive,
+                _launch.empty(0, dtype=wp.int32, device=device),
             ],
             device=device,
         )
-        return _launch.clone(vertices), _launch.clone(faces), positive
+        provenance = (
+            od.interpolation.Provenance.identity(n_vertices, n_faces, device)
+            if with_provenance
+            else None
+        )
+        return _launch.clone(vertices), _launch.clone(faces), positive, provenance
 
     # One new vertex per crossed *edge*: both faces sharing it address the same index, which is
     # what makes the cut watertight rather than a seam of coincident pairs. Only a cut face has a
@@ -2545,6 +2662,7 @@ def _split_with_vertex_field(
 
     all_faces = _launch.empty(3 * n_emitted, dtype=wp.int32, device=device)
     positive = _launch.empty(n_emitted, dtype=wp.bool, device=device)
+    face_index = _launch.empty(n_emitted if with_provenance else 0, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.emit_split_faces,
         dim=n_faces,
@@ -2558,10 +2676,54 @@ def _split_with_vertex_field(
             wp.int32(n_edges),
             all_faces.reshape((n_emitted, 3)),
             positive,
+            face_index,
         ],
         device=device,
     )
-    return all_vertices, all_faces, positive
+    if not with_provenance:
+        return all_vertices, all_faces, positive, None
+    provenance = _crossing_provenance(
+        vertices, all_vertices, keys, rank, key_base, n_new, face_index, n_faces
+    )
+    return all_vertices, all_faces, positive, provenance
+
+
+def _crossing_provenance(
+    vertices: wp.array[wp.vec3],
+    new_vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.int64],
+    rank: wp.array[wp.int32],
+    key_base: wp.int64,
+    n_new: int,
+    face_index: wp.array[wp.int32],
+    n_faces: int,
+) -> od.interpolation.Provenance:
+    """
+    Return a split's provenance: the input vertices, then one crossing per crossed edge.
+
+    ``keys`` and ``rank`` are the sorted crossed-halfedge keys and their scanned run starts, which
+    number the crossings; each crossing interpolates its edge's endpoints at its position along it.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    edges = odt.empty_2d((n_new, 2), wp.int32, device=device)
+    t = _launch.empty(n_new, dtype=wp.float32, device=device)
+    if n_new > 0:
+        _launch.launch(
+            kernel_intersections.crossed_edge_rows,
+            dim=rank.size,
+            inputs=[keys, rank, key_base],
+            outputs=[edges],
+            device=device,
+        )
+        _launch.launch(
+            kernel_remesh.edge_parameters,
+            dim=n_new,
+            inputs=[vertices, edges, _launch.view(new_vertices, n_vertices, n_vertices + n_new)],
+            outputs=[t],
+            device=device,
+        )
+    return od.interpolation.Provenance.from_edge_points(n_vertices, edges, face_index, n_faces, t=t)
 
 
 def _clip_with_vertex_field(

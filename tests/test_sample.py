@@ -240,6 +240,35 @@ def test_sample_surface_with_face_weights(sphere_irregular: tuple[tm.Trimesh, wp
         assert np.abs(_quantile_bin_shares(face_idx, weights_np) - expected_np).max() < 0.015
 
 
+def test_sample_surface_barycentric_reproduces_the_samples(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A against trimesh: the coordinates evaluate to the samples on their own faces.
+
+    [`trimesh.triangles.barycentric_to_points`][] on each sample's face and coordinates gives the
+    sample back; the coordinates are non-negative and sum to one, and asking for them changes no
+    draw.
+    """
+    _, mesh_wp = sphere_irregular
+    samples, face_index, barycentric = od.sample.sample_surface(
+        mesh_wp.points, mesh_wp.indices, 2000, seed=4, return_barycentric=True
+    )
+    plain_samples, plain_face_index = od.sample.sample_surface(
+        mesh_wp.points, mesh_wp.indices, 2000, seed=4
+    )
+    assert np.array_equal(samples.numpy(), plain_samples.numpy())
+    assert np.array_equal(face_index.numpy(), plain_face_index.numpy())
+    barycentric_np = barycentric.numpy()
+    assert barycentric_np.min() >= 0.0
+    assert np.allclose(barycentric_np.sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    triangles_np = mesh_wp.points.numpy()[
+        mesh_wp.indices.numpy().reshape(-1, 3)[face_index.numpy()]
+    ]
+    points_tm = tm.triangles.barycentric_to_points(triangles_np, barycentric_np)
+    assert np.allclose(samples.numpy(), points_tm, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize(
     ("case", "match"),
     [

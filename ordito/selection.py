@@ -664,7 +664,7 @@ def submesh_from_face_indices(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    return_index: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def submesh_from_face_indices(
@@ -672,17 +672,17 @@ def submesh_from_face_indices(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    return_index: Literal[True],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def submesh_from_face_indices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    return_index: bool = False,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
     Extract a face subset by index and reindex vertices from zero.
@@ -702,9 +702,10 @@ def submesh_from_face_indices(
     face_indices
         ``(k,)`` face indices into the source mesh (``0 .. n_faces - 1``), on the same device as
         ``vertices``. May repeat a face: each occurrence keeps its own row of ``sub_faces``.
-    return_index
-        If ``True``, also return the vertex map below -- which the extraction computes anyway, so it
-        costs nothing.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the submesh; its vertex map is computed by the
+        extraction anyway.
 
     Returns
     -------
@@ -713,10 +714,10 @@ def submesh_from_face_indices(
         ``face_indices`` is empty.
     sub_faces : wp.array[wp.int32]
         ``(3 * k,)`` flat triangle index buffer into ``sub_vertices``.
-    vertex_index : wp.array[wp.int32]
-        ``(n_sub_vertices,)`` **input** vertex each output vertex came from, ascending; only when
-        ``return_index`` is ``True``. That direction makes it a gather, so a per-vertex
-        attribute follows the submesh with ``od.array.gather(attribute, vertex_index)``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex in ``vertex_index`` (ascending), and output face ``i`` comes from
+        ``face_indices[i]``.
 
     Raises
     ------
@@ -741,11 +742,11 @@ def submesh_from_face_indices(
 
     vertices, faces = od.creation.box()
     face_indices = wp.array([0, 1], dtype=wp.int32)
-    sub_vertices, sub_faces, vertex_index = od.selection.submesh_from_face_indices(
-        vertices, faces, face_indices, return_index=True
+    sub_vertices, sub_faces, provenance = od.selection.submesh_from_face_indices(
+        vertices, faces, face_indices, return_provenance=True
     )
     print(sub_vertices.shape, sub_faces.shape)  # (4,) (6,)
-    print(vertex_index.numpy().tolist())  # [0, 1, 3, 4]
+    print(provenance.vertex_index.numpy().tolist())  # [0, 1, 3, 4]
     ```
     """
     require_same_device(vertices=vertices, faces=faces, face_indices=face_indices)
@@ -754,8 +755,15 @@ def submesh_from_face_indices(
     if k == 0:
         empty_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
         empty_faces = _launch.empty(0, dtype=wp.int32, device=device)
-        if return_index:
-            return empty_vertices, empty_faces, _launch.empty(0, dtype=wp.int32, device=device)
+        if return_provenance:
+            empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+            return (
+                empty_vertices,
+                empty_faces,
+                od.interpolation.Provenance(
+                    empty_index, empty_index, None, vertices.size, faces.size // 3
+                ),
+            )
         return empty_vertices, empty_faces
 
     # The referenced vertices are a mask over the vertex count, and its in-place scan is both the
@@ -774,16 +782,21 @@ def submesh_from_face_indices(
     n_sub = scan_count(inclusive)
     sub_vertices = _launch.empty(n_sub, dtype=wp.vec3, device=device)
     sub_faces = _launch.empty(3 * k, dtype=wp.int32, device=device)
-    vertex_index = _launch.empty(n_sub, dtype=wp.int32, device=device) if return_index else None
+    vertex_index = (
+        _launch.empty(n_sub, dtype=wp.int32, device=device) if return_provenance else None
+    )
     _launch.launch(
         kernel_selection.compact_indexed_submesh,
         dim=max(k, n_vertices),
         inputs=[vertices, faces, face_indices, inclusive, sub_faces, sub_vertices, vertex_index],
         device=device,
     )
-    if vertex_index is not None:
-        return sub_vertices, sub_faces, vertex_index
-    return sub_vertices, sub_faces
+    if vertex_index is None:
+        return sub_vertices, sub_faces
+    provenance = od.interpolation.Provenance(
+        vertex_index, _launch.clone(face_indices), None, n_vertices, faces.size // 3
+    )
+    return sub_vertices, sub_faces, provenance
 
 
 def submeshes_from_face_groups(
@@ -963,7 +976,7 @@ def submesh_from_face_mask(
     faces: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     *,
-    return_index: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def submesh_from_face_mask(
@@ -971,17 +984,17 @@ def submesh_from_face_mask(
     faces: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     *,
-    return_index: Literal[True],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def submesh_from_face_mask(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     *,
-    return_index: bool = False,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
     Extract a face subset selected by a per-face boolean mask.
@@ -994,16 +1007,20 @@ def submesh_from_face_mask(
         ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
         ``(n_faces,)`` face selection on the same device as ``vertices``.
-    return_index
-        If ``True``, also return the output-to-input vertex map, as
-        [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices] documents.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the submesh.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[..., wp.array[wp.int32]]
-        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
-        compact submesh on ``vertices.device``, plus ``vertex_index`` when ``return_index`` is
-        ``True``.
+    sub_vertices : wp.array[wp.vec3]
+        ``(n_sub_vertices,)`` compact positions on ``vertices.device``.
+    sub_faces : wp.array[wp.int32]
+        ``(3 * n_sub_faces,)`` flat triangle index buffer into ``sub_vertices``, the selected faces
+        in input order.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the selected face it is.
 
     Raises
     ------
@@ -1039,11 +1056,14 @@ def submesh_from_face_mask(
             f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
     sub_vertices, sub_faces, vertex_index, _ = _submesh_from_mask(
-        vertices, faces, face_mask, keep_masked=True, with_index=return_index
+        vertices, faces, face_mask, keep_masked=True, with_index=return_provenance
     )
-    if return_index:
-        return sub_vertices, sub_faces, vertex_index
-    return sub_vertices, sub_faces
+    if not return_provenance:
+        return sub_vertices, sub_faces
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(face_mask), None, vertices.size, n_faces
+    )
+    return sub_vertices, sub_faces, provenance
 
 
 def delete_region_keep_boundary(
@@ -1375,13 +1395,35 @@ def _submesh_from_mask(
     )
 
 
+@overload
 def submesh_from_vertex_indices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_indices: wp.array[wp.int32],
     *,
     face_mode: Literal["all", "any"] = "all",
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def submesh_from_vertex_indices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_indices: wp.array[wp.int32],
+    *,
+    face_mode: Literal["all", "any"] = "all",
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def submesh_from_vertex_indices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_indices: wp.array[wp.int32],
+    *,
+    face_mode: Literal["all", "any"] = "all",
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Extract faces incident on the given vertices and reindex from zero.
 
@@ -1396,12 +1438,20 @@ def submesh_from_vertex_indices(
     face_mode
         ``"all"`` selects faces whose three vertex indices all lie in ``vertex_indices``;
         ``"any"`` selects faces with at least one vertex index in ``vertex_indices``.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the submesh.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
-        compact submesh on ``vertices.device``.
+    sub_vertices : wp.array[wp.vec3]
+        ``(n_sub_vertices,)`` compact positions on ``vertices.device``.
+    sub_faces : wp.array[wp.int32]
+        ``(3 * n_sub_faces,)`` flat triangle index buffer into ``sub_vertices``, the selected faces
+        in input order.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the selected face it is.
 
     Raises
     ------
@@ -1440,16 +1490,38 @@ def submesh_from_vertex_indices(
     # The index list as a membership mask, then the mask path: one scan and one readback size the
     # faces and the vertices together. Both orders are ascending, as the indexed route gives them.
     vertex_mask = od.array.indices_to_mask(vertex_indices, vertices.size, device=vertices.device)
-    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode)
+    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode, return_provenance)
 
 
+@overload
 def submesh_from_vertex_mask(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_mask: wp.array[wp.bool],
     *,
     face_mode: Literal["all", "any"] = "all",
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def submesh_from_vertex_mask(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_mask: wp.array[wp.bool],
+    *,
+    face_mode: Literal["all", "any"] = "all",
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def submesh_from_vertex_mask(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_mask: wp.array[wp.bool],
+    *,
+    face_mode: Literal["all", "any"] = "all",
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Extract faces incident on vertices selected by a boolean mask.
 
@@ -1465,12 +1537,20 @@ def submesh_from_vertex_mask(
         ``"all"`` selects faces whose three corners are all selected; ``"any"`` selects faces with
         at least one corner selected. Same rule as
         [`submesh_from_vertex_indices`][ordito.selection.submesh_from_vertex_indices]'s.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the submesh.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
-        compact submesh on ``vertices.device``.
+    sub_vertices : wp.array[wp.vec3]
+        ``(n_sub_vertices,)`` compact positions on ``vertices.device``.
+    sub_faces : wp.array[wp.int32]
+        ``(3 * n_sub_faces,)`` flat triangle index buffer into ``sub_vertices``, the selected faces
+        in input order.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the selected face it is.
 
     Raises
     ------
@@ -1515,7 +1595,7 @@ def submesh_from_vertex_mask(
             f"vertex_mask length must equal n_vertices={n_vertices}, got {vertex_mask.size}"
         )
 
-    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode)
+    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode, return_provenance)
 
 
 def _submesh_from_vertex_mask(
@@ -1523,7 +1603,11 @@ def _submesh_from_vertex_mask(
     faces: wp.array[wp.int32],
     vertex_mask: wp.array[wp.bool],
     face_mode: Literal["all", "any"],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Extract the faces a vertex mask selects under the all/any rule, reindexed from zero.
 
@@ -1538,9 +1622,15 @@ def _submesh_from_vertex_mask(
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
+        sub_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        sub_faces = _launch.empty(0, dtype=wp.int32, device=device)
+        if return_provenance:
+            empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+            provenance = od.interpolation.Provenance(
+                empty_index, empty_index, None, vertices.size, 0
+            )
+            return sub_vertices, sub_faces, provenance
+        return sub_vertices, sub_faces
     face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
     _launch.launch(
@@ -1549,10 +1639,15 @@ def _submesh_from_vertex_mask(
         inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), face_mask, ranks],
         device=device,
     )
-    sub_vertices, sub_faces, _, _ = _compact_marked_submesh(
-        vertices, faces, face_mask, ranks, keep_masked=True, with_index=False
+    sub_vertices, sub_faces, vertex_index, _ = _compact_marked_submesh(
+        vertices, faces, face_mask, ranks, keep_masked=True, with_index=return_provenance
     )
-    return sub_vertices, sub_faces
+    if not return_provenance:
+        return sub_vertices, sub_faces
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(face_mask), None, vertices.size, n_faces
+    )
+    return sub_vertices, sub_faces, provenance
 
 
 def _compact_marked_submesh(

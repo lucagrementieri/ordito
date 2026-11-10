@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Literal, NamedTuple, cast, overload
+from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
 import warp as wp
@@ -296,7 +296,7 @@ def make_solid(
         return vertices.size, faces.size
 
     if keep_largest:
-        vertices, faces = _remove_small_components(vertices, faces, mates=twins)
+        vertices, faces, _ = _remove_small_components(vertices, faces, mates=twins)
         clean_after["components"] = version
     if join_components:
         faces = od.holes.join_closest_components(vertices, faces)
@@ -473,7 +473,11 @@ def remove_unreferenced_vertices(
 
 
 def remove_duplicated_vertices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], epsilon: float = 0.0
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 0.0,
+    *,
+    vertex_values: wp.array[Any] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Merge duplicate vertex positions up to a coordinate tolerance and remap face indices.
@@ -489,6 +493,12 @@ def remove_duplicated_vertices(
         tolerance is absolute and is the one you chose. ``0`` instead groups by a *relative*
         bucket about ``2.4e-4`` wide (see Notes) — pass an explicit ``epsilon`` unless that is
         what you want.
+    vertex_values
+        ``(n_vertices,)`` per-vertex attribute that must also agree, exactly, for two vertices to
+        merge: a UV, a normal, a colour or a label. Coincident vertices that carry different values
+        stay apart, so welding a mesh unwelded along its UV seams closes everything but the seams.
+        ``wp.float32`` or ``wp.int32`` scalars or vectors; ``-0.0`` equals ``0.0``. ``None``
+        merges by position alone.
 
     Returns
     -------
@@ -505,8 +515,12 @@ def remove_duplicated_vertices(
 
     Raises
     ------
+    ValueError
+        If ``vertex_values`` does not have one entry per vertex.
+    TypeError
+        If ``vertex_values``' scalar type is not ``wp.float32`` or ``wp.int32``.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``vertex_values`` are not all on one device.
 
     Notes
     -----
@@ -552,9 +566,21 @@ def remove_duplicated_vertices(
     print(od.validation.is_watertight(welded, welded_faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, vertex_values=vertex_values)
     # Each class's first occurrence comes with the inverse, read off the grouping's stable sort.
     inverse, unique_indices = _vertex_classes(vertices, epsilon)
+    if vertex_values is not None:
+        if vertex_values.size != vertices.size:
+            raise ValueError(
+                f"vertex_values must have one entry per vertex, got {vertex_values.size} for "
+                f"{vertices.size} vertices"
+            )
+        # Each position class split by the values its vertices carry, then numbered again by
+        # first occurrence.
+        inverse, unique_indices = _exact_value_classes(
+            inverse, vertex_values, max(unique_indices.size, 1)
+        )
+        inverse, unique_indices = _numbered_by_first_occurrence(inverse, unique_indices)
     unique_vertices = od.array.gather(vertices, unique_indices)
     unique_faces = od.array.remap_indices(faces, inverse)
     return unique_vertices, unique_indices, inverse, unique_faces
@@ -615,6 +641,240 @@ def duplicate_vertex_inverse(vertices: wp.array[wp.vec3], epsilon: float) -> wp.
     ```
     """
     return _vertex_classes(vertices, epsilon)[0]
+
+
+@overload
+def split_vertices_by_corner_values(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    corner_values: wp.array[Any],
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[Any]]: ...
+@overload
+def split_vertices_by_corner_values(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    corner_values: wp.array[Any],
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[Any], od.interpolation.Provenance]: ...
+def split_vertices_by_corner_values(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    corner_values: wp.array[Any],
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[Any]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[Any], od.interpolation.Provenance]
+):
+    """
+    Split each vertex into one copy per distinct value its corners carry.
+
+    A face-varying attribute -- a UV atlas, hard normals, per-face colours -- stores a value per
+    *corner*, and two faces meeting at a vertex may disagree about it: across a UV seam the same
+    position has two texcoords. Renderers, file formats such as glTF and every per-vertex function
+    in this package want one value per vertex instead, which takes a vertex for each distinct
+    ``(vertex, value)`` pair. This builds exactly that: corners at the same vertex with equal values
+    share an output vertex, corners that disagree get their own, and every output vertex sits where
+    its input vertex did. A vertex whose corners all agree is not split.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    corner_values
+        ``(3 * n_faces,)`` value of each corner, in ``faces``' order: ``wp.float32`` or ``wp.int32``
+        scalars or vectors (``wp.vec2`` for a UV atlas, ``wp.vec3`` for a normal, ``wp.vec4`` for a
+        colour). Equal means bitwise equal, ``-0.0`` and ``0.0`` excepted, so snap values computed
+        with rounding error first.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any other per-vertex or per-face field onto the split mesh.
+
+    Returns
+    -------
+    new_vertices : wp.array[wp.vec3]
+        ``(n_out_vertices,)`` one vertex per distinct ``(vertex, value)`` pair, ordered by input
+        vertex. A vertex no face references has no corner and is dropped.
+    new_faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` the same faces in the same order, over ``new_vertices``.
+    new_values : wp.array
+        ``(n_out_vertices,)`` the value of each output vertex, of ``corner_values``' dtype, so that
+        ``new_values[new_faces] == corner_values``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex it was split from, and the faces are the input faces in order.
+
+    Raises
+    ------
+    ValueError
+        If ``corner_values`` does not have one entry per corner.
+    TypeError
+        If ``corner_values``' scalar type is not ``wp.float32`` or ``wp.int32``.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``corner_values`` are not all on one device.
+
+    See Also
+    --------
+    [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices]
+        The inverse: ``vertex_values=new_values`` welds the copies back wherever the values agree.
+    [`ordito.seams.uv_seam_edges`][ordito.seams.uv_seam_edges]
+        The edges along which a per-corner atlas tears.
+    [`ordito.seams.cut_along_edges`][ordito.seams.cut_along_edges]
+        A split by a chosen edge set rather than by values.
+
+    Examples
+    --------
+    A box with a colour per side: each cube corner splits into the three colours of the three
+    sides meeting there:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _ = od.triangles.face_normals_and_areas(vertices, faces)
+    corner_colors = wp.array(np.repeat(np.abs(normals.numpy()), 3, axis=0), dtype=wp.vec3)
+    new_vertices, new_faces, colors = od.repair.split_vertices_by_corner_values(
+        vertices, faces, corner_colors
+    )
+    print(new_vertices.shape, colors.shape)  # (24,) (24,)
+    print(np.array_equal(colors.numpy()[new_faces.numpy()], corner_colors.numpy()))  # True
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, corner_values=corner_values)
+    device = vertices.device
+    n_corners = faces.size
+    if corner_values.size != n_corners:
+        raise ValueError(
+            f"corner_values must have one entry per corner, got {corner_values.size} for "
+            f"{n_corners} corners"
+        )
+    corner_class, first = _exact_value_classes(faces, corner_values, max(vertices.size, 1))
+    n_out = first.size
+    new_vertices = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    source = _launch.empty(n_out, dtype=wp.int32, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_repair.split_corner_outputs,
+            dim=n_out,
+            inputs=[vertices, faces, first],
+            outputs=[new_vertices, source],
+            device=device,
+        )
+    new_values = od.array.gather(corner_values, first)
+    if not return_provenance:
+        return new_vertices, corner_class, new_values
+    n_faces = n_corners // 3
+    provenance = od.interpolation.Provenance(
+        source, od.array.arange(n_faces, device=device), None, vertices.size, n_faces
+    )
+    return new_vertices, corner_class, new_values, provenance
+
+
+def _exact_value_classes(
+    primary: wp.array[wp.int32], values: wp.array[Any], primary_bound: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Group the rows ``(primary[i], values[i])`` by exact equality: ``(inverse, first)``.
+
+    ``primary`` is non-negative and below ``primary_bound``. Classes are numbered in the order of
+    their sorted rows, ``primary`` first, and ``first`` is each class's lowest-numbered row. A
+    least-significant-digit radix sort over the rows' 32-bit words, two a pass, every pass stable
+    -- so equal rows keep index order -- and nothing is hashed, so two different rows never share
+    a class.
+    """
+    device = primary.device
+    n = primary.size
+    scalar = getattr(values.dtype, "_wp_scalar_type_", values.dtype)
+    if scalar not in (wp.float32, wp.int32):
+        raise TypeError(f"values must be float32 or int32 scalars or vectors, got {values.dtype}")
+    if n == 0:
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
+        return empty, empty
+    n_words = wp.types.type_size_in_bytes(values.dtype) // 4
+    rows = odt.empty_2d((n, n_words + 1), wp.int32, device=device)
+    words = _launch.alias(values, wp.int32, 0, n * n_words)
+    _launch.launch(
+        kernel_repair.value_word_rows,
+        dim=n,
+        inputs=[primary, words, n_words, scalar == wp.float32],
+        outputs=[rows],
+        device=device,
+    )
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
+    sorted_keys, sorted_order = _launch.view(keys, 0, n), _launch.view(order, 0, n)
+    _launch.copy(sorted_order, od.array.arange(n, device=device))
+    # Columns ``0`` (the primary key) to ``n_words``, least significant pair first:
+    # ``(n_words - 1, n_words)``, ``(n_words - 3, n_words - 2)``, ..., down to a pass holding the
+    # primary key, with the first value word or alone.
+    passes: list[tuple[int, int]] = []
+    low = n_words
+    while low >= 0:
+        passes.append((low - 1, low) if low >= 1 else (low, -1))
+        low -= 2
+    primary_bits = _launch.key_bits(primary_bound)
+    for high, low in passes:
+        _launch.launch(
+            kernel_repair.word_pair_keys,
+            dim=n,
+            inputs=[rows, sorted_order, high, low],
+            outputs=[sorted_keys],
+            device=device,
+        )
+        end_bit = None
+        if high == 0:
+            end_bit = primary_bits + (32 if low >= 0 else 0)
+        _launch.radix_sort_pairs(keys, order, n, end_bit=end_bit)
+    flags = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.row_run_starts, dim=n, inputs=[rows, sorted_order, flags], device=device
+    )
+    # The class count sizes the representatives.
+    n_classes = scan_count(flags)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    first = _launch.empty(n_classes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.write_row_classes,
+        dim=n,
+        inputs=[sorted_order, flags],
+        outputs=[inverse, first],
+        device=device,
+    )
+    return inverse, first
+
+
+def _numbered_by_first_occurrence(
+    inverse: wp.array[wp.int32], first: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """Renumber classes by their first member's index: ``(inverse, first)``, ``first`` ascending."""
+    device = inverse.device
+    n = inverse.size
+    if n == 0:
+        return inverse, first
+    ranks = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flag_class_first_occurrences,
+        dim=n,
+        inputs=[inverse, first, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    first_ascending = _launch.empty(first.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.renumber_classes_by_first_occurrence,
+        dim=n,
+        inputs=[inverse, first, ranks],
+        outputs=[inverse, first_ascending],
+        device=device,
+    )
+    return inverse, first_ascending
 
 
 def _vertex_classes(
@@ -898,9 +1158,23 @@ def _raise_duplicate_group(
     )
 
 
+@overload
 def remove_degenerate_faces(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def remove_degenerate_faces(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_provenance: Literal[True]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def remove_degenerate_faces(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_provenance: bool = False
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Drop degenerate (zero-area) triangles and reindex, keeping vertex positions unchanged.
 
@@ -920,6 +1194,9 @@ def remove_degenerate_faces(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -929,6 +1206,9 @@ def remove_degenerate_faces(
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the non-degenerate faces, remapped into
         ``new_vertices``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the input face it is.
 
     Raises
     ------
@@ -958,6 +1238,12 @@ def remove_degenerate_faces(
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
     if n_faces == 0:
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                od.interpolation.Provenance.identity(vertices.size, 0, vertices.device),
+            )
         return _launch.clone(vertices), _launch.clone(faces)
 
     # The degeneracy test marks the survivors for the compaction in the pass that decides them.
@@ -969,19 +1255,46 @@ def remove_degenerate_faces(
         inputs=[vertices, faces, keep_mask, ranks],
         device=faces.device,
     )
-    new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
-        vertices, faces, keep_mask, ranks, keep_masked=True, with_index=False
+    new_vertices, new_faces, vertex_index, _ranks = _compact_marked_submesh(
+        vertices, faces, keep_mask, ranks, keep_masked=True, with_index=return_provenance
     )
-    return new_vertices, new_faces
+    if not return_provenance:
+        return new_vertices, new_faces
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(keep_mask), None, vertices.size, n_faces
+    )
+    return new_vertices, new_faces, provenance
 
 
+@overload
 def remove_non_manifold_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     max_iter: int = 3,
     *,
     method: Literal["all", "meshlab"] = "all",
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def remove_non_manifold_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    method: Literal["all", "meshlab"] = "all",
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def remove_non_manifold_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    method: Literal["all", "meshlab"] = "all",
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Remove faces touching a non-manifold (>2-incident) edge, leaving the mesh edge-manifold.
 
@@ -1014,6 +1327,9 @@ def remove_non_manifold_faces(
 
         - ``"all"`` (default) — every face on a non-manifold edge.
         - ``"meshlab"`` — the smallest first, until each edge is manifold (see above).
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1023,6 +1339,9 @@ def remove_non_manifold_faces(
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving (edge-manifold) faces; ``faces``
         itself, not a copy, when no face is dropped.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the input face it is.
 
     Raises
     ------
@@ -1078,15 +1397,39 @@ def remove_non_manifold_faces(
     if method == "meshlab":
         keep = _smallest_first_survivors(vertices, faces)
         if keep is None:
-            return vertices, faces
+            return _unchanged(vertices, faces, return_provenance)
+        if return_provenance:
+            return od.selection.submesh_from_face_mask(
+                vertices, faces, keep, return_provenance=True
+            )
         return od.selection.submesh_from_face_mask(vertices, faces, keep)
     # The radix of the edge keys; any bound above every index groups the edges identically, so the
     # vertex count serves every pass over a subset of the faces, as it does for
     # ``remove_degenerate_and_non_manifold_faces``, with no reduction and readback to infer one.
     survivors, keep = _edge_manifold_survivors(faces, None, vertices.size, max_iter)
     if keep is None:
-        return vertices, faces
+        return _unchanged(vertices, faces, return_provenance)
+    if return_provenance:
+        # No prefilter, so the survivors are ``faces`` itself and the mask is over them.
+        return od.selection.submesh_from_face_mask(
+            vertices, survivors, keep, return_provenance=True
+        )
     return od.selection.submesh_from_face_mask(vertices, survivors, keep)
+
+
+def _unchanged(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], return_provenance: bool
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
+    """Return a mesh no face was dropped from, as it came, with the identity provenance if asked."""
+    if not return_provenance:
+        return vertices, faces
+    provenance = od.interpolation.Provenance.identity(
+        vertices.size, faces.size // 3, vertices.device
+    )
+    return vertices, faces, provenance
 
 
 def _smallest_first_survivors(
@@ -1159,9 +1502,32 @@ def _smallest_first_survivors(
     return keep
 
 
+@overload
 def remove_degenerate_and_non_manifold_faces(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_iter: int = 3
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def remove_degenerate_and_non_manifold_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def remove_degenerate_and_non_manifold_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Drop degenerate faces, then faces on a non-manifold edge, compacting the vertices once.
 
@@ -1182,6 +1548,9 @@ def remove_degenerate_and_non_manifold_faces(
         Maximum number of non-manifold removal passes, as in
         [`remove_non_manifold_faces`][ordito.repair.remove_non_manifold_faces]: every value from
         ``1`` gives the same answer.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1191,6 +1560,9 @@ def remove_degenerate_and_non_manifold_faces(
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving faces, remapped into
         ``new_vertices``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the input face it is.
 
     Raises
     ------
@@ -1225,6 +1597,12 @@ def remove_degenerate_and_non_manifold_faces(
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size == 0:
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                od.interpolation.Provenance.identity(vertices.size, 0, vertices.device),
+            )
         return _launch.clone(vertices), _launch.clone(faces)
     # ``triangles.face_nondegenerate_mask`` with the flags its survivors are compacted from, in the
     # one pass.
@@ -1238,9 +1616,19 @@ def remove_degenerate_and_non_manifold_faces(
         outputs=[keep, keep_flags],
         device=faces.device,
     )
+    nondegenerate = keep
     survivors, keep = _edge_manifold_survivors(faces, (keep, keep_flags), vertices.size, max_iter)
     assert keep is not None
-    return od.selection.submesh_from_face_mask(vertices, survivors, keep)
+    if not return_provenance:
+        return od.selection.submesh_from_face_mask(vertices, survivors, keep)
+    new_vertices, new_faces, provenance = od.selection.submesh_from_face_mask(
+        vertices, survivors, keep, return_provenance=True
+    )
+    if survivors is not faces:
+        # The mask is over the nondegenerate faces, compacted in face order.
+        face_index = od.array.gather(od.array.flatnonzero(nondegenerate), provenance.face_index)
+        provenance = provenance._replace(face_index=face_index, n_faces=n_faces)
+    return new_vertices, new_faces, provenance
 
 
 def _edge_manifold_survivors(
@@ -1319,6 +1707,7 @@ def _compact_scanned_faces(
     return kept
 
 
+@overload
 def remove_small_components(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1328,7 +1717,34 @@ def remove_small_components(
     min_area: float | None = None,
     min_diameter: float | None = None,
     labels: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def remove_small_components(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    keep_largest: bool = False,
+    min_faces: int | None = None,
+    min_area: float | None = None,
+    min_diameter: float | None = None,
+    labels: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def remove_small_components(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    keep_largest: bool = False,
+    min_faces: int | None = None,
+    min_area: float | None = None,
+    min_diameter: float | None = None,
+    labels: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Drop face-connected components that are too small, by one of four measures of "small".
 
@@ -1377,6 +1793,9 @@ def remove_small_components(
         returns them
         ([`Trimesh.face_connected_component_labels`][ordito.mesh.Trimesh.face_connected_component_labels]),
         to spare the labelling. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1384,6 +1803,9 @@ def remove_small_components(
         ``(n_new_vertices,)`` vertices of the surviving components, compacted from index zero.
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving faces, in their input order.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the input face it is.
 
     Raises
     ------
@@ -1447,14 +1869,18 @@ def remove_small_components(
             "pass exactly one of keep_largest, min_faces, min_area or min_diameter, "
             f"got {sum(given)}"
         )
-    return _remove_small_components(
+    new_vertices, new_faces, provenance = _remove_small_components(
         vertices,
         faces,
         min_faces=min_faces,
         min_area=min_area,
         min_diameter=min_diameter,
         labels=labels,
+        with_provenance=return_provenance,
     )
+    if provenance is None:
+        return new_vertices, new_faces
+    return new_vertices, new_faces, provenance
 
 
 def _remove_small_components(
@@ -1466,18 +1892,24 @@ def _remove_small_components(
     min_diameter: float | None = None,
     labels: wp.array[wp.int32] | None = None,
     mates: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    with_provenance: bool = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance | None]:
     """
     [`remove_small_components`][ordito.repair.remove_small_components] past its checks.
 
     At most one ``min_*`` bound; with none it keeps the largest component. ``mates`` are halfedge
     mates of ``faces`` -- or any table whose pairs connect the same faces -- for the labelling
-    when ``labels`` is not given, trusted.
+    when ``labels`` is not given, trusted. The provenance is ``None`` unless ``with_provenance``.
     """
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return vertices, faces
+        provenance = (
+            od.interpolation.Provenance.identity(vertices.size, 0, device)
+            if with_provenance
+            else None
+        )
+        return vertices, faces, provenance
 
     counts_faces = min_area is None and min_diameter is None
     counts = ranks = None
@@ -1565,18 +1997,45 @@ def _remove_small_components(
         ],
         device=device,
     )
-    new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
-        vertices, faces, keep, ranks, keep_masked=True, with_index=False
+    new_vertices, new_faces, vertex_index, _ranks = _compact_marked_submesh(
+        vertices, faces, keep, ranks, keep_masked=True, with_index=with_provenance
     )
-    return new_vertices, new_faces
+    if not with_provenance:
+        return new_vertices, new_faces, None
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(keep), None, vertices.size, n_faces
+    )
+    return new_vertices, new_faces, provenance
 
 
+@overload
 def split_non_manifold_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     mates: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+@overload
+def split_non_manifold_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], od.interpolation.Provenance
+]: ...
+def split_non_manifold_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
 
     Make a mesh manifold and orientable by duplicating vertices, keeping every face.
@@ -1607,6 +2066,9 @@ def split_non_manifold_vertices(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
         pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1620,6 +2082,9 @@ def split_non_manifold_vertices(
         ``(n_new,)`` map from each new vertex to the original it duplicates, so
         ``new_vertices == vertices[source]`` and a per-vertex attribute transfers with
         [`gather`][ordito.array.gather]. This is ``igl.split_nonmanifold``'s ``SVI``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of ``source``,
+        and the faces are the input faces in order.
 
     Raises
     ------
@@ -1692,11 +2157,23 @@ def split_non_manifold_vertices(
     n_faces = faces.size // 3
     if n_faces == 0:
         empty_index = _launch.empty(0, dtype=wp.int32, device=device)
-        return _launch.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
+        new_vertices = _launch.empty(0, dtype=wp.vec3, device=vertices.device)
+        if return_provenance:
+            provenance = od.interpolation.Provenance(
+                empty_index, empty_index, None, vertices.size, 0
+            )
+            return new_vertices, faces, empty_index, provenance
+        return new_vertices, faces, empty_index
 
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    return _split_corners(vertices, faces, mates)
+    new_vertices, new_faces, source = _split_corners(vertices, faces, mates)
+    if not return_provenance:
+        return new_vertices, new_faces, source
+    provenance = od.interpolation.Provenance(
+        source, od.array.arange(n_faces, device=device), None, vertices.size, n_faces
+    )
+    return new_vertices, new_faces, source, provenance
 
 
 def _split_corners(

@@ -691,6 +691,30 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
         assert 0 < len(welded.vertices) <= soup_np.shape[0]
 
 
+@pytest.mark.benchmark(group="split_vertices_by_corner_values")
+@pytest.mark.benchlibs("ordito")
+def test_split_vertices_by_corner_values(bench_case: BenchCase) -> None:
+    """
+    Unweld a mesh along a two-chart UV atlas: one vertex per distinct ``(vertex, texcoord)`` pair.
+
+    No reference row: no installed library splits vertices by a per-corner field as a function
+    (trimesh does it inside its OBJ loader, on the host). Each corner's texcoord is its vertex's
+    ``(x, y)`` shifted by the side of the ``x = 0`` plane its face's centroid lies on, so every
+    vertex on a face crossing that plane splits in two. Two sort passes over the corners.
+    """
+    corners_np = bench_case.vertices_np[bench_case.faces_np]
+    chart_np = np.repeat(corners_np.mean(axis=1)[:, 0] > 0.0, 3)
+    uv_np = (corners_np.reshape(-1, 3)[:, :2] + chart_np[:, None]).astype(np.float32)
+    corner_uv = wp.array(np.ascontiguousarray(uv_np), dtype=wp.vec2, device=bench_case.device)
+    new_vertices, new_faces, _uv = bench_case.run(
+        lambda: od.repair.split_vertices_by_corner_values(
+            bench_case.vertices_wp, bench_case.faces_wp, corner_uv
+        )
+    )
+    assert new_faces.size == bench_case.faces_wp.size
+    assert new_vertices.size > 0
+
+
 @pytest.mark.benchmark(group="duplicate_vertex_inverse")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("ordito")

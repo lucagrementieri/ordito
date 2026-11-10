@@ -2124,6 +2124,7 @@ def _split_buffer(buffer: wp.array[odt.DType], *widths: int) -> list[wp.array[od
     return views
 
 
+@overload
 def cluster_decimate(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -2131,7 +2132,30 @@ def cluster_decimate(
     voxel_size: float | None = None,
     contraction: Literal["average", "closest"] = "average",
     method: Literal["open3d", "meshlab", "meshlib"] = "open3d",
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def cluster_decimate(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    voxel_size: float | None = None,
+    contraction: Literal["average", "closest"] = "average",
+    method: Literal["open3d", "meshlab", "meshlib"] = "open3d",
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def cluster_decimate(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    voxel_size: float | None = None,
+    contraction: Literal["average", "closest"] = "average",
+    method: Literal["open3d", "meshlab", "meshlib"] = "open3d",
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.
 
@@ -2192,6 +2216,9 @@ def cluster_decimate(
         The contraction moves vertices only: the cells, and so the faces, are the same for both.
     method
         ``"open3d"``, ``"meshlab"`` or ``"meshlib"``: which grid and mean, as above.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2200,6 +2227,13 @@ def cluster_decimate(
         from index zero.
     faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat triangle index buffer, free of collapsed and duplicate faces.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Under ``contraction="average"`` an output
+        vertex averages its cell's input vertices, each counted once (so carrying the positions
+        reproduces ``method="open3d"``'s exactly, while the other two methods weight a vertex by
+        its faces), and its representative is the cell's lowest-numbered vertex; under
+        ``"closest"`` it is a copy of the vertex kept. An output face comes from the input face
+        whose winding it keeps.
 
     Raises
     ------
@@ -2262,6 +2296,12 @@ def cluster_decimate(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                od.interpolation.Provenance.identity(n_vertices, n_faces, device),
+            )
         return _launch.clone(vertices), _launch.clone(faces)
 
     origin, cell_widths, inverse_widths, cell_bound = _cluster_grid(
@@ -2335,10 +2375,20 @@ def cluster_decimate(
     # this reads the host.
     n_kept, n_unique = read_values(counters, 0, 2)
     if n_kept == 0:
-        return (
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.empty(0, dtype=wp.int32, device=device),
-        )
+        empty_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        empty_faces = _launch.empty(0, dtype=wp.int32, device=device)
+        if return_provenance:
+            return (
+                empty_vertices,
+                empty_faces,
+                od.interpolation.Provenance.from_clusters(
+                    _launch.full(n_vertices, -1, dtype=wp.int32, device=device),
+                    0,
+                    _launch.empty(0, dtype=wp.int32, device=device),
+                    n_faces,
+                ),
+            )
+        return empty_vertices, empty_faces
     # The output vertices are the kept clusters in cell-key order, which is the order the sorted
     # unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the
     # permutation does not depend on the order the claims arrived in.
@@ -2421,7 +2471,31 @@ def cluster_decimate(
         outputs=[kept_vertices, out_faces],
         device=device,
     )
-    return kept_vertices, out_faces
+    if not return_provenance:
+        return kept_vertices, out_faces
+    # Each output face's representative input face, in the emitted order.
+    face_index = _launch.clone(odt.as_dense(kept_cells[:n_unique]))
+    if not average:
+        sources = _launch.empty(n_kept, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_remesh.cluster_closest_sources,
+            dim=n_kept,
+            inputs=[closest],
+            outputs=[sources],
+            device=device,
+        )
+        provenance = od.interpolation.Provenance(sources, face_index, None, n_vertices, n_faces)
+        return kept_vertices, out_faces, provenance
+    targets = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_remesh.cluster_vertex_targets,
+        dim=n_vertices,
+        inputs=[vertex_cell, cell_rank],
+        outputs=[targets],
+        device=device,
+    )
+    provenance = od.interpolation.Provenance.from_clusters(targets, n_kept, face_index, n_faces)
+    return kept_vertices, out_faces, provenance
 
 
 def _cluster_grid(
@@ -2571,7 +2645,7 @@ def quadric_decimate(
     feature_angle: float = ...,
     min_face_quality: float = ...,
     max_iter: int = ...,
-    return_index: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def quadric_decimate(
@@ -2583,8 +2657,8 @@ def quadric_decimate(
     feature_angle: float = ...,
     min_face_quality: float = ...,
     max_iter: int = ...,
-    return_index: Literal[True],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def quadric_decimate(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -2594,10 +2668,10 @@ def quadric_decimate(
     feature_angle: float = 180.0,
     min_face_quality: float = 0.0,
     max_iter: int = 100,
-    return_index: bool = False,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
 
@@ -2651,9 +2725,9 @@ def quadric_decimate(
         Cap on collapse passes. Each pass commits a conflict-free independent set, so a large
         reduction needs many; the loop also stops early once the target is met or a pass commits
         nothing.
-    return_index
-        If ``True``, also return the two provenance maps below, which is how a per-vertex or
-        per-face attribute survives the decimation.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2666,17 +2740,12 @@ def quadric_decimate(
         all that is left); it stops above the target when every remaining edge fails the link
         condition, the normal-flip guard, the thin-part rule or the ``feature_angle`` rule -- see
         Notes. Read the returned count rather than assuming it.
-    vertex_index : wp.array[wp.int32]
-        ``(n_vertices,)`` **output** vertex each input vertex ended up in, or ``-1`` for an input
-        vertex that survives in no output face (one that was already unreferenced); only when
-        ``return_index`` is ``True``. Many-to-one, since that is what a collapse is, so it is
-        the direction a scatter or a segmented reduction wants.
-    face_index : wp.array[wp.int32]
-        ``(n_out_faces,)`` **input** face each output face came from, only when ``return_index`` is
-        ``True`` -- the same output-to-input direction
-        [`split_edges`][ordito.remesh.split_edges] uses, so a per-face attribute follows through
-        ``od.array.gather``. A collapse only deletes faces and never creates one, so every output
-        face has exactly one source.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. A collapse merges input vertices, so each
+        output vertex averages the input vertices that collapsed into it and its representative is
+        the lowest-numbered of them; an input vertex no output face references (one that was
+        already unreferenced) is in none. A collapse only deletes faces and never creates one, so
+        every output face has exactly one source face.
 
     Raises
     ------
@@ -2716,8 +2785,8 @@ def quadric_decimate(
     mesh size, which is why one edge grouping answers the feature classification, the incidence
     and both adjacencies, and why ``_DecimationBuffers`` replays the whole rebuild as one captured
     graph with fixed-width buffers and live sizes carried in a device array. Read that class before
-    changing anything here. ``return_index`` costs nothing when off and next to nothing when on: the
-    two provenance maps are folded per pass by two launches and one copy, and the branch is
+    changing anything here. ``return_provenance`` costs nothing when off and next to nothing when
+    on: the two provenance maps are folded per pass by two launches and one copy, and the branch is
     evaluated when the pass is *issued*, so the captured graph does not contain it.
 
     Five consequences to plan around:
@@ -2776,9 +2845,15 @@ def quadric_decimate(
         # boundary. It is the answer ``_DecimationBuffers``' per-pass compaction gives: survivors
         # in order and the referenced vertices kept in index order.
         kept_vertices, kept_faces, remap = od.repair.remove_unreferenced_vertices(vertices, faces)
-        if not return_index:
+        if not return_provenance:
             return kept_vertices, kept_faces
-        return kept_vertices, kept_faces, remap, od.array.arange(n_faces, device=faces.device)
+        return (
+            kept_vertices,
+            kept_faces,
+            od.interpolation.Provenance.from_clusters(
+                remap, kept_vertices.size, od.array.arange(n_faces, device=faces.device), n_faces
+            ),
+        )
 
     buffers = _DecimationBuffers(
         vertices,
@@ -2786,15 +2861,21 @@ def quadric_decimate(
         target,
         wp.float32(math.radians(feature_angle)),
         min_face_quality=min_face_quality,
-        track_index=return_index,
+        track_index=return_provenance,
     )
     for _ in range(max_iter):
         if not buffers.run_pass():
             break
     out_vertices, out_faces, face_source = buffers.result()
-    if not return_index:
+    if not return_provenance:
         return out_vertices, out_faces
-    return out_vertices, out_faces, buffers.vertex_index, face_source
+    return (
+        out_vertices,
+        out_faces,
+        od.interpolation.Provenance.from_clusters(
+            buffers.vertex_index, out_vertices.size, face_source, n_faces
+        ),
+    )
 
 
 class _DecimationBuffers:
@@ -4254,13 +4335,35 @@ def intrinsic_delaunay(
     return intrinsic_faces, lengths, total
 
 
+@overload
 def subdivide(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def subdivide(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def subdivide(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Subdivide a mesh by splitting every face into four triangles.
 
@@ -4281,12 +4384,20 @@ def subdivide(
         [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the
         edge sort. Trusted, not checked. Both must be given together; either being ``None``
         rebuilds them.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(n_vertices + n_edges,)`` ``new_vertices`` and ``(12 * n_faces,)`` ``new_faces`` on
-        ``vertices.device``, ``n_edges`` the unique edge count.
+    new_vertices : wp.array[wp.vec3]
+        ``(n_vertices + n_edges,)`` the input vertices followed by one midpoint per unique edge,
+        on ``vertices.device``, ``n_edges`` the unique edge count.
+    new_faces : wp.array[wp.int32]
+        ``(12 * n_faces,)`` flat triangle index buffer, each input face's four children in turn.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: a midpoint interpolates its edge's two
+        endpoints, and a child face comes from its parent.
 
     Raises
     ------
@@ -4317,6 +4428,12 @@ def subdivide(
     if n_faces == 0:
         # Cloned, not aliased: every other entry point in this module returns independent buffers,
         # and a caller that mutates a "subdivided" mesh must not reach back into its own input.
+        if return_provenance:
+            return (
+                _launch.clone(vertices),
+                _launch.clone(faces),
+                od.interpolation.Provenance.identity(n_vertices, n_faces, device),
+            )
         return _launch.clone(vertices), _launch.clone(faces)
 
     if unique_edges is None or inverse is None:
@@ -4337,7 +4454,16 @@ def subdivide(
         outputs=[new_vertices, new_faces],
         device=device,
     )
-    return new_vertices, new_faces
+    if not return_provenance:
+        return new_vertices, new_faces
+    # The originals, then each unique edge's midpoint; a face's four children follow it.
+    return (
+        new_vertices,
+        new_faces,
+        od.interpolation.Provenance.from_edge_points(
+            n_vertices, unique_edges, od.array.arange_repeat(4 * n_faces, 4, device), n_faces
+        ),
+    )
 
 
 @overload
@@ -4345,7 +4471,7 @@ def subdivide_loop(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    return_operator: Literal[False] = False,
+    return_provenance: Literal[False] = False,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
@@ -4354,20 +4480,20 @@ def subdivide_loop(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    return_operator: Literal[True],
+    return_provenance: Literal[True],
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], odt.BsrMatrix[wp.float32]]: ...
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def subdivide_loop(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    return_operator: bool = False,
+    return_provenance: bool = False,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], odt.BsrMatrix[wp.float32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
 
@@ -4399,11 +4525,11 @@ def subdivide_loop(
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
-    return_operator
-        If ``True``, also return the sparse interpolation operator ``P`` this pass applies, so that
-        ``new_vertices == P @ vertices`` and **any** per-vertex attribute can be carried through the
-        subdivision by the same matrix (see
-        [`ordito.interpolation.transfer_through_operator`][ordito.interpolation.transfer_through_operator]).
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] whose
+        ``vertex_operator`` is the sparse matrix ``P`` this pass applies, so that
+        ``new_vertices == P @ vertices`` and **any** per-vertex attribute is carried through the
+        subdivision by the same weights.
     unique_edges, inverse
         ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
         for ``faces`` when the caller holds it --
@@ -4421,10 +4547,12 @@ def subdivide_loop(
         ``subdivide``, where that prefix is unchanged.
     new_faces : wp.array[wp.int32]
         ``(12 * n_faces,)`` flat triangle index buffer.
-    operator : warp.sparse.BsrMatrix
-        ``(n_vertices + n_edges, n_vertices)`` matrix of Loop weights, only when
-        ``return_operator`` is ``True``, one row per output vertex in the same layout as
-        ``new_vertices``. Every row sums to 1.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its ``vertex_operator`` is the
+        ``(n_vertices + n_edges, n_vertices)`` matrix of Loop weights, one row per output vertex in
+        the same layout as ``new_vertices``, every row summing to 1; a vertex's representative is
+        itself and an edge vertex's the lower-numbered endpoint of its edge, and a child face comes
+        from its parent.
 
     Raises
     ------
@@ -4433,12 +4561,10 @@ def subdivide_loop(
 
     Notes
     -----
-    **Why an operator rather than an index map.** Every other topology edit here reports provenance
-    as one ``int32`` per output element, because each output comes from exactly one input. A Loop
-    vertex does not: an odd vertex is an affine combination of four inputs and an even vertex of its
-    whole 1-ring, so no index map can express it, and an attribute cannot otherwise be carried
-    through this function at all. The operator is the honest form, it is the standard prolongation
-    object, and it costs nothing unless asked for.
+    **Why the provenance carries an operator.** An odd vertex is an affine combination of four
+    inputs and an even vertex of its whole 1-ring, so no index map can express where a vertex came
+    from, and a float attribute could not otherwise follow this function at all. The operator is
+    the standard prolongation object, and it costs nothing unless asked for.
 
     The operator is assembled from the same three grids and through the same two weight functions
     (``kernels/remesh.loop_odd_weights`` / ``loop_even_weights``) that the position kernels use, so
@@ -4467,17 +4593,18 @@ def subdivide_loop(
     Examples
     --------
     One Loop pass over an icosahedron adds a vertex per edge and pulls the surface inward,
-    toward its smooth limit; the operator maps the 12 input vertices to the 42 output ones:
+    toward its smooth limit; the provenance's operator maps the 12 input vertices to the 42 output
+    ones:
 
     ```python
     import ordito as od
 
     vertices, faces = od.creation.icosahedron()
-    new_vertices, new_faces, operator = od.remesh.subdivide_loop(
-        vertices, faces, return_operator=True
+    new_vertices, new_faces, provenance = od.remesh.subdivide_loop(
+        vertices, faces, return_provenance=True
     )
     print(new_vertices.shape, new_faces.shape)  # (42,) (240,)
-    print(operator.shape)  # (42, 12)
+    print(provenance.vertex_operator.shape)  # (42, 12)
     print(od.measures.volume(new_vertices, new_faces) < od.measures.volume(vertices, faces))  # True
     ```
     """
@@ -4488,11 +4615,11 @@ def subdivide_loop(
     if n_faces == 0:
         # No faces means no edges and no relocation, so the pass is the identity -- but it
         # returns independent buffers all the same, as every other entry point here does.
-        if return_operator:
+        if return_provenance:
             return (
                 _launch.clone(vertices),
                 _launch.clone(faces),
-                odt.bsr_identity(n_vertices, wp.float32, device=device),
+                od.interpolation.Provenance.identity(n_vertices, n_faces, device),
             )
         return _launch.clone(vertices), _launch.clone(faces)
 
@@ -4560,7 +4687,7 @@ def subdivide_loop(
         od.array.triplet_buffers(
             _loop_triplet_count(n_vertices, n_unique, n_faces), wp.float32, device
         )
-        if return_operator
+        if return_provenance
         else None
     )
     _launch.launch(
@@ -4572,20 +4699,24 @@ def subdivide_loop(
     )
     if operator_triplets is None:
         return new_vertices, new_faces
-    return (
-        new_vertices,
-        new_faces,
-        _loop_operator(
-            faces,
-            unique_edges,
-            inverse,
-            edge_face_count,
-            valence,
-            boundary_count,
-            n_vertices,
-            operator_triplets,
-        ),
+    operator = _loop_operator(
+        faces,
+        unique_edges,
+        inverse,
+        edge_face_count,
+        valence,
+        boundary_count,
+        n_vertices,
+        operator_triplets,
     )
+    provenance = od.interpolation.Provenance(
+        od.interpolation.operator_representatives(operator),
+        od.array.arange_repeat(4 * n_faces, 4, device),
+        operator,
+        n_vertices,
+        n_faces,
+    )
+    return new_vertices, new_faces, provenance
 
 
 def _loop_operator(
@@ -4658,7 +4789,8 @@ def subdivide_to_size(
     faces: wp.array[wp.int32],
     max_edge: float | wp.array[wp.float32],
     max_iter: int = 10,
-    return_index: Literal[False] = False,
+    *,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def subdivide_to_size(
@@ -4667,17 +4799,18 @@ def subdivide_to_size(
     max_edge: float | wp.array[wp.float32],
     max_iter: int = 10,
     *,
-    return_index: Literal[True],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def subdivide_to_size(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     max_edge: float | wp.array[wp.float32],
     max_iter: int = 10,
-    return_index: bool = False,
+    *,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
     Subdivide a mesh until every edge is at most ``max_edge`` long.
@@ -4707,8 +4840,9 @@ def subdivide_to_size(
     max_iter
         Maximum number of subdivision passes. A ``ValueError`` is raised if the
         mesh still has an over-long edge after this many passes.
-    return_index
-        If ``True``, also return the source face index of each output face.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -4717,9 +4851,10 @@ def subdivide_to_size(
         first, then the inserted edge midpoints).
     new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat buffer of the refined faces.
-    index : wp.array[wp.int32]
-        ``(n_out_faces,)`` index of the original face each output face was refined from; only
-        returned when ``return_index`` is ``True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: an inserted vertex interpolates the input
+        vertices of the edge it was split from (a midpoint of midpoints, of several), and an output
+        face comes from the input face it was refined from.
 
     Raises
     ------
@@ -4747,12 +4882,24 @@ def subdivide_to_size(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, max_edge=max_edge)
+    passes: list[od.interpolation.Provenance] | None = [] if return_provenance else None
     new_vertices, new_faces, index, _grouping = _subdivide_to_size(
-        vertices, faces, max_edge, max_iter, index=return_index
+        vertices, faces, max_edge, max_iter, index=return_provenance, passes=passes
     )
-    if index is not None:
-        return new_vertices, new_faces, index
-    return new_vertices, new_faces
+    if passes is None:
+        return new_vertices, new_faces
+    assert index is not None  # tracked whenever the provenance is
+    n_faces = faces.size // 3
+    if not passes:
+        return (
+            new_vertices,
+            new_faces,
+            od.interpolation.Provenance.identity(vertices.size, n_faces, vertices.device),
+        )
+    chained = passes[0]
+    for later in passes[1:]:
+        chained = chained.then(later)
+    return (new_vertices, new_faces, chained._replace(face_index=index, n_faces=n_faces))
 
 
 def _subdivide_to_size(
@@ -4764,6 +4911,7 @@ def _subdivide_to_size(
     index: bool = True,
     copy: bool = True,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
+    passes: list[od.interpolation.Provenance] | None = None,
 ) -> tuple[
     wp.array[wp.vec3],
     wp.array[wp.int32],
@@ -4780,7 +4928,8 @@ def _subdivide_to_size(
 
     ``index=False`` tracks no face index and returns ``None`` in its place. ``copy=False`` returns
     a mesh with nothing to split as the input buffers themselves rather than copies, for a caller
-    that copies only before writing in place (``isotropic_remesh``).
+    that copies only before writing in place (``isotropic_remesh``). ``passes``, when a list,
+    receives each pass's vertex provenance (with no faces: the face index rides through the split).
     """
     device = vertices.device
     sizing = max_edge if isinstance(max_edge, wp.array) else None
@@ -4873,6 +5022,16 @@ def _subdivide_to_size(
             else _extend_sizing_field(sizing, unique_edges, long_mask, split_bits, n_split)
         )
 
+        if passes is not None:
+            # The pass appends one midpoint per long edge, in ascending edge order.
+            split_rows = odt.as_array2d(
+                od.array.gather(unique_edges, od.array.flatnonzero(long_mask)), wp.int32
+            )
+            passes.append(
+                od.interpolation.Provenance.from_edge_points(
+                    n_vertices, split_rows, _launch.empty(0, dtype=wp.int32, device=device), 0
+                )
+            )
         # ``index`` rides through the split rather than being gathered afterwards.
         new_vertices, new_faces, new_index = _split_ranked_edges(
             current_vertices,
@@ -5714,8 +5873,7 @@ def split_edges(
     *,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
-    index: wp.array[wp.int32] | None = None,
-    return_index: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def split_edges(
@@ -5726,9 +5884,8 @@ def split_edges(
     *,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
-    index: wp.array[wp.int32] | None = None,
-    return_index: Literal[True],
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def split_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -5737,11 +5894,10 @@ def split_edges(
     *,
     unique_edges: odt.Array2dInt32 | None = None,
     inverse: wp.array[wp.int32] | None = None,
-    index: wp.array[wp.int32] | None = None,
-    return_index: bool = False,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
 ):
     """
     Split a chosen set of edges in one crack-free pass, inserting one vertex per edge.
@@ -5761,8 +5917,7 @@ def split_edges(
     through unchanged.
 
     Every return is freshly allocated and independently owned, on the path where nothing was
-    flagged and the mesh comes back unchanged as much as on the splitting one -- including
-    ``index``, which is a copy of the caller's rather than the array they passed in.
+    flagged and the mesh comes back unchanged as much as on the splitting one.
 
     Parameters
     ----------
@@ -5782,14 +5937,10 @@ def split_edges(
         ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
         for ``faces``, when the caller has already built it to compute ``split_mask``. Both must be
         given together; either being ``None`` rebuilds them.
-    index
-        ``(n_faces,)`` per-face values to carry through the split: each output face
-        receives the value of the input face it came from. ``None`` means the identity, so
-        ``return_index`` then reports provenance into ``faces``. Passing the *previous* pass's index
-        is how an iterated caller composes provenance without a gather per pass.
-    return_index
-        If ``True``, also return ``index`` resolved onto the output faces (provenance into ``faces``
-        when ``index`` is ``None``).
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result. An iterated caller chains the passes'
+        with [`Provenance.then`][ordito.interpolation.Provenance.then].
 
     Returns
     -------
@@ -5798,18 +5949,19 @@ def split_edges(
         ascending edge order.
     new_faces : wp.array[wp.int32]
         ``(3 * m,)`` flat triangle index buffer for the refined mesh, ``m`` the output face count.
-    index : wp.array[wp.int32]
-        ``(m,)`` index into the **input** ``faces`` of the face each output face came from; only
-        when ``return_index`` is ``True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: an inserted vertex interpolates its edge's
+        endpoints at its position along the edge (a ``split_positions`` point off the edge at its
+        projection onto it), and an output face comes from the input face it was cut from.
 
     Raises
     ------
     ValueError
-        If ``split_mask`` does not have one entry per unique edge, ``split_positions`` does not have
-        one entry per flagged edge, or ``index`` does not have one entry per face.
+        If ``split_mask`` does not have one entry per unique edge, or ``split_positions`` does not
+        have one entry per flagged edge.
     RuntimeError
-        If ``vertices``, ``faces``, ``split_mask``, ``split_positions``, ``unique_edges``,
-        ``inverse`` and ``index`` are not all on one device.
+        If ``vertices``, ``faces``, ``split_mask``, ``split_positions``, ``unique_edges`` and
+        ``inverse`` are not all on one device.
 
     See Also
     --------
@@ -5862,7 +6014,6 @@ def split_edges(
         split_positions=split_positions,
         unique_edges=unique_edges,
         inverse=inverse,
-        index=index,
     )
     device = vertices.device
     n_vertices = vertices.size
@@ -5880,17 +6031,9 @@ def split_edges(
             f"split_mask must have one entry per unique edge ({n_edges}), got {split_mask.size}."
         )
 
-    if index is not None and index.size != n_faces:
-        raise ValueError(f"index must have one entry per face ({n_faces}), got {index.size}.")
-    # Provenance is threaded only when it is returned: without ``return_index`` nothing reads it, so
-    # no identity is built and the emission writes none.
-    carried = (
-        None
-        if not return_index
-        else index
-        if index is not None
-        else od.array.arange(n_faces, device=device)
-    )
+    # The face provenance is threaded only when it is returned: without ``return_provenance``
+    # nothing reads it, so no identity is built and the emission writes none.
+    carried = od.array.arange(n_faces, device=device) if return_provenance else None
 
     # A bit a split edge, ranked: the scan both counts the split edges and assigns each one its new
     # vertex slot (its bit's rank), which is the indexing ``split_positions`` is documented against.
@@ -5917,15 +6060,33 @@ def split_edges(
         edges,
         corner_edge,
         carried,
-        index,
+        None,
         split_positions,
-        return_index,
+        return_provenance,
         split_bits=(words, word_ranks),
     )
-    if return_index:
-        assert new_index is not None  # ``carried`` is an array whenever ``return_index`` is set
-        return new_vertices, new_faces, new_index
-    return new_vertices, new_faces
+    if not return_provenance:
+        return new_vertices, new_faces
+    assert new_index is not None  # ``carried`` is an array whenever the provenance is asked for
+    # The new vertices follow the split edges in ascending order, at their position along each.
+    split_rows = odt.as_array2d(od.array.gather(edges, od.array.flatnonzero(split_mask)), wp.int32)
+    t = None
+    if split_positions is not None and n_split > 0:
+        t = _launch.empty(n_split, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_remesh.edge_parameters,
+            dim=n_split,
+            inputs=[vertices, split_rows, split_positions],
+            outputs=[t],
+            device=device,
+        )
+    return (
+        new_vertices,
+        new_faces,
+        od.interpolation.Provenance.from_edge_points(
+            n_vertices, split_rows, new_index, n_faces, t=t
+        ),
+    )
 
 
 @overload

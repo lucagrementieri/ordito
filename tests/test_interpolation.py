@@ -10,7 +10,10 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
+from tests.comparisons import sparse_allclose
+from tests.conftest import MESHES
 from tests.conversions import (
+    bsr_to_csr,
     numpy_to_warp,
     points_to_pyvista,
     points_to_warp,
@@ -460,6 +463,60 @@ def test_transfer_onto_vertices_empty(device: str):
     assert np.isinf(distance_wp.numpy()).all()
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("interpolate_barycentric", "trimesh")
+def test_interpolate_barycentric_matches_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A against trimesh: the positions are the field whose interpolation trimesh computes.
+
+    [`trimesh.triangles.barycentric_to_points`][] evaluates barycentric coordinates on triangles,
+    which is this function with the vertex positions as the field. A scalar and a ``wp.vec4``
+    field are checked against the same weights in NumPy, and a negative face reads zero.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.points.device
+    rng = np.random.default_rng(5)
+    n_faces = mesh_wp.indices.size // 3
+    face_index_np = rng.integers(0, n_faces, 500).astype(np.int32)
+    barycentric_np = rng.dirichlet(np.ones(3), 500).astype(np.float32)
+    face_index_wp = wp.array(face_index_np, dtype=wp.int32, device=device)
+    barycentric_wp = wp.array(barycentric_np, dtype=wp.vec3, device=device)
+    triangles_np = mesh_wp.points.numpy()[mesh_wp.indices.numpy().reshape(-1, 3)[face_index_np]]
+    points_tm = tm.triangles.barycentric_to_points(triangles_np, barycentric_np)
+    points_wp = od.interpolation.interpolate_barycentric(
+        mesh_wp.indices, face_index_wp, barycentric_wp, mesh_wp.points
+    )
+    assert np.allclose(points_wp.numpy(), points_tm, rtol=1e-5, atol=1e-5)
+
+    colors_np = rng.random((mesh_wp.points.size, 4)).astype(np.float32)
+    colors_wp = od.interpolation.interpolate_barycentric(
+        mesh_wp.indices,
+        face_index_wp,
+        barycentric_wp,
+        wp.array(colors_np, dtype=wp.vec4, device=device),
+    )
+    corners_np = mesh_wp.indices.numpy().reshape(-1, 3)[face_index_np]
+    colors_ref = np.einsum("pc,pcj->pj", barycentric_np, colors_np[corners_np])
+    assert np.allclose(colors_wp.numpy(), colors_ref, rtol=1e-5, atol=1e-5)
+
+    missed_wp = od.interpolation.interpolate_barycentric(
+        mesh_wp.indices,
+        wp.array([-1], dtype=wp.int32, device=device),
+        wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device),
+        wp.array(colors_np[:, 0].copy(), dtype=wp.float32, device=device),
+    )
+    assert missed_wp.numpy().tolist() == [0.0]
+    with pytest.raises(ValueError, match="one entry per point"):
+        od.interpolation.interpolate_barycentric(
+            mesh_wp.indices,
+            face_index_wp,
+            wp.array(barycentric_np[:10], dtype=wp.vec3, device=device),
+            mesh_wp.points,
+        )
+
+
 @pytest.mark.parametrize("dtype", [wp.float32, wp.vec3])
 def test_transfer_through_operator_matches_scipy(device: str, dtype: type) -> None:
     """
@@ -565,6 +622,169 @@ def _interpolate_wp(
         k=k,
         sharpness=sharpness,
     ).numpy()
+
+
+@pytest.mark.parametrize("dtype", [wp.bool, wp.int32, wp.float64, wp.vec3])
+def test_transfer_through_index_is_a_gather_with_a_zero_fill(device: str, dtype: type) -> None:
+    """
+    Not a library comparison: NumPy's ``take`` is the oracle, with zero where the index is -1.
+
+    Four dtypes cover a scalar of each kind, a ``float64`` field and a vector; a dtype outside the
+    supported set is refused rather than recompiling the module.
+    """
+    rng = np.random.default_rng(2)
+    shape = (50, 3) if dtype == wp.vec3 else (50,)
+    host_dtype = {wp.bool: bool, wp.int32: np.int32, wp.float64: np.float64, wp.vec3: np.float32}
+    values_np = rng.integers(0, 2, shape).astype(host_dtype[dtype])
+    index_np = rng.integers(-1, 50, 80).astype(np.int32)
+    values_wp = wp.array(values_np, dtype=dtype, device=device)
+    carried = od.interpolation.transfer_through_index(
+        values_wp, wp.array(index_np, dtype=wp.int32, device=device)
+    ).numpy()
+    expected = values_np[np.maximum(index_np, 0)].copy()
+    expected[index_np < 0] = 0
+    assert np.array_equal(carried, expected)
+    with pytest.raises(TypeError, match="cannot carry"):
+        od.interpolation.transfer_through_index(
+            wp.zeros(2, dtype=wp.mat22, device=device), wp.zeros(1, dtype=wp.int32, device=device)
+        )
+
+
+def test_index_operators_round_trip(device: str) -> None:
+    """
+    Not a library comparison: an index map as an operator, and its largest weights back.
+
+    The operator of an index map carries a float field as the gather does (a ``-1`` row reads
+    zero), and its representatives are the index map itself. On an independently assembled
+    operator the representative is the largest weight, the lower column on a tie, -1 on an empty
+    row, whatever the order the entries were given in.
+    """
+    index_np = np.array([4, -1, 0, 4, 2], dtype=np.int32)
+    index_wp = wp.array(index_np, dtype=wp.int32, device=device)
+    operator = od.interpolation.operator_from_index(index_wp, 5)
+    assert (int(operator.nrow), int(operator.ncol)) == (5, 5)
+    values_np = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+    moved = od.interpolation.transfer_through_operator(
+        wp.array(values_np, dtype=wp.float32, device=device), operator
+    ).numpy()
+    assert np.array_equal(moved, np.where(index_np >= 0, values_np[np.maximum(index_np, 0)], 0.0))
+    assert np.array_equal(od.interpolation.operator_representatives(operator).numpy(), index_np)
+
+    rows = wp.array([0, 0, 0, 2, 2], dtype=wp.int32, device=device)
+    cols = wp.array([3, 1, 2, 4, 0], dtype=wp.int32, device=device)
+    weights = wp.array([0.4, 0.4, 0.2, 0.5, 0.5], dtype=wp.float32, device=device)
+    assembled = od.array.csr_from_triplets(3, 5, rows, cols, weights)
+    assert od.interpolation.operator_representatives(assembled).numpy().tolist() == [1, -1, 0]
+
+
+def test_compose_operators_matches_scipy(device: str) -> None:
+    """
+    Class A against SciPy: the composed operator is the sparse product ``second @ first``.
+
+    Random operators with repeated columns across a row's expansion, so duplicates are summed;
+    mismatched shapes are refused.
+    """
+    rng = np.random.default_rng(9)
+
+    def random_operator(
+        n_rows: int, n_cols: int
+    ) -> tuple[sp.csr_matrix, odt.BsrMatrix[wp.float32]]:
+        rows_np = np.repeat(np.arange(n_rows), 3).astype(np.int32)
+        cols_np = rng.integers(0, n_cols, rows_np.size).astype(np.int32)
+        values_np = rng.random(rows_np.size).astype(np.float32)
+        reference = sp.csr_matrix((values_np, (rows_np, cols_np)), shape=(n_rows, n_cols))
+        operator = od.array.csr_from_triplets(
+            n_rows,
+            n_cols,
+            wp.array(rows_np, dtype=wp.int32, device=device),
+            wp.array(cols_np, dtype=wp.int32, device=device),
+            wp.array(values_np, dtype=wp.float32, device=device),
+        )
+        return reference, operator
+
+    first_sp, first = random_operator(40, 30)
+    second_sp, second = random_operator(25, 40)
+    composed = od.interpolation.compose_operators(first, second)
+    assert sparse_allclose(bsr_to_csr(composed), second_sp @ first_sp)
+    with pytest.raises(ValueError, match="do not chain"):
+        od.interpolation.compose_operators(second, second)
+
+
+def test_provenance_constructors_and_transfers(device: str) -> None:
+    """
+    Not a library comparison: the provenance's own algebra, on hand-built cases with known answers.
+
+    ``from_rows`` merges a repeated source, drops a zero weight and picks the heaviest source (the
+    smaller on a tie) as representative; ``from_edge_points`` places a point at its parameter;
+    ``from_clusters`` averages a cluster and takes its lowest member. A float field goes through
+    the weights and an integer field through the representative; a missing source reads zero;
+    ``then`` equals the two transfers in turn, and a mismatched ``after`` is refused.
+    """
+    no_faces = warp_empty(0, wp.int32, device)
+    rows = od.interpolation.Provenance.from_rows(
+        wp.array([[2, 2, -1], [0, 1, 3], [3, 1, 0]], dtype=wp.int32, device=device),
+        wp.array(
+            [[0.5, 0.5, 0.0], [0.25, 0.75, 0.0], [0.5, 0.5, 0.0]], dtype=wp.float32, device=device
+        ),
+        no_faces,
+        4,
+        0,
+    )
+    assert rows.vertex_index.numpy().tolist() == [2, 1, 1]
+    values_wp = wp.array([0.0, 4.0, 8.0, 12.0], dtype=wp.float32, device=device)
+    assert np.allclose(rows.vertex_values(values_wp).numpy(), [8.0, 3.0, 8.0])
+    labels_wp = wp.array([10, 11, 12, 13], dtype=wp.int32, device=device)
+    assert rows.vertex_values(labels_wp).numpy().tolist() == [12, 11, 11]
+
+    points = od.interpolation.Provenance.from_edge_points(
+        2,
+        wp.array([[0, 1], [1, 0]], dtype=wp.int32, device=device),
+        no_faces,
+        0,
+        t=wp.array([0.25, 0.5], dtype=wp.float32, device=device),
+    )
+    ends_wp = wp.array([0.0, 4.0], dtype=wp.float32, device=device)
+    assert np.allclose(points.vertex_values(ends_wp).numpy(), [0.0, 4.0, 1.0, 2.0])
+    assert points.vertex_index.numpy().tolist() == [0, 1, 0, 0]
+
+    clusters = od.interpolation.Provenance.from_clusters(
+        wp.array([1, -1, 1, 0], dtype=wp.int32, device=device),
+        3,
+        wp.array([1, -1], dtype=wp.int32, device=device),
+        2,
+    )
+    assert clusters.vertex_index.numpy().tolist() == [3, 0, -1]
+    assert np.allclose(clusters.vertex_values(values_wp).numpy(), [12.0, 4.0, 0.0])
+    face_labels_wp = wp.array([7, 9], dtype=wp.int32, device=device)
+    assert clusters.face_values(face_labels_wp).numpy().tolist() == [9, 0]
+    with pytest.raises(ValueError, match="one entry per input face"):
+        clusters.face_values(labels_wp)
+    with pytest.raises(TypeError, match="cannot carry"):
+        clusters.vertex_values(wp.zeros(4, dtype=wp.mat22, device=device))
+
+    chained = points.then(
+        od.interpolation.Provenance.from_rows(
+            wp.array([[2, 3], [1, -1]], dtype=wp.int32, device=device),
+            wp.array([[0.5, 0.5], [1.0, 0.0]], dtype=wp.float32, device=device),
+            no_faces,
+            4,
+            0,
+        )
+    )
+    step_np = od.interpolation.Provenance.from_rows(
+        wp.array([[2, 3], [1, -1]], dtype=wp.int32, device=device),
+        wp.array([[0.5, 0.5], [1.0, 0.0]], dtype=wp.float32, device=device),
+        no_faces,
+        4,
+        0,
+    ).vertex_values(points.vertex_values(ends_wp))
+    assert np.allclose(chained.vertex_values(ends_wp).numpy(), step_np.numpy())
+    assert np.allclose(chained.vertex_values(ends_wp).numpy(), [1.5, 4.0])
+    with pytest.raises(ValueError, match="is not this edit's output"):
+        clusters.then(points)
+
+    identity = od.interpolation.Provenance.identity(4, 0, device)
+    assert identity.vertex_values(labels_wp).numpy().tolist() == [10, 11, 12, 13]
 
 
 @pytest.mark.parametrize(

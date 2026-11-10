@@ -3321,6 +3321,36 @@
    "memset": 2
   }
  },
+ "benchmarks/test_interpolation.py::test_compose_operators[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_index_operators[sphere_small-ordito-cuda-from_index]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "memset": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_index_operators[sphere_small-ordito-cuda-representatives]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_interpolate_barycentric[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_interpolation.py::test_interpolate_from_points[sphere_small-ordito-cuda-64]": {
   "counts": {
    "launch": 1,
@@ -3335,11 +3365,72 @@
    "memset": 1
   }
  },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cuda-from_clusters]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "memset": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cuda-from_edge_points]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cuda-from_rows]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cuda-identity]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_face_values[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_then[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 10,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_vertex_values[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_interpolation.py::test_transfer_onto_vertices[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
    "alloc": 2,
    "memset": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_transfer_through_index[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_interpolation.py::test_transfer_through_operator[sphere_small-ordito-cuda]": {
@@ -6992,6 +7083,16 @@
    "d2h": 1,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "d2d": 1,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 2
   }
  },
  "benchmarks/test_repair.py::test_straighten_boundary[sphere_small-ordito-cuda]": {

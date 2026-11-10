@@ -471,7 +471,7 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[d],
             ]
-            for d in (wp.vec3, wp.vec3d)
+            for d in (wp.vec3, wp.vec3d, wp.int32)
         },
     )
 

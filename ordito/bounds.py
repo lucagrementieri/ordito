@@ -19,7 +19,7 @@ mesh query in the package derives from its input's extent.
 from __future__ import annotations
 
 import math
-from typing import Literal, cast
+from typing import Literal, cast, overload
 
 import numpy as np
 import warp as wp
@@ -582,6 +582,7 @@ def crop_points(
     return kept, indices
 
 
+@overload
 def crop_mesh(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -589,7 +590,30 @@ def crop_mesh(
     max_bound: wp.vec3,
     *,
     rotation: wp.mat33 | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def crop_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    min_bound: wp.vec3,
+    max_bound: wp.vec3,
+    *,
+    rotation: wp.mat33 | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def crop_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    min_bound: wp.vec3,
+    max_bound: wp.vec3,
+    *,
+    rotation: wp.mat33 | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Keep the faces whose three vertices all lie inside a box, reindexed from zero.
 
@@ -606,12 +630,18 @@ def crop_mesh(
         World-to-box frame as ``wp.mat33``, rows being the box axes; ``None`` crops to the
         axis-aligned box. Same argument as
         [`crop_points`][ordito.bounds.crop_points]'s.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
         ``(n_sub_vertices,)`` and ``(3 * n_sub_faces,)`` compact ``(sub_vertices, sub_faces)`` on
         ``vertices.device``, carrying only the vertices the kept faces reference.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of an input
+        vertex, and each output face of the input face it is.
 
     Raises
     ------
@@ -670,9 +700,14 @@ def crop_mesh(
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
+        empty_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+        if return_provenance:
+            provenance = od.interpolation.Provenance(
+                empty_index, empty_index, None, vertices.size, 0
+            )
+            return empty_vertices, empty_index, provenance
+        return empty_vertices, empty_index
     # ``submesh_from_vertex_mask(..., face_mode="all")`` over the box mask, with each corner's box
     # test taken in the marking pass itself, so the mask is neither launched nor stored.
     face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
@@ -692,10 +727,15 @@ def crop_mesh(
         ],
         device=device,
     )
-    sub_vertices, sub_faces, _, _ = _compact_marked_submesh(
-        vertices, faces, face_mask, ranks, keep_masked=True, with_index=False
+    sub_vertices, sub_faces, vertex_index, _ = _compact_marked_submesh(
+        vertices, faces, face_mask, ranks, keep_masked=True, with_index=return_provenance
     )
-    return sub_vertices, sub_faces
+    if not return_provenance:
+        return sub_vertices, sub_faces
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(face_mask), None, vertices.size, n_faces
+    )
+    return sub_vertices, sub_faces, provenance
 
 
 def _box_indices(

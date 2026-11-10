@@ -28,6 +28,7 @@ from ordito.kernels import remesh as kernel_remesh
 from ordito.triangles import FaceQualityMetric
 from tests.comparisons import (
     assert_nearest_bijection,
+    assert_provenance_describes,
     canonical_winding,
     hausdorff_surface_two_sided,
     lexsort_rows,
@@ -2502,15 +2503,15 @@ def test_quadric_decimate_provenance_maps_are_consistent(
     n_input_vertices = vertices_wp.size
     faces_np = np.asarray(mesh_tm.faces)
 
-    out_vertices_wp, out_faces_wp, vertex_index_wp, face_index_wp = od.remesh.quadric_decimate(
-        vertices_wp, faces_wp, target_ratio=target_ratio, return_index=True
+    out_vertices_wp, out_faces_wp, provenance = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_ratio=target_ratio, return_provenance=True
     )
     n_out_vertices = out_vertices_wp.size
     n_out_faces = out_faces_wp.size // 3
     assert n_out_faces < faces_np.shape[0]  # something was actually decimated
 
-    vertex_index_np = vertex_index_wp.numpy()
-    face_index_np = face_index_wp.numpy()
+    vertex_index_np = _cluster_of_each_input(provenance)
+    face_index_np = provenance.face_index.numpy()
     assert vertex_index_np.shape == (n_input_vertices,)
     assert face_index_np.shape == (n_out_faces,)
     assert vertex_index_np.max() < n_out_vertices
@@ -2556,13 +2557,14 @@ def test_quadric_decimate_provenance_on_degenerate_inputs(
     faces_np = np.array([0, 1, 2], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    kept_vertices_wp, kept_faces_wp, vertex_index_wp, face_index_wp = od.remesh.quadric_decimate(
-        vertices_wp, faces_wp, target_faces=8, return_index=True
+    kept_vertices_wp, kept_faces_wp, provenance = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_faces=8, return_provenance=True
     )
     assert np.array_equal(kept_vertices_wp.numpy(), vertices_np[:3])
     assert np.array_equal(kept_faces_wp.numpy(), faces_np)
-    assert np.array_equal(vertex_index_wp.numpy(), np.array([0, 1, 2, -1]))
-    assert np.array_equal(face_index_wp.numpy(), np.arange(1))
+    assert np.array_equal(_cluster_of_each_input(provenance), np.array([0, 1, 2, -1]))
+    assert np.array_equal(provenance.vertex_index.numpy(), np.arange(3))
+    assert np.array_equal(provenance.face_index.numpy(), np.arange(1))
 
     # A mesh with nothing unreferenced is untouched by that compaction, which is what keeps the
     # no-op path a pass-through for every ordinary input.
@@ -2578,10 +2580,74 @@ def test_quadric_decimate_provenance_on_degenerate_inputs(
     grid_vertices_wp, grid_faces_wp = numpy_to_warp(
         grid_vertices_np, np.asarray(grid_tm.faces, dtype=np.int32).reshape(-1), device
     )
-    _vertices_wp, _faces_wp, grid_index_wp, _face_wp = od.remesh.quadric_decimate(
-        grid_vertices_wp, grid_faces_wp, target_faces=8, return_index=True
+    _vertices_wp, _faces_wp, grid_provenance = od.remesh.quadric_decimate(
+        grid_vertices_wp, grid_faces_wp, target_faces=8, return_provenance=True
     )
-    assert int(grid_index_wp.numpy()[-1]) == -1  # the unreferenced vertex
+    assert int(_cluster_of_each_input(grid_provenance)[-1]) == -1  # the unreferenced vertex
+
+
+def _cluster_of_each_input(provenance: od.interpolation.Provenance) -> np.ndarray:
+    """Return the output vertex each input vertex of a cluster provenance merged into, or -1."""
+    assert provenance.vertex_operator is not None
+    operator_np = bsr_to_csr(provenance.vertex_operator).tocoo()
+    cluster_np = np.full(provenance.n_vertices, -1, dtype=np.int64)
+    cluster_np[operator_np.col] = operator_np.row
+    return cluster_np
+
+
+@pytest.mark.parametrize("contraction", ["average", "closest"])
+@pytest.mark.parametrize("method", ["open3d", "meshlab"])
+def test_decimation_provenance_carries_fields(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], method: str, contraction: str
+) -> None:
+    """
+    Not a library comparison: the decimations' provenance against the meshes they returned.
+
+    A cluster decimation's cell means over its vertices are ``method="open3d"``'s output exactly;
+    the corner-weighted means of ``"meshlab"`` are not (checked only as averages within each cell's
+    span), and ``"closest"`` copies one input vertex. Each output face's source face, renumbered
+    through the clusters, is the output face. The quadric collapse's representative is a member of
+    the cluster its operator averages.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    kwargs: dict[str, Any] = {"method": method, "contraction": contraction, "voxel_size": 0.2}
+    new_v, new_f, provenance = od.remesh.cluster_decimate(
+        vertices_wp, faces_wp, return_provenance=True, **kwargs
+    )
+    reproduces = contraction == "closest" or method == "open3d"
+    assert_provenance_describes(
+        provenance,
+        vertices_wp,
+        faces_wp,
+        new_v,
+        new_f,
+        positions_reproduce=reproduces,
+        faces_inside_sources=False,
+    )
+    if contraction == "average":
+        cluster_np = _cluster_of_each_input(provenance)
+        mapped_np = cluster_np[faces_wp.numpy().reshape(-1, 3)[provenance.face_index.numpy()]]
+        assert np.array_equal(
+            np.sort(mapped_np, axis=1), np.sort(new_f.numpy().reshape(-1, 3), axis=1)
+        )
+        rep_np = provenance.vertex_index.numpy()
+        assert np.array_equal(cluster_np[rep_np], np.arange(new_v.size))
+
+    quadric_v, quadric_f, quadric = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_ratio=0.3, return_provenance=True
+    )
+    assert_provenance_describes(
+        quadric,
+        vertices_wp,
+        faces_wp,
+        quadric_v,
+        quadric_f,
+        positions_reproduce=False,
+        faces_inside_sources=False,
+    )
+    cluster_np = _cluster_of_each_input(quadric)
+    assert np.array_equal(cluster_np[quadric.vertex_index.numpy()], np.arange(quadric_v.size))
 
 
 # ---------------------------------------------------------------------------
@@ -3503,6 +3569,63 @@ def test_subdivide_edges_change_no_answer(
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+def test_subdivide_provenance_describes_the_result(
+    mesh_name: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Not a library comparison: no reference reports where a subdivision's vertices came from.
+
+    The provenance is checked against the mesh it came with: the midpoints carried by their two
+    endpoints reproduce the output positions, every child face lies inside the parent it names,
+    each parent has four children, and a label carried by the representative comes from an
+    endpoint of the midpoint's edge. Two passes chained with ``then`` equal the second pass's
+    output from the first input.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_vertices, n_faces = vertices_wp.size, faces_wp.size // 3
+    once_v, once_f, first = od.remesh.subdivide(vertices_wp, faces_wp, return_provenance=True)
+    assert_provenance_describes(first, vertices_wp, faces_wp, once_v, once_f)
+    assert np.array_equal(
+        np.bincount(first.face_index.numpy(), minlength=n_faces), np.full(n_faces, 4)
+    )
+    unique_edges_np = od.edges.edges_unique(faces_wp)[0].numpy()
+    representative_np = first.vertex_index.numpy()
+    assert np.array_equal(representative_np[:n_vertices], np.arange(n_vertices))
+    assert np.array_equal(representative_np[n_vertices:], unique_edges_np.min(axis=1))
+
+    twice_v, twice_f, second = od.remesh.subdivide(once_v, once_f, return_provenance=True)
+    chained = first.then(second)
+    assert_provenance_describes(chained, vertices_wp, faces_wp, twice_v, twice_f)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_subdivide_loop_and_to_size_provenance_describe_the_result(
+    mesh_name: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Not a library comparison: the refinements' provenance against the meshes they returned.
+
+    Loop's operator reproduces its relocated positions (its faces leave the input surface, so
+    only the counts and positions are checked); ``subdivide_to_size``'s chained midpoints -- a
+    midpoint of midpoints after several passes -- reproduce its positions, and each refined face
+    lies inside its source face.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    loop_v, loop_f, loop = od.remesh.subdivide_loop(vertices_wp, faces_wp, return_provenance=True)
+    assert_provenance_describes(
+        loop, vertices_wp, faces_wp, loop_v, loop_f, faces_inside_sources=False
+    )
+    max_edge = 0.3 * float(od.edges.edges_unique_length(vertices_wp, faces_wp).numpy().max())
+    sized_v, sized_f, sized = od.remesh.subdivide_to_size(
+        vertices_wp, faces_wp, max_edge, return_provenance=True
+    )
+    assert sized_v.size > vertices_wp.size  # several passes ran
+    assert_provenance_describes(sized, vertices_wp, faces_wp, sized_v, sized_f)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("subdivide_loop", "igl")
 def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureRequest) -> None:
     """
@@ -3722,9 +3845,11 @@ def test_subdivide_loop_operator_reproduces_its_own_positions(
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices_wp.size
 
-    moved_wp, subdivided_faces_wp, operator = od.remesh.subdivide_loop(
-        vertices_wp, faces_wp, return_operator=True
+    moved_wp, subdivided_faces_wp, provenance = od.remesh.subdivide_loop(
+        vertices_wp, faces_wp, return_provenance=True
     )
+    operator = provenance.vertex_operator
+    assert operator is not None
     assert int(operator.nrow) == moved_wp.size
     assert int(operator.ncol) == n_vertices
 
@@ -3759,9 +3884,11 @@ def test_subdivide_loop_operator_carries_a_field(
     n_vertices = vertices_wp.size
     device = vertices_wp.device
 
-    moved_wp, _faces_wp, operator = od.remesh.subdivide_loop(
-        vertices_wp, faces_wp, return_operator=True
+    moved_wp, _faces_wp, provenance = od.remesh.subdivide_loop(
+        vertices_wp, faces_wp, return_provenance=True
     )
+    operator = provenance.vertex_operator
+    assert operator is not None
     n_out = moved_wp.size
 
     constant_wp = wp.full(n_vertices, wp.float32(2.5), dtype=wp.float32, device=device)
@@ -3808,21 +3935,23 @@ def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
     )
     faces_wp = warp_empty(0, wp.int32, device)
     _vertices_wp, _faces_wp, identity = od.remesh.subdivide_loop(
-        vertices_wp, faces_wp, return_operator=True
+        vertices_wp, faces_wp, return_provenance=True
     )
-    assert int(identity.nrow) == 3
-    assert int(identity.ncol) == 3
+    assert identity.vertex_index.size == 3
     field_wp = wp.array(
         np.array([1.0, 2.0, 3.0], dtype=np.float32), dtype=wp.float32, device=device
     )
-    assert np.allclose(
-        od.interpolation.transfer_through_operator(field_wp, identity).numpy(),
-        np.array([1.0, 2.0, 3.0]),
-    )
+    assert np.allclose(identity.vertex_values(field_wp).numpy(), np.array([1.0, 2.0, 3.0]))
 
+    with pytest.raises(ValueError, match="one entry per input vertex"):
+        identity.vertex_values(wp.zeros(2, dtype=wp.float32, device=device))
+    loop_operator = od.remesh.subdivide_loop(
+        vertices_wp, wp.array([0, 1, 2], dtype=wp.int32, device=device), return_provenance=True
+    )[2].vertex_operator
+    assert loop_operator is not None
     with pytest.raises(ValueError, match="columns"):
         od.interpolation.transfer_through_operator(
-            wp.zeros(2, dtype=wp.float32, device=device), identity
+            wp.zeros(2, dtype=wp.float32, device=device), loop_operator
         )
 
 
@@ -3913,15 +4042,16 @@ def _assert_matches_trimesh_subdivide_to_size(
 
     The meshes are equal up to numbering
     ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match],
-    identical up to float32 storage), and the ``return_index`` histograms equal.
+    identical up to float32 storage), and the face provenance histograms equal.
     """
-    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
-        mesh_wp.points, mesh_wp.indices, max_edge, return_index=True, **max_iter
+    new_v_wp, new_f_wp, provenance = od.remesh.subdivide_to_size(
+        mesh_wp.points, mesh_wp.indices, max_edge, return_provenance=True, **max_iter
     )
+    index_wp = provenance.face_index
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
 
-    # ``subdivide_to_size`` returns two values or three depending on ``return_index``, and
-    # trimesh declares no overloads, so the arity is asserted here rather than inferred.
+    # trimesh's ``subdivide_to_size`` returns two values or three depending on ``return_index``,
+    # and declares no overloads, so the arity is asserted here rather than inferred.
     ref_v, ref_f, ref_index = cast(
         "tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.int64]]",
         tm.remesh.subdivide_to_size(
@@ -3985,9 +4115,10 @@ def test_subdivide_to_size_preserves_surface_and_reports_its_source_faces(
     n_in_faces = faces_np.shape[0]
     max_edge = 0.4 * _max_edge_length(vertices_np, faces_np)
 
-    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
-        mesh_wp.points, mesh_wp.indices, max_edge, return_index=True
+    new_v_wp, new_f_wp, provenance = od.remesh.subdivide_to_size(
+        mesh_wp.points, mesh_wp.indices, max_edge, return_provenance=True
     )
+    index_wp = provenance.face_index
     new_v_np = new_v_wp.numpy()
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
     index_np = index_wp.numpy()
@@ -4415,7 +4546,7 @@ _REMESH_EMPTY_MESH_CASES = [
     ("flip_by_objective", lambda v, f: (od.remesh.flip_by_objective(v, f),)),
     ("subdivide", lambda v, f: od.remesh.subdivide(v, f)),
     ("subdivide_loop", lambda v, f: od.remesh.subdivide_loop(v, f)),
-    ("subdivide_to_size", lambda v, f: od.remesh.subdivide_to_size(v, f, 1.0, return_index=True)),
+    ("subdivide_to_size", lambda v, f: od.remesh.subdivide_to_size(v, f, 1.0)),
     (
         "subdivide_region_to_size",
         lambda v, f: (od.remesh.subdivide_region_to_size(v, f, _no_region(f), max_edge=0.1)[1],),
@@ -4662,40 +4793,55 @@ def test_split_edges_is_crack_free_for_an_arbitrary_mask(
     assert np.isclose(warp_to_trimesh(split_v, split_f).area, mesh_tm.area, rtol=1e-5)
 
 
-def test_split_edges_carries_a_per_face_index(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """``index`` rides through the split, and ``None`` reports provenance into the input faces."""
+def test_split_edges_reports_provenance(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: the provenance describes the mesh the split returned.
+
+    Every input face appears four times under a 1-to-4 split, carrying the input positions
+    through the provenance reproduces the output's (the midpoints by their two endpoints), and a
+    per-face label follows its face. A partial split with chosen positions at a quarter of each
+    edge is carried at its parameter, not the midpoint.
+    """
     _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     n_faces = mesh_wp.indices.size // 3
 
-    _v, faces_wp, provenance = _split_every_edge(mesh_wp, return_index=True)
-    provenance_np = provenance.numpy()
-    assert provenance_np.size == faces_wp.size // 3
-    assert provenance_np.min() >= 0
-    assert provenance_np.max() < n_faces
-    # A 1-to-4 split means every input face appears exactly four times.
-    assert np.array_equal(np.bincount(provenance_np, minlength=n_faces), np.full(n_faces, 4))
-
-    # An explicit index is carried rather than replaced: label faces by parity and check it
-    # survives.
+    split_v, faces_wp, provenance = _split_every_edge(mesh_wp, return_provenance=True)
+    face_index_np = provenance.face_index.numpy()
+    assert face_index_np.size == faces_wp.size // 3
+    assert np.array_equal(np.bincount(face_index_np, minlength=n_faces), np.full(n_faces, 4))
+    carried_np = provenance.vertex_values(mesh_wp.points).numpy()
+    assert np.allclose(carried_np, split_v.numpy(), rtol=1e-6, atol=1e-6)
     labels_np = (np.arange(n_faces) % 2).astype(np.int32)
-    _v2, _f2, carried = _split_every_edge(
-        mesh_wp, index=wp.array(labels_np, dtype=wp.int32, device=device), return_index=True
+    labels_wp = wp.array(labels_np, dtype=wp.int32, device=device)
+    assert np.array_equal(provenance.face_values(labels_wp).numpy(), labels_np[face_index_np])
+
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
+    mask_np = np.arange(int(unique_edges.shape[0])) % 3 == 0
+    edges_np = unique_edges.numpy()[mask_np]
+    points_np = mesh_wp.points.numpy()
+    quarter_np = 0.75 * points_np[edges_np[:, 0]] + 0.25 * points_np[edges_np[:, 1]]
+    quarter_v, _quarter_f, quarter = od.remesh.split_edges(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(mask_np, dtype=wp.bool, device=device),
+        wp.array(quarter_np, dtype=wp.vec3, device=device),
+        unique_edges=unique_edges,
+        inverse=inverse,
+        return_provenance=True,
     )
-    assert np.array_equal(carried.numpy(), labels_np[provenance_np])
+    carried_np = quarter.vertex_values(mesh_wp.points).numpy()
+    assert np.allclose(carried_np, quarter_v.numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_split_edges_empty_mask_is_a_copy(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: buffer ownership is ordito's contract, not a reference's.
 
-    With nothing flagged the mesh comes back unchanged and the default ``index`` is the identity;
-    a caller's own ``index`` is copied rather than handed straight back, so that ownership does not
-    silently depend on whether any edge happened to be flagged.
+    With nothing flagged the mesh comes back unchanged, as fresh buffers, and the provenance is the
+    identity.
 
-    **Bug class excluded:** a caller writing into the returned index destroying its own input.
-    **Mutation probe, measured against a detached pre-fix worktree:** returning ``carried``
-    unchanged makes the write below land in ``carry`` as well, failing the last assert.
+    **Bug class excluded:** a caller writing into the returned faces destroying its own input.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
@@ -4703,32 +4849,19 @@ def test_split_edges_empty_mask_is_a_copy(sphere_irregular: tuple[tm.Trimesh, wp
     nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=device)
     n_faces = mesh_wp.indices.size // 3
 
-    split_v, split_f, index = od.remesh.split_edges(
+    split_v, split_f, provenance = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         nothing,
         unique_edges=unique_edges,
         inverse=inverse,
-        return_index=True,
+        return_provenance=True,
     )
     assert np.array_equal(split_f.numpy(), mesh_wp.indices.numpy())
     assert np.allclose(split_v.numpy(), mesh_wp.points.numpy())
-    assert np.array_equal(index.numpy(), np.arange(n_faces))
-
-    carry = od.array.arange(n_faces, device=device)
-    _split_v, _split_f, index = od.remesh.split_edges(
-        mesh_wp.points,
-        mesh_wp.indices,
-        nothing,
-        unique_edges=unique_edges,
-        inverse=inverse,
-        index=carry,
-        return_index=True,
-    )
-    assert index.ptr != carry.ptr
-    assert np.array_equal(index.numpy(), carry.numpy())
-    index.fill_(-1)
-    assert np.array_equal(carry.numpy(), np.arange(n_faces))
+    assert np.array_equal(provenance.face_index.numpy(), np.arange(n_faces))
+    assert np.array_equal(provenance.vertex_index.numpy(), np.arange(mesh_wp.points.size))
+    assert split_f.ptr != mesh_wp.indices.ptr
 
 
 def test_split_edges_validation(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -4736,7 +4869,6 @@ def test_split_edges_validation(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) ->
     device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     n_edges = int(unique_edges.shape[0])
-    n_faces = mesh_wp.indices.size // 3
     full_mask = wp.full(n_edges, True, dtype=wp.bool, device=device)
 
     with pytest.raises(ValueError, match="one entry per unique edge"):
@@ -4755,15 +4887,6 @@ def test_split_edges_validation(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) ->
             wp.zeros(n_edges - 1, dtype=wp.vec3, device=device),
             unique_edges=unique_edges,
             inverse=inverse,
-        )
-    with pytest.raises(ValueError, match="one entry per face"):
-        od.remesh.split_edges(
-            mesh_wp.points,
-            mesh_wp.indices,
-            full_mask,
-            unique_edges=unique_edges,
-            inverse=inverse,
-            index=wp.zeros(n_faces + 1, dtype=wp.int32, device=device),
         )
 
 

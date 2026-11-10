@@ -3025,6 +3025,34 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_interpolation.py::test_compose_operators[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_index_operators[sphere_small-ordito-cpu-from_index]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_index_operators[sphere_small-ordito-cpu-representatives]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_interpolate_barycentric[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_interpolation.py::test_interpolate_from_points[sphere_small-ordito-cpu-64]": {
   "counts": {
    "launch": 1,
@@ -3037,10 +3065,67 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cpu-from_clusters]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cpu-from_edge_points]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cpu-from_rows]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_constructors[sphere_small-ordito-cpu-identity]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_face_values[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_then[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 10,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_provenance_vertex_values[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_interpolation.py::test_transfer_onto_vertices[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
    "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_transfer_through_index[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_interpolation.py::test_transfer_through_operator[sphere_small-ordito-cpu]": {
@@ -6353,6 +6438,16 @@
    "readback": 1,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1,
+   "sort": 2
   }
  },
  "benchmarks/test_repair.py::test_straighten_boundary[sphere_small-ordito-cpu]": {

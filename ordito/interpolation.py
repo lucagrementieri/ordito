@@ -13,10 +13,16 @@ These are unweighted means. For an area- or angle-weighted transfer of *normals*
 [`ordito.normals`][ordito.normals]; for a UV-space resampling, see
 [`ordito.texture`][ordito.texture].
 
+[`Provenance`][ordito.interpolation.Provenance] moves fields across a topology edit: every function
+that rebuilds a mesh's connectivity (a subdivision, a decimation, a selection, a cut, a repair)
+reports one with ``return_provenance=True``, and it carries any per-vertex or per-face attribute --
+a colour, a UV, a label -- onto the edit's output exactly, with the weights the edit itself used.
 [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices] moves a field between two
-*different* meshes instead of between one mesh's element types, by closest-point projection onto the
-source surface — the operation you need after a remesh or a decimation has changed the vertex set
-under a field. [`interpolate_from_points`][ordito.interpolation.interpolate_from_points] drops the
+*different* meshes instead, by closest-point projection onto the source surface — the operation
+for meshes related only by geometry, such as a reconstruction or a remesh that reprojects its
+vertices. [`interpolate_barycentric`][ordito.interpolation.interpolate_barycentric] reads a field at
+points given by a face and barycentric coordinates, the form every surface sample and closest-point
+query reports. [`interpolate_from_points`][ordito.interpolation.interpolate_from_points] drops the
 mesh requirement entirely: it interpolates a field known on a scattered *cloud*, which is the only
 function here whose source has no connectivity to average over, and so the only one that needs a
 kernel width rather than an incidence structure.
@@ -25,7 +31,7 @@ kernel width rather than an incidence structure.
 from __future__ import annotations
 
 import math
-from typing import TypeVar
+from typing import NamedTuple, TypeVar, cast
 
 import warp as wp
 
@@ -36,6 +42,7 @@ from ordito._common import (
     ball_grid_cell_width,
     require_nonempty_mesh,
     require_same_device,
+    scan_count,
     tiled_ball_walk,
 )
 from ordito.config import is_deterministic
@@ -451,18 +458,112 @@ def transfer_onto_vertices(
     return out_values, distance
 
 
+def interpolate_barycentric(
+    faces: wp.array[wp.int32],
+    face_index: wp.array[wp.int32],
+    barycentric: wp.array[wp.vec3],
+    vertex_values: wp.array[DType],
+) -> wp.array[DType]:
+    """
+    Per-vertex field values at points given by a face and barycentric coordinates.
+
+    The attribute half of every query that lands on a surface:
+    [`sample_surface`][ordito.sample.sample_surface] with ``return_barycentric=True``,
+    [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh] and the ray casts all report
+    a face and barycentric coordinates per point, and this reads any per-vertex field there -- a
+    colour, a UV, a normal, a scalar. Point ``i`` reads
+    ``u * values[a] + v * values[b] + w * values[c]`` with ``(a, b, c)`` the corners of face
+    ``face_index[i]`` and ``(u, v, w) = barycentric[i]``.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    face_index
+        ``(n_points,)`` face of each point. A negative entry marks a point on no face (a missed
+        query) and reads zero.
+    barycentric
+        ``(n_points,)`` barycentric coordinates of each point in its face, in corner order.
+    vertex_values
+        ``(n_vertices,)`` field on the vertices: ``wp.float32``, ``wp.vec2``, ``wp.vec3`` or
+        ``wp.vec4``; see [`DType`][ordito.interpolation.DType].
+
+    Returns
+    -------
+    wp.array[DType]
+        ``(n_points,)`` field values on ``vertex_values.device``, of ``vertex_values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``face_index`` and ``barycentric`` differ in length.
+    RuntimeError
+        If ``faces``, ``face_index``, ``barycentric`` and ``vertex_values`` are not all on one
+        device.
+
+    See Also
+    --------
+    [`ordito.triangles.points_to_barycentric`][ordito.triangles.points_to_barycentric]
+        The coordinates of known points in known faces.
+    [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices]
+        The same reading at the closest surface point of arbitrary positions.
+
+    Examples
+    --------
+    The colour of surface samples, read from per-vertex colours:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    colors = wp.array(np.abs(vertices.numpy()), dtype=wp.vec3)
+    points, face_index, barycentric = od.sample.sample_surface(
+        vertices, faces, 100, seed=0, return_barycentric=True
+    )
+    sampled = od.interpolation.interpolate_barycentric(faces, face_index, barycentric, colors)
+    print(sampled.shape)  # (100,)
+    positions = od.interpolation.interpolate_barycentric(faces, face_index, barycentric, vertices)
+    print(np.allclose(positions.numpy(), points.numpy(), atol=1e-6))  # True
+    ```
+    """
+    require_same_device(
+        faces=faces, face_index=face_index, barycentric=barycentric, vertex_values=vertex_values
+    )
+    n_points = face_index.size
+    if barycentric.size != n_points:
+        raise ValueError(
+            f"face_index and barycentric must have one entry per point, got {n_points} and "
+            f"{barycentric.size}"
+        )
+    device = vertex_values.device
+    kernel = kernel_interpolation.INTERPOLATE_BARYCENTRIC[vertex_values.dtype]
+    out_values = _launch.empty(n_points, dtype=vertex_values.dtype, device=device)
+    if n_points > 0:
+        _launch.launch(
+            kernel,
+            dim=n_points,
+            inputs=[faces, face_index, barycentric, vertex_values, out_values],
+            device=device,
+        )
+    return out_values
+
+
 def transfer_through_operator(
     values: wp.array[DType], operator: odt.BsrMatrix[wp.float32]
 ) -> wp.array[DType]:
     """
     Carry a per-vertex field through a topology edit, using the edit's own interpolation operator.
 
-    The companion of [`ordito.remesh.subdivide_loop`][ordito.remesh.subdivide_loop]'s
-    ``return_operator``: that pass moves *and* creates vertices, so an output vertex is an affine
-    combination of several input ones and no index map can express the correspondence. The operator
-    can, and applying it to a field is the same product that produced the new positions:
-    ``transfer_through_operator(vertices, P)`` reproduces the subdivided vertex buffer, which is
-    what makes this exact rather than a resampling.
+    The float half of [`Provenance.vertex_values`][ordito.interpolation.Provenance.vertex_values]:
+    an edit that moves *and* creates vertices, such as
+    [`ordito.remesh.subdivide_loop`][ordito.remesh.subdivide_loop], makes an output vertex an affine
+    combination of several input ones, which no index map can express. Its provenance's
+    ``vertex_operator`` can, and applying it to a field is the same product that produced the new
+    positions: ``transfer_through_operator(vertices, P)`` reproduces the subdivided vertex buffer,
+    which is what makes this exact rather than a resampling.
 
     Prefer this over
     [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices] whenever the operator
@@ -474,10 +575,10 @@ def transfer_through_operator(
     values
         ``(n_source,)`` field on the input vertices. Any **float32-based** Warp dtype closed
         under scaling and addition: ``wp.float32`` for a scalar, ``wp.vec2`` for a UV, ``wp.vec3``
-        for a normal or a colour. Not ``wp.float64`` -- see Notes.
+        for a normal or a colour, ``wp.vec4`` for an RGBA colour. Not ``wp.float64`` -- see Notes.
     operator
-        ``(n_out, n_source)`` interpolation matrix, as returned by
-        ``subdivide_loop(..., return_operator=True)``.
+        ``(n_out, n_source)`` interpolation matrix, such as a
+        [`Provenance`][ordito.interpolation.Provenance]'s ``vertex_operator``.
 
     Returns
     -------
@@ -498,7 +599,7 @@ def transfer_through_operator(
 
     ``warp.sparse.bsr_mv`` would serve for a ``float32`` field and nothing else -- its vector dtype
     has to match the matrix's 1x1 block -- so this goes through a small CSR kernel instead, which is
-    what makes the ``wp.vec2`` and ``wp.vec3`` cases (a UV, a colour) reachable at all.
+    what makes the vector cases (a UV, a colour) reachable at all.
 
     The field's scalar must be ``float32`` because the operator's weights are: Warp requires both
     operands of a product to share a scalar type, so a ``wp.float64`` field does not compile against
@@ -509,13 +610,11 @@ def transfer_through_operator(
 
     See Also
     --------
-    [`ordito.remesh.subdivide_loop`][ordito.remesh.subdivide_loop]
-        The one edit in this package that publishes such an operator.
+    [`Provenance`][ordito.interpolation.Provenance]
+        Which carries the operator of every topology edit in this package, and picks this
+        transfer or a gather by the field's dtype.
     [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices]
         The lossy alternative, for when the two meshes are related only by geometry.
-    [`ordito.array.gather`][ordito.array.gather]
-        What to use instead where the edit *can* report an index map -- ``split_edges`` and
-        ``subdivide_to_size`` both do, and a gather through their ``index`` is the whole transfer.
 
     Examples
     --------
@@ -528,9 +627,11 @@ def transfer_through_operator(
     import ordito as od
 
     vertices, faces = od.creation.icosphere(subdivisions=1)
-    fine_vertices, fine_faces, prolongation = od.remesh.subdivide_loop(
-        vertices, faces, return_operator=True
+    fine_vertices, fine_faces, provenance = od.remesh.subdivide_loop(
+        vertices, faces, return_provenance=True
     )
+    prolongation = provenance.vertex_operator
+    assert prolongation is not None
     print(prolongation.shape)  # (162, 42)
     moved = od.interpolation.transfer_through_operator(vertices, prolongation)
     print(np.allclose(moved.numpy(), fine_vertices.numpy(), atol=1e-6))  # True
@@ -555,6 +656,848 @@ def transfer_through_operator(
         device=device,
     )
     return out_values
+
+
+def transfer_through_index(values: wp.array[DType], index: wp.array[wp.int32]) -> wp.array[DType]:
+    """
+    Carry a field through a topology edit's index map: ``values[index]``, zero where it is ``-1``.
+
+    The copy half of [`Provenance`][ordito.interpolation.Provenance]: a face field follows an edit
+    through its ``face_index``, and a field that cannot be averaged -- a label, a mask, a
+    ``float64`` field -- through its ``vertex_index``. An output element with no source (an index
+    of ``-1``, such as a face a hole fill created) reads the dtype's zero, where
+    [`ordito.array.gather`][ordito.array.gather] would read out of bounds.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` field to carry: ``wp.bool``, ``wp.uint8``, ``wp.int32``, ``wp.int64``,
+        ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``vec3`` / ``vec4`` / ``vec2d`` /
+        ``vec3d`` / ``vec2i`` / ``vec3i`` or four-byte colour vector.
+    index
+        ``(m,)`` entry of ``values`` each output element copies, ``-1`` for none.
+
+    Returns
+    -------
+    wp.array[DType]
+        ``(m,)`` carried field on ``values.device``, of ``values``' dtype.
+
+    Raises
+    ------
+    TypeError
+        If ``values``' dtype is not one listed above.
+    RuntimeError
+        If ``values`` and ``index`` are not on one device.
+
+    See Also
+    --------
+    [`transfer_through_operator`][ordito.interpolation.transfer_through_operator]
+        The interpolating half, for a float field.
+    [`operator_representatives`][ordito.interpolation.operator_representatives]
+        The index map a label follows through an edit known only by its operator.
+
+    Examples
+    --------
+    Face labels follow a submesh, through its face map:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    labels = wp.array([10, 11, 12, 13], dtype=wp.int32)
+    index = wp.array([3, -1, 0], dtype=wp.int32)
+    print(od.interpolation.transfer_through_index(labels, index).numpy().tolist())  # [13, 0, 10]
+    ```
+    """
+    require_same_device(values=values, index=index)
+    if values.dtype not in kernel_interpolation.ATTRIBUTE_DTYPES:
+        raise TypeError(f"cannot carry a field of dtype {values.dtype} through an index map")
+    out_values = _launch.empty(index.size, dtype=values.dtype, device=values.device)
+    if index.size > 0:
+        _launch.launch(
+            kernel_interpolation.GATHER_OR_ZERO[values.dtype],
+            dim=index.size,
+            inputs=[values, index, values.dtype(), out_values],
+            device=values.device,
+        )
+    return cast("wp.array[DType]", out_values)
+
+
+def operator_from_index(index: wp.array[wp.int32], n_columns: int) -> odt.BsrMatrix[wp.float32]:
+    """
+    Sparse operator of an index map: row ``i`` holds a single ``1`` at column ``index[i]``.
+
+    The operator form of a copy -- a selection's, a repair's, a cut's ``vertex_index`` -- so it
+    chains with an interpolating edit through
+    [`compose_operators`][ordito.interpolation.compose_operators], and carrying a float field
+    through it with
+    [`transfer_through_operator`][ordito.interpolation.transfer_through_operator] is the gather. A
+    ``-1`` entry is an empty row, which reads zero.
+
+    Parameters
+    ----------
+    index
+        ``(n_rows,)`` column of each row, ``-1`` for an empty row.
+    n_columns
+        Column count, above every entry of ``index``.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_rows, n_columns)`` ``float32`` matrix on ``index.device``.
+
+    See Also
+    --------
+    [`operator_representatives`][ordito.interpolation.operator_representatives]
+        The way back, from an operator to the index map of its largest weights.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    operator = od.interpolation.operator_from_index(wp.array([2, -1, 0], dtype=wp.int32), 3)
+    print(operator.shape)  # (3, 3)
+    values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    moved = od.interpolation.transfer_through_operator(values, operator)
+    print(moved.numpy().tolist())  # [3.0, 0.0, 1.0]
+    ```
+    """
+    device = index.device
+    n = index.size
+    offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+    # One entry a row at most, so the buffers are sized by the rows and nothing is read back.
+    columns = _launch.empty(n, dtype=wp.int32, device=device)
+    weights = _launch.empty(n, dtype=wp.float32, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_interpolation.count_gather_rows, dim=n, inputs=[index, offsets], device=device
+        )
+        _launch.array_scan(offsets, out_array=offsets, inclusive=True)
+        _launch.launch(
+            kernel_interpolation.write_gather_rows,
+            dim=n,
+            inputs=[index, offsets],
+            outputs=[columns, weights],
+            device=device,
+        )
+    return od.array.bsr_from_csr(n, n_columns, offsets, columns, weights)
+
+
+def operator_representatives(operator: odt.BsrMatrix[wp.float32]) -> wp.array[wp.int32]:
+    """
+    Each row's column of largest weight: where a field that cannot be averaged is copied from.
+
+    An interpolating edit forms an output vertex from several inputs; an integer label cannot be
+    averaged over them, so it is copied from the one that weighs most -- the lower-numbered on a
+    tie, so a midpoint takes its lower endpoint's label and a cluster its lowest member's. This is
+    how [`Provenance`][ordito.interpolation.Provenance]'s ``vertex_index`` is derived from its
+    operator, so the two never disagree.
+
+    Parameters
+    ----------
+    operator
+        ``(n_rows, n_columns)`` ``float32`` interpolation matrix.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n_rows,)`` column of each row's largest weight, ``-1`` for an empty row, on the
+        operator's device.
+
+    See Also
+    --------
+    [`transfer_through_index`][ordito.interpolation.transfer_through_index]
+        Which carries a label through the result.
+
+    Examples
+    --------
+    Loop subdivision's operator, read for the vertex each output vertex takes its labels from:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    _, _, provenance = od.remesh.subdivide_loop(vertices, faces, return_provenance=True)
+    assert provenance.vertex_operator is not None
+    sources = od.interpolation.operator_representatives(provenance.vertex_operator)
+    print(sources.numpy()[:12].tolist() == list(range(12)))  # True
+    ```
+    """
+    n_rows = int(operator.nrow)
+    device = operator.offsets.device
+    representative = _launch.empty(n_rows, dtype=wp.int32, device=device)
+    if n_rows > 0:
+        _launch.launch(
+            kernel_interpolation.row_representatives,
+            dim=n_rows,
+            inputs=[operator.offsets, operator.columns, operator.values],
+            outputs=[representative],
+            device=device,
+        )
+    return representative
+
+
+def compose_operators(
+    first: odt.BsrMatrix[wp.float32], second: odt.BsrMatrix[wp.float32]
+) -> odt.BsrMatrix[wp.float32]:
+    """
+    Operator of two topology edits applied in turn: ``second @ first``.
+
+    ``first`` carries a field from a mesh to a second one and ``second`` from that to a third, so
+    their product carries it from the first mesh to the third in one transfer, and equals the two
+    transfers in turn up to ``float32`` rounding. Each row's entries are expanded through the other
+    operator and duplicate columns summed, so a vertex that is a midpoint of midpoints weighs the
+    corners of the face it lies in.
+
+    Parameters
+    ----------
+    first
+        ``(n_middle, n_columns)`` operator of the earlier edit.
+    second
+        ``(n_rows, n_middle)`` operator of the later edit.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_rows, n_columns)`` ``float32`` product on the operators' device.
+
+    Raises
+    ------
+    ValueError
+        If ``second``'s column count is not ``first``'s row count.
+    RuntimeError
+        If the two operators are not on one device.
+
+    See Also
+    --------
+    [`Provenance.then`][ordito.interpolation.Provenance.then]
+        The same chaining for a whole provenance.
+    [`operator_from_index`][ordito.interpolation.operator_from_index]
+        An index map as an operator, to chain a copy with an interpolation.
+
+    Examples
+    --------
+    Two midpoint subdivisions of a box, as one operator from its 8 corners:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    once, once_faces, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
+    twice, _, second = od.remesh.subdivide(once, once_faces, return_provenance=True)
+    assert first.vertex_operator is not None and second.vertex_operator is not None
+    both = od.interpolation.compose_operators(first.vertex_operator, second.vertex_operator)
+    print(both.shape)  # (98, 8)
+    moved = od.interpolation.transfer_through_operator(vertices, both)
+    print(np.allclose(moved.numpy(), twice.numpy()))  # True
+    ```
+    """
+    require_same_device(first=first.offsets, second=second.offsets)
+    if int(second.ncol) != int(first.nrow):
+        raise ValueError(
+            f"second has {second.ncol} columns but first has {first.nrow} rows; the operators "
+            "do not chain"
+        )
+    device = first.offsets.device
+    n_out = int(second.nrow)
+    offsets = _launch.zeros(n_out + 1, dtype=wp.int32, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_interpolation.count_composed_rows,
+            dim=n_out,
+            inputs=[first.offsets, second.offsets, second.columns, offsets],
+            device=device,
+        )
+    # The product's triplet count sizes its buffers: one tail readback.
+    n_triplets = scan_count(_launch.view(offsets, 1, n_out + 1))
+    rows, columns, weights = od.array.triplet_buffers(n_triplets, wp.float32, device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_interpolation.write_composed_rows,
+            dim=n_out,
+            inputs=[
+                first.offsets,
+                first.columns,
+                first.values,
+                second.offsets,
+                second.columns,
+                second.values,
+                offsets,
+            ],
+            outputs=[rows, columns, weights],
+            device=device,
+        )
+    return od.array.csr_from_triplets(n_out, int(first.ncol), rows, columns, weights)
+
+
+class Provenance(NamedTuple):
+    """
+    Where each element of a topology edit's output came from, and how a field follows it.
+
+    Every function that rebuilds a mesh's connectivity -- a subdivision, a decimation, a
+    selection, a cut, a repair -- takes ``return_provenance=True`` and then returns one of these
+    after the new vertices and faces. It is how a per-vertex or per-face attribute (a colour, a UV,
+    a label, a normal, a scalar) survives the edit:
+    ``provenance.vertex_values(colors)`` and ``provenance.face_values(labels)`` are the attribute
+    on the output mesh.
+
+    An output vertex has a **representative** input vertex, ``vertex_index``, which is where a
+    field that cannot be averaged -- an integer label, a mask -- is copied from. Where the edit
+    creates vertices *between* input vertices (a midpoint, a crossing, a collapse) it also reports
+    ``vertex_operator``, the sparse matrix of weights the new positions were formed with, and a
+    float field is carried by the same weights, so carrying the positions themselves reproduces
+    the output vertices. An output face always has a single source face, ``face_index``.
+
+    Two edits chain with [`then`][ordito.interpolation.Provenance.then], so a pipeline of edits
+    still carries its fields from the first input to the last output.
+
+    It is a plain record of arrays, and every method is one of this module's functions on its
+    fields, which work as well on arrays a caller holds without one:
+    [`transfer_through_operator`][ordito.interpolation.transfer_through_operator] and
+    [`transfer_through_index`][ordito.interpolation.transfer_through_index] carry fields,
+    [`compose_operators`][ordito.interpolation.compose_operators] chains operators,
+    [`operator_from_index`][ordito.interpolation.operator_from_index] turns a copy into an operator,
+    and [`operator_representatives`][ordito.interpolation.operator_representatives] gives the
+    ``vertex_index`` of an operator.
+
+    Examples
+    --------
+    Colours carried through a subdivision: the original vertices keep theirs and every midpoint
+    gets the mean of its edge's two:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    colors = wp.array(np.abs(vertices.numpy()) * 2.0, dtype=wp.vec3)
+    new_vertices, new_faces, provenance = od.remesh.subdivide(
+        vertices, faces, return_provenance=True
+    )
+    new_colors = provenance.vertex_values(colors)
+    print(new_colors.shape)  # (26,)
+    moved = provenance.vertex_values(vertices)
+    print(np.allclose(moved.numpy(), new_vertices.numpy()))  # True
+    face_ids = od.array.arange(12, device=faces.device)
+    print(provenance.face_values(face_ids).numpy()[:8].tolist())  # [0, 0, 0, 0, 1, 1, 1, 1]
+    ```
+    """
+
+    vertex_index: wp.array[wp.int32]
+    """``(n_out_vertices,)`` representative input vertex of each output vertex, ``-1`` for one
+    with no source: ``operator_representatives(vertex_operator)`` when there is an operator."""
+    face_index: wp.array[wp.int32]
+    """``(n_out_faces,)`` input face each output face came from, ``-1`` for one with no source
+    (a patch that fills a hole)."""
+    vertex_operator: odt.BsrMatrix[wp.float32] | None
+    """``(n_out_vertices, n_vertices)`` interpolation weights, each row summing to one, or ``None``
+    when every output vertex is a copy of its representative."""
+    n_vertices: int
+    """Input vertex count, the operator's column count."""
+    n_faces: int
+    """Input face count."""
+
+    @classmethod
+    def identity(cls, n_vertices: int, n_faces: int, device: wp.DeviceLike = None) -> Provenance:
+        """
+        Provenance of an edit that changed no vertex or face, every element its own source.
+
+        Parameters
+        ----------
+        n_vertices
+            Vertex count.
+        n_faces
+            Face count.
+        device
+            Device of the index maps.
+
+        Returns
+        -------
+        Provenance
+            The identity provenance.
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        provenance = od.interpolation.Provenance.identity(4, 2)
+        print(provenance.vertex_index.numpy().tolist())  # [0, 1, 2, 3]
+        ```
+        """
+        return cls(
+            od.array.arange(n_vertices, device=device),
+            od.array.arange(n_faces, device=device),
+            None,
+            n_vertices,
+            n_faces,
+        )
+
+    @classmethod
+    def from_rows(
+        cls,
+        sources: odt.Array2dInt32,
+        weights: odt.Array2dFloat32,
+        face_index: wp.array[wp.int32],
+        n_vertices: int,
+        n_faces: int,
+    ) -> Provenance:
+        """
+        Provenance whose output vertices are each a short weighted sum of input vertices.
+
+        The constructor for an edit of one's own. Row ``r`` of ``sources`` and ``weights`` lists
+        the input vertices output vertex ``r`` was formed from and their weights: one column copies
+        a vertex, two interpolate along an edge, three inside a face. A source repeated in a row is
+        merged, a ``-1`` source is padding and a zero weight is dropped. The representative is the
+        source of largest weight, the smaller index on a tie, so a midpoint's labels come from its
+        lower-numbered endpoint.
+
+        Parameters
+        ----------
+        sources
+            ``(n_out_vertices, k)`` input vertex indices, ``-1`` for an unused slot.
+        weights
+            ``(n_out_vertices, k)`` weight of each slot.
+        face_index
+            ``(n_out_faces,)`` input face of each output face, ``-1`` for none.
+        n_vertices
+            Input vertex count.
+        n_faces
+            Input face count.
+
+        Returns
+        -------
+        Provenance
+            The provenance, with ``vertex_operator`` holding the rows on ``sources.device``.
+
+        Raises
+        ------
+        ValueError
+            If ``sources`` and ``weights`` differ in shape.
+        RuntimeError
+            If ``sources``, ``weights`` and ``face_index`` are not all on one device.
+
+        Examples
+        --------
+        A triangle's three vertices and its centroid:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        sources = wp.array([[0, -1, -1], [1, -1, -1], [2, -1, -1], [0, 1, 2]], dtype=wp.int32)
+        third = 1.0 / 3.0
+        weights = wp.array(
+            [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [third, third, third]],
+            dtype=wp.float32,
+        )
+        provenance = od.interpolation.Provenance.from_rows(
+            sources, weights, wp.array([0, 0, 0], dtype=wp.int32), 3, 1
+        )
+        values = wp.array([0.0, 3.0, 6.0], dtype=wp.float32)
+        print(provenance.vertex_values(values).numpy().tolist())  # [0.0, 3.0, 6.0, 3.0]
+        ```
+        """
+        require_same_device(sources=sources, weights=weights, face_index=face_index)
+        if tuple(sources.shape) != tuple(weights.shape):
+            raise ValueError(
+                f"sources and weights must have one shape, got {tuple(sources.shape)} and "
+                f"{tuple(weights.shape)}"
+            )
+        device = sources.device
+        n_out = int(sources.shape[0])
+        offsets = _launch.zeros(n_out + 1, dtype=wp.int32, device=device)
+        if n_out == 0:
+            operator = od.array.bsr_from_csr(
+                0,
+                n_vertices,
+                offsets,
+                _launch.empty(0, dtype=wp.int32, device=device),
+                _launch.empty(0, dtype=wp.float32, device=device),
+                nnz=0,
+            )
+            return cls(
+                operator_representatives(operator), face_index, operator, n_vertices, n_faces
+            )
+        _launch.launch(
+            kernel_interpolation.count_provenance_rows,
+            dim=n_out,
+            inputs=[sources, weights, offsets],
+            device=device,
+        )
+        # The entry count sizes the column and weight buffers: one tail readback.
+        n_entries = scan_count(_launch.view(offsets, 1, n_out + 1))
+        columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
+        values = _launch.empty(n_entries, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_interpolation.write_provenance_rows,
+            dim=n_out,
+            inputs=[sources, weights, offsets],
+            outputs=[columns, values],
+            device=device,
+        )
+        operator = od.array.bsr_from_csr(n_out, n_vertices, offsets, columns, values, nnz=n_entries)
+        return cls(operator_representatives(operator), face_index, operator, n_vertices, n_faces)
+
+    @classmethod
+    def from_edge_points(
+        cls,
+        n_vertices: int,
+        edges: odt.Array2dInt32,
+        face_index: wp.array[wp.int32],
+        n_faces: int,
+        *,
+        t: wp.array[wp.float32] | None = None,
+    ) -> Provenance:
+        """
+        Provenance of an edit that keeps every input vertex and appends points on edges.
+
+        The layout of a refinement: the output's first ``n_vertices`` vertices are the input's, in
+        order, and output vertex ``n_vertices + e`` lies on the edge ``edges[e]`` at
+        ``(1 - t[e]) * a + t[e] * b``.
+
+        Parameters
+        ----------
+        n_vertices
+            Input vertex count.
+        edges
+            ``(n_new, 2)`` endpoints ``(a, b)`` of the edge each appended vertex lies on.
+        face_index
+            ``(n_out_faces,)`` input face of each output face, ``-1`` for none.
+        n_faces
+            Input face count.
+        t
+            ``(n_new,)`` position of each appended vertex along its edge, from ``a`` at ``0`` to
+            ``b`` at ``1``. ``None`` puts every one at its edge's midpoint.
+
+        Returns
+        -------
+        Provenance
+            The provenance, on ``edges.device``.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` does not have one entry per edge.
+        RuntimeError
+            If ``edges``, ``face_index`` and ``t`` are not all on one device.
+
+        Examples
+        --------
+        A segment's two endpoints and a point a quarter of the way along it:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        edges = wp.array([[0, 1]], dtype=wp.int32)
+        provenance = od.interpolation.Provenance.from_edge_points(
+            2,
+            edges,
+            wp.empty(0, dtype=wp.int32),
+            0,
+            t=wp.array([0.25], dtype=wp.float32),
+        )
+        values = wp.array([0.0, 4.0], dtype=wp.float32)
+        print(provenance.vertex_values(values).numpy().tolist())  # [0.0, 4.0, 1.0]
+        ```
+        """
+        require_same_device(edges=edges, face_index=face_index, t=t)
+        device = edges.device
+        n_new = int(edges.shape[0])
+        if t is not None and t.size != n_new:
+            raise ValueError(f"t must have one entry per edge, got {t.size} for {n_new} edges")
+        n_out = n_vertices + n_new
+        sources = odt.empty_2d((n_out, 2), wp.int32, device=device)
+        weights = odt.empty_2d((n_out, 2), wp.float32, device=device)
+        if n_out > 0:
+            _launch.launch(
+                kernel_interpolation.edge_point_rows,
+                dim=n_out,
+                inputs=[
+                    n_vertices,
+                    edges,
+                    _launch.empty(0, dtype=wp.float32, device=device) if t is None else t,
+                ],
+                outputs=[sources, weights],
+                device=device,
+            )
+        return cls.from_rows(sources, weights, face_index, n_vertices, n_faces)
+
+    @classmethod
+    def from_clusters(
+        cls,
+        cluster: wp.array[wp.int32],
+        n_out_vertices: int,
+        face_index: wp.array[wp.int32],
+        n_faces: int,
+    ) -> Provenance:
+        """
+        Provenance whose output vertices each merge a cluster of input vertices.
+
+        The constructor for a collapse or a weld: ``cluster`` maps every input vertex to the
+        output vertex it became, many to one. A float field is averaged over each cluster, with
+        equal weights, and the representative is the cluster's lowest-numbered member.
+
+        Parameters
+        ----------
+        cluster
+            ``(n_vertices,)`` output vertex of each input vertex, ``-1`` for one that survives in
+            none.
+        n_out_vertices
+            Output vertex count. An output vertex no input maps to has no source.
+        face_index
+            ``(n_out_faces,)`` input face of each output face, ``-1`` for none.
+        n_faces
+            Input face count.
+
+        Returns
+        -------
+        Provenance
+            The provenance, on ``cluster.device``.
+
+        Raises
+        ------
+        RuntimeError
+            If ``cluster`` and ``face_index`` are not on one device.
+
+        Examples
+        --------
+        Four input vertices welded into two:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        cluster = wp.array([0, 1, 0, 1], dtype=wp.int32)
+        provenance = od.interpolation.Provenance.from_clusters(
+            cluster, 2, wp.empty(0, dtype=wp.int32), 0
+        )
+        print(provenance.vertex_index.numpy().tolist())  # [0, 1]
+        values = wp.array([1.0, 2.0, 3.0, 4.0], dtype=wp.float32)
+        print(provenance.vertex_values(values).numpy().tolist())  # [2.0, 3.0]
+        ```
+        """
+        require_same_device(cluster=cluster, face_index=face_index)
+        device = cluster.device
+        n_in = cluster.size
+        offsets = _launch.zeros(n_out_vertices + 1, dtype=wp.int32, device=device)
+        weights = _launch.empty(n_in, dtype=wp.float32, device=device)
+        if n_in == 0:
+            columns = _launch.empty(0, dtype=wp.int32, device=device)
+        else:
+            _launch.launch(
+                kernel_interpolation.count_cluster_members,
+                dim=n_in,
+                inputs=[cluster, offsets],
+                device=device,
+            )
+            _launch.array_scan(offsets, out_array=offsets, inclusive=True)
+            # A stable sort by cluster lists each cluster's members in ascending order, which is
+            # the operator's columns as they stand; the unclustered inputs sort last and are past
+            # the last row's end.
+            keys, order = _launch.sort_buffers(n_in, wp.int32, device)
+            _launch.launch(
+                kernel_interpolation.cluster_keys_and_identity,
+                dim=n_in,
+                inputs=[cluster, wp.int32(n_out_vertices), keys, order],
+                device=device,
+            )
+            _launch.radix_sort_pairs(
+                keys, order, n_in, end_bit=_launch.key_bits(n_out_vertices + 1)
+            )
+            columns = _launch.view(order, 0, n_in)
+            _launch.launch(
+                kernel_interpolation.write_cluster_rows,
+                dim=n_in,
+                inputs=[keys, offsets, wp.int32(n_out_vertices)],
+                outputs=[weights],
+                device=device,
+            )
+        operator = od.array.bsr_from_csr(n_out_vertices, n_in, offsets, columns, weights)
+        # Equal weights in ascending columns: the representative is each cluster's lowest member.
+        return cls(operator_representatives(operator), face_index, operator, n_in, n_faces)
+
+    def vertex_values(self, values: wp.array[DType]) -> wp.array[DType]:
+        """
+        Carry a per-vertex field of the edit's input onto its output vertices.
+
+        A float field (``wp.float32``, ``wp.vec2``, ``wp.vec3``, ``wp.vec4``) is interpolated
+        through ``vertex_operator`` when the edit has one, so a midpoint gets the mean of its
+        edge's values and carrying the input positions reproduces the output's. Any other field --
+        an integer label, a mask, a ``float64`` field -- and every field of an edit without an
+        operator is copied from each output vertex's representative. An output vertex with no
+        source reads zero.
+
+        Parameters
+        ----------
+        values
+            ``(n_vertices,)`` field on the input vertices.
+
+        Returns
+        -------
+        wp.array[DType]
+            ``(n_out_vertices,)`` field on the output vertices, same dtype and device.
+
+        Raises
+        ------
+        ValueError
+            If ``values`` does not have one entry per input vertex.
+        TypeError
+            If ``values``' dtype is not one a provenance carries.
+        RuntimeError
+            If ``values`` is not on the provenance's device.
+
+        Examples
+        --------
+        A label is copied and a scalar averaged across a subdivision:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        _, _, provenance = od.remesh.subdivide(vertices, faces, return_provenance=True)
+        labels = od.array.arange(8, device=faces.device)
+        print(provenance.vertex_values(labels).numpy()[:8].tolist())  # [0, 1, 2, 3, 4, 5, 6, 7]
+        heights = wp.array(vertices.numpy()[:, 2], dtype=wp.float32)
+        print(provenance.vertex_values(heights).shape)  # (26,)
+        ```
+        """
+        require_same_device(values=values, vertex_index=self.vertex_index)
+        if values.size != self.n_vertices:
+            raise ValueError(
+                f"values must have one entry per input vertex, got {values.size} for "
+                f"{self.n_vertices} vertices"
+            )
+        if self.vertex_operator is not None and values.dtype in kernel_interpolation.FIELD_DTYPES:
+            return transfer_through_operator(values, self.vertex_operator)
+        return transfer_through_index(values, self.vertex_index)
+
+    def face_values(self, values: wp.array[DType]) -> wp.array[DType]:
+        """
+        Copy a per-face field of the edit's input onto each output face from its source.
+
+        Parameters
+        ----------
+        values
+            ``(n_faces,)`` field on the input faces, of any dtype
+            [`vertex_values`][ordito.interpolation.Provenance.vertex_values] carries.
+
+        Returns
+        -------
+        wp.array[DType]
+            ``(n_out_faces,)`` field on the output faces, zero on a face with no source.
+
+        Raises
+        ------
+        ValueError
+            If ``values`` does not have one entry per input face.
+        TypeError
+            If ``values``' dtype is not one a provenance carries.
+        RuntimeError
+            If ``values`` is not on the provenance's device.
+
+        Examples
+        --------
+        Face labels follow a submesh:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        keep = wp.array([2, 5, 7], dtype=wp.int32)
+        _, _, provenance = od.selection.submesh_from_face_indices(
+            vertices, faces, keep, return_provenance=True
+        )
+        labels = wp.array([10 * f for f in range(12)], dtype=wp.int32)
+        print(provenance.face_values(labels).numpy().tolist())  # [20, 50, 70]
+        ```
+        """
+        require_same_device(values=values, face_index=self.face_index)
+        if values.size != self.n_faces:
+            raise ValueError(
+                f"values must have one entry per input face, got {values.size} for "
+                f"{self.n_faces} faces"
+            )
+        return transfer_through_index(values, self.face_index)
+
+    def then(self, after: Provenance) -> Provenance:
+        """
+        Compose this edit with ``after``, into one provenance from this input to that output.
+
+        Fields carried through the result equal fields carried through both edits in turn, so a
+        pipeline (a repair, then a decimation, then a cut) keeps one provenance from first input
+        to last output. The operators multiply; with no operator on either side the index maps
+        compose, and otherwise the representatives are the product's.
+
+        Parameters
+        ----------
+        after
+            Provenance of an edit applied to this edit's output.
+
+        Returns
+        -------
+        Provenance
+            The composed provenance.
+
+        Raises
+        ------
+        ValueError
+            If ``after``'s input is not this edit's output.
+        RuntimeError
+            If the two are not on one device.
+
+        Examples
+        --------
+        A subdivision twice is one provenance from the box to the twice-refined mesh:
+
+        ```python
+        import numpy as np
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        once, once_faces, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
+        twice, _, second = od.remesh.subdivide(once, once_faces, return_provenance=True)
+        both = first.then(second)
+        print(both.vertex_operator.shape)  # (98, 8)
+        print(np.allclose(both.vertex_values(vertices).numpy(), twice.numpy()))  # True
+        ```
+        """
+        require_same_device(vertex_index=self.vertex_index, after=after.vertex_index)
+        if after.n_vertices != self.vertex_index.size or after.n_faces != self.face_index.size:
+            raise ValueError(
+                f"after's input ({after.n_vertices} vertices, {after.n_faces} faces) is not this "
+                f"edit's output ({self.vertex_index.size} vertices, {self.face_index.size} faces)"
+            )
+        face_index = od.array.remap_indices(after.face_index, self.face_index)
+        if self.vertex_operator is None and after.vertex_operator is None:
+            vertex_index = od.array.remap_indices(after.vertex_index, self.vertex_index)
+            return Provenance(vertex_index, face_index, None, self.n_vertices, self.n_faces)
+        first = self.vertex_operator
+        if first is None:
+            first = operator_from_index(self.vertex_index, self.n_vertices)
+        second = after.vertex_operator
+        if second is None:
+            second = operator_from_index(after.vertex_index, after.n_vertices)
+        operator = compose_operators(first, second)
+        representative = operator_representatives(operator)
+        return Provenance(representative, face_index, operator, self.n_vertices, self.n_faces)
 
 
 def interpolate_from_points(

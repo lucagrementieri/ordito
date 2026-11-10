@@ -121,6 +121,262 @@ def apply_transfer_operator(
     out_values[row] = total
 
 
+@wp.kernel
+def gather_or_zero(
+    values: wp.array[Any], index: wp.array[wp.int32], zero: Any, out_values: wp.array[Any]
+) -> None:
+    # ``values[index[i]]``, or the dtype's zero where ``index[i]`` is negative: an output element a
+    # topology edit created from nothing. ``zero`` is an argument because a generic kernel has no
+    # spelling of a zero that also covers ``wp.bool``.
+    i = wp.int32(wp.tid())
+    source = index[i]
+    if source >= 0:
+        out_values[i] = values[source]
+    else:
+        out_values[i] = zero
+
+
+@wp.func
+def first_row_entry(sources: wp.array2d[wp.int32], row: wp.int32, slot: wp.int32) -> wp.bool:
+    # Whether slot ``slot`` of a padded provenance row names a source no earlier slot of the row
+    # names: the slot an entry's merged weight is written from. A negative source is padding.
+    source = sources[row, slot]
+    first = source >= 0
+    for earlier in range(slot):
+        if sources[row, earlier] == source:
+            first = False
+    return first
+
+
+@wp.func
+def merged_row_weight(
+    sources: wp.array2d[wp.int32], weights: wp.array2d[wp.float32], row: wp.int32, slot: wp.int32
+) -> wp.float32:
+    # The summed weight of every slot of ``row`` naming the same source as ``slot``, in slot order.
+    total = wp.float32(0.0)
+    for other in range(sources.shape[1]):
+        if sources[row, other] == sources[row, slot]:
+            total = total + weights[row, other]
+    return total
+
+
+@wp.kernel
+def count_provenance_rows(
+    sources: wp.array2d[wp.int32], weights: wp.array2d[wp.float32], out_counts: wp.array[wp.int32]
+) -> None:
+    # The distinct sources of a padded row whose merged weight is not zero, written into the
+    # ``offsets[1:]`` the in-place scan turns into row bounds.
+    row = wp.int32(wp.tid())
+    count = wp.int32(0)
+    for slot in range(sources.shape[1]):
+        if first_row_entry(sources, row, slot):
+            if merged_row_weight(sources, weights, row, slot) != wp.float32(0.0):
+                count += 1
+    out_counts[row + 1] = count
+
+
+@wp.kernel
+def write_provenance_rows(
+    sources: wp.array2d[wp.int32],
+    weights: wp.array2d[wp.float32],
+    offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # A padded row as one CSR row: duplicate sources merged, zero weights dropped, columns
+    # ascending (an entry's place is the number of kept entries with a smaller source, so no
+    # in-thread sort).
+    row = wp.int32(wp.tid())
+    start = offsets[row]
+    for slot in range(sources.shape[1]):
+        if first_row_entry(sources, row, slot):
+            weight = merged_row_weight(sources, weights, row, slot)
+            if weight != wp.float32(0.0):
+                source = sources[row, slot]
+                place = start
+                for other in range(sources.shape[1]):
+                    if first_row_entry(sources, row, other) and sources[row, other] < source:
+                        if merged_row_weight(sources, weights, row, other) != wp.float32(0.0):
+                            place += 1
+                out_columns[place] = source
+                out_weights[place] = weight
+
+
+@wp.kernel
+def edge_point_rows(
+    n_vertices: wp.int32,
+    edges: wp.array2d[wp.int32],
+    t: wp.array[wp.float32],
+    out_sources: wp.array2d[wp.int32],
+    out_weights: wp.array2d[wp.float32],
+) -> None:
+    # The padded rows of a mesh whose vertices are the ``n_vertices`` originals followed by one
+    # point per edge row at ``(1 - t) * a + t * b``: a copy each, then two weights each. An empty
+    # ``t`` places every point at its edge's midpoint.
+    row = wp.int32(wp.tid())
+    if row < n_vertices:
+        out_sources[row, 0] = row
+        out_sources[row, 1] = -1
+        out_weights[row, 0] = wp.float32(1.0)
+        out_weights[row, 1] = wp.float32(0.0)
+        return
+    e = row - n_vertices
+    along = wp.float32(0.5)
+    if t.shape[0] > 0:
+        along = t[e]
+    out_sources[row, 0] = edges[e, 0]
+    out_sources[row, 1] = edges[e, 1]
+    out_weights[row, 0] = wp.float32(1.0) - along
+    out_weights[row, 1] = along
+
+
+@wp.kernel
+def count_cluster_members(cluster: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
+    # Each cluster's member count into ``offsets[1:]``; an input in no cluster (``-1``) counts
+    # nowhere. Integer atomics, so the counts are exact in any order.
+    i = wp.int32(wp.tid())
+    target = cluster[i]
+    if target >= 0:
+        wp.atomic_add(out_counts, target + 1, 1)
+
+
+@wp.kernel
+def cluster_keys_and_identity(
+    cluster: wp.array[wp.int32],
+    n_clusters: wp.int32,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Sort keys putting an input in no cluster (``-1``) after every cluster, and the identity
+    # payload, into the leading halves of the sort's double-width buffers.
+    i = wp.int32(wp.tid())
+    target = cluster[i]
+    out_keys[i] = wp.where(target >= 0, target, n_clusters)
+    out_order[i] = i
+
+
+@wp.kernel
+def write_cluster_rows(
+    sorted_clusters: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    n_clusters: wp.int32,
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # Over the members stably sorted by cluster, which are already the CSR columns (ascending in a
+    # row): each entry weighs one over its cluster's size. The trailing entries of unclustered
+    # inputs are not read.
+    k = wp.int32(wp.tid())
+    target = sorted_clusters[k]
+    if target >= n_clusters:
+        return
+    size = offsets[target + 1] - offsets[target]
+    out_weights[k] = wp.float32(1.0) / wp.float32(size)
+
+
+@wp.kernel
+def row_representatives(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    out_representative: wp.array[wp.int32],
+) -> None:
+    # Each CSR row's column of largest weight, the smaller column on a tie (whatever the row's
+    # column order), or -1 for an empty row: where an attribute that cannot be averaged is copied
+    # from.
+    row = wp.int32(wp.tid())
+    best = wp.int32(-1)
+    best_weight = wp.float32(0.0)
+    for k in range(offsets[row], offsets[row + 1]):
+        column = columns[k]
+        weight = weights[k]
+        if best < 0 or weight > best_weight or (weight == best_weight and column < best):
+            best = column
+            best_weight = weight
+    out_representative[row] = best
+
+
+@wp.kernel
+def count_gather_rows(index: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
+    # A gather map as a CSR row each: one entry where the source exists, none where it is -1.
+    i = wp.int32(wp.tid())
+    out_counts[i + 1] = wp.where(index[i] >= 0, 1, 0)
+
+
+@wp.kernel
+def write_gather_rows(
+    index: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    i = wp.int32(wp.tid())
+    if index[i] >= 0:
+        out_columns[offsets[i]] = index[i]
+        out_weights[offsets[i]] = wp.float32(1.0)
+
+
+@wp.kernel
+def count_composed_rows(
+    first_offsets: wp.array[wp.int32],
+    second_offsets: wp.array[wp.int32],
+    second_columns: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # The product ``second @ first`` of two CSR operators, row ``row`` of ``second`` expanded
+    # through ``first``: one triplet per pair of entries, duplicates summed by the assembly.
+    row = wp.int32(wp.tid())
+    count = wp.int32(0)
+    for k in range(second_offsets[row], second_offsets[row + 1]):
+        middle = second_columns[k]
+        count += first_offsets[middle + 1] - first_offsets[middle]
+    out_counts[row + 1] = count
+
+
+@wp.kernel
+def write_composed_rows(
+    first_offsets: wp.array[wp.int32],
+    first_columns: wp.array[wp.int32],
+    first_weights: wp.array[wp.float32],
+    second_offsets: wp.array[wp.int32],
+    second_columns: wp.array[wp.int32],
+    second_weights: wp.array[wp.float32],
+    offsets: wp.array[wp.int32],
+    out_rows: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    row = wp.int32(wp.tid())
+    slot = offsets[row]
+    for k in range(second_offsets[row], second_offsets[row + 1]):
+        middle = second_columns[k]
+        for j in range(first_offsets[middle], first_offsets[middle + 1]):
+            out_rows[slot] = row
+            out_columns[slot] = first_columns[j]
+            out_weights[slot] = second_weights[k] * first_weights[j]
+            slot += 1
+
+
+@wp.kernel
+def interpolate_barycentric(
+    faces: wp.array[wp.int32],
+    face_index: wp.array[wp.int32],
+    barycentric: wp.array[wp.vec3],
+    vertex_values: wp.array[Any],
+    out_values: wp.array[Any],
+) -> None:
+    # A per-vertex field at a point given by its face and barycentric coordinates: the three
+    # corner values weighted in corner order. A negative face is a point on no face (a missed
+    # query) and reads the dtype's zero, spelled as ``apply_transfer_operator`` spells it.
+    i = wp.int32(wp.tid())
+    f = face_index[i]
+    if f < 0:
+        out_values[i] = vertex_values[0] - vertex_values[0]
+        return
+    x0, x1, x2 = face_vertices(vertex_values, faces, f)
+    w = barycentric[i]
+    out_values[i] = x0 * w[0] + x1 * w[1] + x2 * w[2]
+
+
 @wp.func
 def gaussian_kernel_weight(distance: wp.float32, inverse_scale: wp.float32) -> wp.float32:
     # ``exp(-(sharpness * d / radius) ** 2)``, VTK's ``vtkGaussianKernel``, with the caller having
@@ -332,14 +588,34 @@ def sample_grid_trilinear(
 # Field dtypes the three transfer kernels admit, and the whole set: every one of them scales the
 # field by a ``float32`` weight and sums, and Warp requires both operands of that product to share a
 # scalar type, so the admissible fields are exactly the ``float32``-scalar ones this package
-# transfers -- a scalar, a ``wp.vec2`` UV, a ``wp.vec3`` position / normal / colour. The three
+# transfers -- a scalar, a ``wp.vec2`` UV, a ``wp.vec3`` position / normal / colour, a ``wp.vec4``
+# RGBA colour. The three
 # tables register the same set because a caller who can move a UV through
 # ``transfer_through_operator`` must be able to move it through the closest-point transfer too; the
 # operator path is documented as the preferred one *when an operator exists*, which makes the other
 # two its fallback rather than a narrower API. A ``float64`` field is deliberately absent -- these
 # operators are assembled from ``float32`` vertex data, so carrying one would advertise precision
 # the weights do not have.
-_FIELD_DTYPES = (wp.float32, wp.vec2, wp.vec3)
+FIELD_DTYPES = (wp.float32, wp.vec2, wp.vec3, wp.vec4)
+
+# Attribute dtypes a provenance gather copies (``gather_or_zero``): a copy needs no arithmetic, so
+# labels, masks, colours stored as bytes and ``float64`` fields are in as well as the field dtypes.
+ATTRIBUTE_DTYPES = (
+    wp.bool,
+    wp.uint8,
+    wp.int32,
+    wp.int64,
+    wp.float32,
+    wp.float64,
+    wp.vec2,
+    wp.vec3,
+    wp.vec4,
+    wp.vec2d,
+    wp.vec3d,
+    wp.vec2i,
+    wp.vec3i,
+    wp.types.vector(4, wp.uint8),
+)
 
 # Queries below which ``interpolate_from_points`` walks a block a query
 # (``interpolate_from_points_in_ball_tiled``), lower than the counts' shared
@@ -351,6 +627,8 @@ INTERPOLATE_TILED_MAX_QUERIES = 1 << 14
 # The concrete handles keyed by the caller's value dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
 APPLY_TRANSFER_OPERATOR: OverloadTable
+GATHER_OR_ZERO: OverloadTable
+INTERPOLATE_BARYCENTRIC: OverloadTable
 SAMPLE_GRID_TRILINEAR: OverloadTable
 TRANSFER_ONTO_VERTICES: OverloadTable
 INTERPOLATE_FROM_POINTS_NEAREST: OverloadTable
@@ -360,7 +638,7 @@ INTERPOLATE_FROM_POINTS_IN_BALL_TILED: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global APPLY_TRANSFER_OPERATOR, SAMPLE_GRID_TRILINEAR
+    global APPLY_TRANSFER_OPERATOR, GATHER_OR_ZERO, INTERPOLATE_BARYCENTRIC, SAMPLE_GRID_TRILINEAR
     global TRANSFER_ONTO_VERTICES, INTERPOLATE_FROM_POINTS_NEAREST, INTERPOLATE_FROM_POINTS_IN_BALL
     global INTERPOLATE_FROM_POINTS_IN_BALL_TILED
     APPLY_TRANSFER_OPERATOR = OverloadTable(
@@ -373,7 +651,18 @@ def _register_overloads() -> None:
                 wp.array[d],
                 wp.array[d],
             ]
-            for d in _FIELD_DTYPES
+            for d in FIELD_DTYPES
+        },
+    )
+    GATHER_OR_ZERO = OverloadTable(
+        gather_or_zero,
+        {d: [wp.array[d], wp.array[wp.int32], d, wp.array[d]] for d in ATTRIBUTE_DTYPES},
+    )
+    INTERPOLATE_BARYCENTRIC = OverloadTable(
+        interpolate_barycentric,
+        {
+            d: [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.vec3], wp.array[d], wp.array[d]]
+            for d in FIELD_DTYPES
         },
     )
     SAMPLE_GRID_TRILINEAR = OverloadTable(
@@ -396,7 +685,7 @@ def _register_overloads() -> None:
                 wp.array[d],
                 wp.array[wp.float32],
             ]
-            for d in _FIELD_DTYPES
+            for d in FIELD_DTYPES
         },
     )
     INTERPOLATE_FROM_POINTS_NEAREST = OverloadTable(
@@ -410,7 +699,7 @@ def _register_overloads() -> None:
                 wp.float32,
                 wp.array[d],
             ]
-            for d in _FIELD_DTYPES
+            for d in FIELD_DTYPES
         },
     )
     INTERPOLATE_FROM_POINTS_IN_BALL = OverloadTable(
@@ -425,7 +714,7 @@ def _register_overloads() -> None:
                 wp.float32,
                 wp.array[d],
             ]
-            for d in _FIELD_DTYPES
+            for d in FIELD_DTYPES
         },
     )
     INTERPOLATE_FROM_POINTS_IN_BALL_TILED = OverloadTable(
@@ -443,7 +732,7 @@ def _register_overloads() -> None:
                 wp.int32,
                 wp.array[d],
             ]
-            for d in _FIELD_DTYPES
+            for d in FIELD_DTYPES
         },
     )
 

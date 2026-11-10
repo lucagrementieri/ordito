@@ -23,6 +23,7 @@ import ordito as od
 from benchmarks.meshes import BUILDERS
 from benchmarks.meshes import _handles as handles_slab  # pyright: ignore[reportPrivateUsage]
 from tests.comparisons import (
+    assert_provenance_describes,
     assert_unordered_rows_equal,
     canonical_winding,
     hausdorff_surface_two_sided,
@@ -670,6 +671,100 @@ def test_duplicate_vertex_inverse_is_what_remove_duplicated_vertices_remaps_by(d
     assert unique_wp.size == 3
     assert np.array_equal(unique_faces_wp.numpy(), inverse_np[faces_np.reshape(-1)])
     assert np.abs(unique_wp.numpy()[inverse_np] - positions_np).max() <= epsilon
+
+
+@pytest.mark.parametrize("dtype", [wp.vec2, wp.int32])
+def test_split_vertices_by_corner_values_matches_a_numpy_oracle(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], dtype: type
+) -> None:
+    """
+    Not a library comparison: no reference splits vertices by a per-corner field.
+
+    The oracle is the definition: one output vertex per distinct ``(vertex, value)`` pair, ordered
+    by vertex. The split mesh carries each corner's own value back, sits at its sources'
+    positions, keeps the input's faces as triangles of the same positions, and welding it with the
+    values as a key returns the same vertex count while welding by position alone closes every
+    seam. The atlas has a real seam (two charts by
+    ``x``-sign), so the answer is neither the input vertices nor the corners.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    faces_np = mesh_wp.indices.numpy()
+    corners_np = mesh_wp.points.numpy()[faces_np]
+    chart_np = np.repeat(corners_np.reshape(-1, 3, 3).mean(axis=1)[:, 0] > mesh_tm.centroid[0], 3)
+    if dtype == wp.vec2:
+        values_np = (corners_np[:, :2] * 0.25 + chart_np[:, None]).astype(np.float32)
+    else:
+        values_np = chart_np.astype(np.int32)
+    values_wp = wp.array(values_np, dtype=dtype, device=device)
+    new_v, new_f, new_values, provenance = od.repair.split_vertices_by_corner_values(
+        mesh_wp.points, mesh_wp.indices, values_wp, return_provenance=True
+    )
+    keys = sorted(
+        {
+            (int(v), tuple(np.atleast_1d(x).tolist()))
+            for v, x in zip(faces_np, values_np, strict=True)
+        }
+    )
+    assert mesh_wp.points.size < new_v.size == len(keys) < faces_np.size  # a real split
+    assert [int(v) for v, _ in keys] == provenance.vertex_index.numpy().tolist()
+    assert np.array_equal(new_values.numpy()[new_f.numpy()], values_np)
+    assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
+
+    welded_v, _index, _inverse, _faces = od.repair.remove_duplicated_vertices(
+        new_v, new_f, 1e-7, vertex_values=new_values
+    )
+    assert welded_v.size == new_v.size
+    position_v, _index, _inverse, _faces = od.repair.remove_duplicated_vertices(new_v, new_f, 1e-7)
+    assert position_v.size == mesh_wp.points.size
+
+
+def test_split_vertices_by_corner_values_folds_negative_zero(device: str) -> None:
+    """Not a library comparison: ``-0.0`` and ``0.0`` are one value, as IEEE-754 defines."""
+    vertices, faces = od.creation.box(device=device)
+    values_np = np.where(np.arange(faces.size) % 2 == 0, 0.0, -0.0).astype(np.float32)
+    new_v, _new_f, _values = od.repair.split_vertices_by_corner_values(
+        vertices, faces, wp.array(values_np, dtype=wp.float32, device=device)
+    )
+    assert new_v.size == vertices.size
+    with pytest.raises(ValueError, match="one entry per corner"):
+        od.repair.split_vertices_by_corner_values(
+            vertices, faces, wp.zeros(3, dtype=wp.float32, device=device)
+        )
+    with pytest.raises(TypeError, match="float32 or int32"):
+        od.repair.split_vertices_by_corner_values(
+            vertices, faces, wp.zeros(faces.size, dtype=wp.float64, device=device)
+        )
+
+
+def test_remove_duplicated_vertices_keeps_vertices_whose_values_differ(device: str) -> None:
+    """
+    Not a library comparison: the value key is ordito's extension of the weld.
+
+    A box soup with a colour per side welds to the cube's 8 corners by position, and to 24 (three
+    colours meet at each corner) when the colours must agree too; the classes are still numbered by
+    first occurrence, so the representatives ascend.
+    """
+    vertices, faces = od.creation.box(device=device)
+    soup_np = vertices.numpy()[faces.numpy()]
+    normals, _ = od.triangles.face_normals_and_areas(vertices, faces)
+    colors_np = np.repeat(np.abs(normals.numpy()), 3, axis=0)
+    soup_wp = wp.array(soup_np, dtype=wp.vec3, device=device)
+    soup_faces = od.array.arange(faces.size, device=device)
+    colors_wp = wp.array(colors_np, dtype=wp.vec3, device=device)
+    by_position = od.repair.remove_duplicated_vertices(soup_wp, soup_faces, 1e-6)
+    by_color = od.repair.remove_duplicated_vertices(
+        soup_wp, soup_faces, 1e-6, vertex_values=colors_wp
+    )
+    assert (by_position[0].size, by_color[0].size) == (8, 24)
+    first_np = by_color[1].numpy()
+    assert np.all(np.diff(first_np) > 0)
+    inverse_np = by_color[2].numpy()
+    assert np.array_equal(colors_np[first_np][inverse_np], colors_np)
+    with pytest.raises(ValueError, match="one entry per vertex"):
+        od.repair.remove_duplicated_vertices(
+            soup_wp, soup_faces, vertex_values=wp.array(colors_np[:5], dtype=wp.vec3, device=device)
+        )
 
 
 @pytest.mark.parametrize(
@@ -2497,6 +2592,50 @@ def test_split_non_manifold_vertices_mates_change_no_answer(device: str) -> None
     assert plain[0].size == vertices_wp.size + 1
     for given_wp, plain_wp in zip(given, plain, strict=True):
         assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
+
+
+def test_face_dropping_repairs_report_provenance(device: str) -> None:
+    """
+    Not a library comparison: the repairs' provenance against the meshes they returned.
+
+    A sphere with an appended degenerate face, a duplicated face (three faces on its edges) and a
+    detached shell goes through every repair that drops faces or splits vertices; each provenance
+    must describe the mesh its repair returned, and the face it drops is absent from it.
+    """
+    sphere_v, sphere_f = od.creation.icosphere(subdivisions=2, device=device)
+    shell_v, shell_f = od.creation.icosahedron(device=device)
+    n_sphere = sphere_v.size
+    vertices_np = np.vstack([sphere_v.numpy(), 0.1 * shell_v.numpy() + 3.0])
+    faces_np = np.concatenate(
+        [sphere_f.numpy(), [0, 0, 1], sphere_f.numpy()[:3], shell_f.numpy() + n_sphere]
+    ).astype(np.int32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    n_sphere_faces = sphere_f.size // 3
+    for call in (
+        lambda v, f: od.repair.remove_degenerate_faces(v, f, return_provenance=True),
+        lambda v, f: od.repair.remove_non_manifold_faces(v, f, return_provenance=True),
+        lambda v, f: od.repair.remove_non_manifold_faces(
+            v, f, method="meshlab", return_provenance=True
+        ),
+        lambda v, f: od.repair.remove_degenerate_and_non_manifold_faces(
+            v, f, return_provenance=True
+        ),
+        lambda v, f: od.repair.remove_small_components(v, f, min_faces=30, return_provenance=True),
+    ):
+        new_v, new_f, provenance = call(vertices_wp, faces_wp)
+        assert new_f.size < faces_wp.size
+        assert_provenance_describes(provenance, vertices_wp, faces_wp, new_v, new_f)
+    *_, provenance = od.repair.remove_degenerate_faces(
+        vertices_wp, faces_wp, return_provenance=True
+    )
+    assert n_sphere_faces not in provenance.face_index.numpy()
+
+    split_v, split_f, source, split = od.repair.split_non_manifold_vertices(
+        vertices_wp, faces_wp, return_provenance=True
+    )
+    assert split_v.size > vertices_wp.size
+    assert np.array_equal(split.vertex_index.numpy(), source.numpy())
+    assert_provenance_describes(split, vertices_wp, faces_wp, split_v, split_f)
 
 
 @pytest.mark.parity(

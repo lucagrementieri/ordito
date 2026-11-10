@@ -119,6 +119,91 @@ def bucket_vertex_keys_and_identity(
 
 
 @wp.kernel
+def value_word_rows(
+    primary: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    n_words: wp.int32,
+    is_float: wp.bool,
+    out_rows: wp.array2d[wp.int32],
+) -> None:
+    # Row ``i`` of an exact grouping key: the primary key, then the ``n_words`` 32-bit words of
+    # value ``i``. A float's ``-0.0`` is written as ``+0.0``, the one pair of distinct bit patterns
+    # IEEE-754 calls equal.
+    i = wp.int32(wp.tid())
+    out_rows[i, 0] = primary[i]
+    for c in range(n_words):
+        word = words[i * n_words + c]
+        if is_float and word == wp.int32(-2147483648):
+            word = wp.int32(0)
+        out_rows[i, c + 1] = word
+
+
+@wp.kernel
+def word_pair_keys(
+    rows: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    high: wp.int32,
+    low: wp.int32,
+    out_keys: wp.array[wp.uint64],
+) -> None:
+    # One least-significant-digit pass's key: columns ``high`` and ``low`` of the row now at sorted
+    # position ``i``, as one 64-bit key; ``low < 0`` sorts by ``high`` alone.
+    i = wp.int32(wp.tid())
+    row = order[i]
+    key = wp.uint64(wp.uint32(rows[row, high]))
+    if low >= 0:
+        key = (key << wp.uint64(32)) | wp.uint64(wp.uint32(rows[row, low]))
+    out_keys[i] = key
+
+
+@wp.kernel
+def row_run_starts(
+    rows: wp.array2d[wp.int32], order: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # 1 where the row at sorted position ``i`` differs from the one before it in any column: the
+    # first of each run of equal rows, which the inclusive scan numbers.
+    i = wp.int32(wp.tid())
+    start = i == 0
+    if not start:
+        for c in range(rows.shape[1]):
+            if rows[order[i], c] != rows[order[i - 1], c]:
+                start = True
+    out_flags[i] = wp.where(start, 1, 0)
+
+
+@wp.kernel
+def write_row_classes(
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # Each row's class, its run's number, and each class's first row: the stable sorts keep equal
+    # rows in index order, so a run's first entry is its lowest-numbered row.
+    i = wp.int32(wp.tid())
+    label = ranks[i] - 1
+    out_inverse[order[i]] = label
+    if i == 0 or ranks[i - 1] != ranks[i]:
+        out_first[label] = order[i]
+
+
+@wp.kernel
+def split_corner_outputs(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    first: wp.array[wp.int32],
+    out_vertices: wp.array[wp.vec3],
+    out_source: wp.array[wp.int32],
+) -> None:
+    # Output vertex ``k`` of an unweld: the position, and the index, of the input vertex its class's
+    # first corner names.
+    k = wp.int32(wp.tid())
+    v = faces[first[k]]
+    out_vertices[k] = vertices[v]
+    out_source[k] = v
+
+
+@wp.kernel
 def flag_class_first_occurrences(
     inverse: wp.array[wp.int32], first: wp.array[wp.int32], out_flags: wp.array[wp.int32]
 ) -> None:

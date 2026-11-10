@@ -384,7 +384,7 @@ def loop_even_positions(
     # Loop's even (original) vertices, relaxed towards their 1-ring; the rule is
     # ``loop_even_weights``, and the mode says which neighbour sum the weight multiplies.
     #
-    # With non-empty triplet buffers (``subdivide_loop(return_operator=True)``) the vertex's
+    # With non-empty triplet buffers (``subdivide_loop(return_provenance=True)``) the vertex's
     # self-weight triplet of the interpolation operator rides the same thread: row ``v`` is the
     # relocated original vertex ``v`` (see the operator's triplet kernels below).
     v = wp.int32(wp.tid())
@@ -399,12 +399,12 @@ def loop_even_positions(
         out_values[v] = self_weight
 
 
-# The interpolation operator ``subdivide_loop(return_operator=True)`` assembles, emitted as triplets
-# from the same three grids the positions come from and through the same two weight functions. Row
-# ``v`` is the relocated original vertex ``v`` (its self-weight is written by
+# The interpolation operator ``subdivide_loop(return_provenance=True)`` assembles, emitted as
+# triplets from the same three grids the positions come from and through the same two weight
+# functions. Row ``v`` is the relocated original vertex ``v`` (its self-weight is written by
 # ``loop_even_positions``); row ``n_vertices + e`` is the odd vertex on unique edge ``e``. Every
-# slot is written -- a zero weight where a rule does not apply -- because
-# ``triplet_buffers`` hands back uninitialized memory.
+# slot is written -- a zero weight where a rule does not apply -- because ``triplet_buffers``
+# hands back uninitialized memory.
 @wp.kernel
 def loop_edge_triplets(
     unique_edges: wp.array2d[wp.int32],
@@ -483,6 +483,26 @@ def hysteresis_bands(sizing: wp.float32) -> tuple[wp.float32, wp.float32]:
     # bands from one read: asked for separately they are two passes over the same field for two
     # scalings of the same number.
     return 4.0 / 5.0 * sizing, 4.0 / 3.0 * sizing
+
+
+@wp.kernel
+def edge_parameters(
+    vertices: wp.array[wp.vec3],
+    edges: wp.array2d[wp.int32],
+    points: wp.array[wp.vec3],
+    out_t: wp.array[wp.float32],
+) -> None:
+    # Where each point lies along its edge ``(a, b)``, from ``a`` at 0 to ``b`` at 1: the
+    # parameter of its projection onto the edge's line, clamped to the edge. A point on the edge is
+    # exact; a zero-length edge reads its midpoint.
+    e = wp.int32(wp.tid())
+    a = vertices[edges[e, 0]]
+    d = vertices[edges[e, 1]] - a
+    length_sq = wp.length_sq(d)
+    t = wp.float32(0.5)
+    if length_sq > wp.float32(0.0):
+        t = wp.clamp(wp.dot(points[e] - a, d) / length_sq, wp.float32(0.0), wp.float32(1.0))
+    out_t[e] = t
 
 
 @wp.kernel
@@ -3987,6 +4007,23 @@ def vertex_cluster_rank(
 ) -> wp.int32:
     # Vertex ``v``'s output vertex, or ``-1`` when no surviving face keeps its cluster.
     return cell_rank[vertex_cell[v]]
+
+
+@wp.kernel
+def cluster_vertex_targets(
+    vertex_cell: wp.array[wp.int32], cell_rank: wp.array[wp.int32], out_targets: wp.array[wp.int32]
+) -> None:
+    # Each input vertex's output vertex, ``-1`` when no surviving face keeps its cluster: the
+    # clusters ``cluster_decimate``'s provenance averages over.
+    v = wp.int32(wp.tid())
+    out_targets[v] = vertex_cluster_rank(vertex_cell, cell_rank, v)
+
+
+@wp.kernel
+def cluster_closest_sources(closest: wp.array[wp.int64], out_sources: wp.array[wp.int32]) -> None:
+    # The input vertex each output vertex of ``contraction="closest"`` copies.
+    t = wp.int32(wp.tid())
+    out_sources[t] = unpack_nearest_index(closest[t])
 
 
 # How ``cluster_decimate`` places each output vertex: a warp-uniform selector for the two kernels
