@@ -1907,6 +1907,9 @@ def split_mesh_with_plane(
         inputs=[vertices, faces, plane_normal, plane_origin, tol, child_counts],
         device=device,
     )
+    # Declined (2026-11-10): counting and scanning in one block (``polyline._upsample``'s form);
+    # it pays only to ~2 048 items (1.05-1.13x at 4 096) and every benchmarked mesh has 5 k faces
+    # or more.
     face_offsets, n_out = od.array.counts_to_offsets(child_counts)
     n_halfedges = n_out - n_faces
     if n_halfedges == 0:

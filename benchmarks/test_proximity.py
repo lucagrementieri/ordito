@@ -418,11 +418,12 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
 
     Two readings. ordito leads pyvista by well over an order of magnitude, and the slope across the
     scan sweep is the crease *count* rather than the face count. And the number to read it against
-    is ``closest_point_on_mesh`` on the same queries and mesh: **this query is slower over an edge
-    set some thirty times smaller**, so the hand-written deepening loop is losing to Warp's built-in
-    mesh traversal rather than to the geometry. A query far from every crease pays several empty
-    scans before the radius reaches anything, which is where that gap lives and what a future
-    ``initial_radius`` estimate (the k-NN path already has one) would close.
+    is ``closest_point_on_mesh`` on the same queries and mesh. Until 2026-11-10 this query was the
+    slower of the two over an edge set some thirty times smaller: a query far from every crease paid
+    several empty scans before its radius reached anything, then a wide certifying one. The first
+    radius is now a pruned descent's nearest-edge distance (``kernels/proximity.edge_seed_radius``),
+    so the first scan usually certifies: 0.21-0.56x on the small and medium meshes, 0.05x on
+    ``dragon``.
     """
     edges_np = _crease_edges_np(bench_case)
     n_edges = int(edges_np.shape[0])

@@ -67,11 +67,11 @@ ITEMS_PER_QUERY_SLICE = 128
 QUERY_SLICE_FILL_THREADS = 1 << 15
 QUERY_SLICE_MIN = 32
 
-# First search radius for [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges], as a
-# fraction of the ``max_dist`` its deepening loop is capped at. The loop doubles from here and jumps
-# straight to the certified radius as soon as it holds any candidate, so this only decides how many
-# empty scans a query far from every edge pays; too *large* a start is the expensive mistake, since
-# the first scan then enumerates the whole edge set.
+# Fallback first search radius for
+# [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges], as a fraction of the
+# ``max_dist`` its deepening loop is capped at, taken only when the kernel's seeding descent
+# (``kernels/proximity.edge_seed_radius``) returns no number. The descent's nearest-edge distance
+# is the first radius otherwise, so the first scan usually certifies.
 _EDGE_INITIAL_RADIUS_SCALE = 0.01
 
 # Smallest positive normal float32, used as the floor on

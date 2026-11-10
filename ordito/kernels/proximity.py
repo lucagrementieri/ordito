@@ -291,6 +291,97 @@ EDGE_BVH_LEAF_SIZE_CPU = 16
 EDGE_BVH_WIDE_LEAF_MIN_EDGES = 1 << 15
 
 
+# The distance from ``q`` to the nearest edge of the edge-box tree ``bvh_id`` within ``max_dist``
+# (``max_dist`` itself when none is nearer): ``neighbors.bvh_nearest_index``'s descent, nearer
+# child first and a subtree pruned once its box is no nearer than the best so far, with the point
+# test replaced by a clamped projection onto each edge. Native, so its rounding may differ from
+# ``closest_point_on_segment``'s by a few ulps: ``closest_point_on_edges`` reads it only as the
+# seed of its deepening loop, padded (``edge_seed_radius``), never as the answer. The stack is
+# Warp's ``BVH_QUERY_STACK_SIZE``, as in ``bvh_nearest_index`` (§12.2's depth bound).
+_BVH_NEAREST_EDGE_DISTANCE = """
+const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
+int stack[BVH_QUERY_STACK_SIZE];
+stack[0] = *bvh.root;
+int count = 1;
+float best_sq = max_dist * max_dist;
+while (count) {
+    const int node = stack[--count];
+    const wp::BVHPackedNodeHalf lower = wp::bvh_load_node(bvh.node_lowers, node);
+    const wp::BVHPackedNodeHalf upper = wp::bvh_load_node(bvh.node_uppers, node);
+    if (wp::distance_to_aabb_sq(q, wp::vec3(lower.x, lower.y, lower.z),
+                                wp::vec3(upper.x, upper.y, upper.z)) >= best_sq)
+        continue;
+    const int left = lower.i;
+    const int right = upper.i;
+    if (lower.b) {
+        for (int slot = left; slot < right; slot++) {
+            const int item = wp::bvh_load_int(bvh.primitive_indices, slot);
+            const wp::vec3 a = wp::index(vertices, wp::index(edges, item, 0));
+            const wp::vec3 b = wp::index(vertices, wp::index(edges, item, 1));
+            const wp::vec3 ab = b - a;
+            const float length_sq = wp::max(wp::dot(ab, ab), 1.0e-30f);
+            const float t = wp::clamp(wp::dot(q - a, ab) / length_sq, 0.0f, 1.0f);
+            const float d = wp::length_sq(q - (a + ab * t));
+            if (d < best_sq)
+                best_sq = d;
+        }
+    } else {
+        const wp::BVHPackedNodeHalf left_lower = wp::bvh_load_node(bvh.node_lowers, left);
+        const wp::BVHPackedNodeHalf left_upper = wp::bvh_load_node(bvh.node_uppers, left);
+        const wp::BVHPackedNodeHalf right_lower = wp::bvh_load_node(bvh.node_lowers, right);
+        const wp::BVHPackedNodeHalf right_upper = wp::bvh_load_node(bvh.node_uppers, right);
+        const float left_sq = wp::distance_to_aabb_sq(
+            q, wp::vec3(left_lower.x, left_lower.y, left_lower.z),
+            wp::vec3(left_upper.x, left_upper.y, left_upper.z));
+        const float right_sq = wp::distance_to_aabb_sq(
+            q, wp::vec3(right_lower.x, right_lower.y, right_lower.z),
+            wp::vec3(right_upper.x, right_upper.y, right_upper.z));
+        const bool left_nearer = left_sq < right_sq;
+        const float far_sq = left_nearer ? right_sq : left_sq;
+        const float near_sq = left_nearer ? left_sq : right_sq;
+        if (far_sq < best_sq)
+            stack[count++] = left_nearer ? right : left;
+        if (near_sq < best_sq)
+            stack[count++] = left_nearer ? left : right;
+    }
+}
+return wp::sqrt(best_sq);
+"""
+
+
+@wp.func_native(_BVH_NEAREST_EDGE_DISTANCE)
+def bvh_nearest_edge_distance(
+    bvh_id: wp.uint64,
+    vertices: wp.array[wp.vec3],
+    edges: wp.array2d[wp.int32],
+    q: wp.vec3,
+    max_dist: wp.float32,
+) -> wp.float32: ...
+
+
+@wp.func
+def edge_seed_radius(
+    bvh_id: wp.uint64,
+    vertices: wp.array[wp.vec3],
+    edges: wp.array2d[wp.int32],
+    q: wp.vec3,
+    max_bound: wp.vec3,
+    min_bound: wp.vec3,
+    max_dist: wp.float32,
+    fallback: wp.float32,
+) -> wp.float32:
+    # ``closest_point_on_edges``' first radius: the descent's nearest-edge distance, grown by a
+    # relative margin and one at the coordinates' scale, so the edge it found -- whose closest point
+    # the loop's own ``closest_point_on_segment`` rounds a few ulps elsewhere -- lies inside the
+    # first ball and that scan certifies. ``fallback`` (the caller's old seed) when the bound is
+    # not a number.
+    bound = bvh_nearest_edge_distance(bvh_id, vertices, edges, q, max_dist)
+    if not (bound >= wp.float32(0.0)):
+        return fallback
+    scale = wp.max(wp.max(wp.max(wp.abs(q)), wp.max(wp.abs(max_bound))), wp.max(wp.abs(min_bound)))
+    return bound + wp.float32(1.0e-5) * (bound + scale)
+
+
 @wp.kernel
 def closest_point_on_edges(
     vertices: wp.array[wp.vec3],
@@ -351,6 +442,12 @@ def closest_point_on_edges(
         union_upper = wp.max(max_bound, wp.vec3(-corners[9], -corners[10], -corners[11]))
         max_dist = wp.length(union_upper - union_lower)
         initial_radius = initial_radius_scale * max_dist
+    # The first radius is the nearest edge's distance from a pruned descent of the same tree
+    # (``edge_seed_radius``), so the first scan usually certifies; the deepening below stays the
+    # proof and the answer.
+    initial_radius = edge_seed_radius(
+        bvh_id, vertices, edges, q, max_bound, min_bound, max_dist, initial_radius
+    )
     r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_dist, initial_radius)
     best_distance = FLOAT32_INF_CONSTANT
     best_edge = wp.int32(-1)

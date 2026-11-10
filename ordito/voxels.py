@@ -3035,6 +3035,9 @@ def to_boxes(
         outputs=[counts, vertices],
         device=device,
     )
+    # Declined (2026-11-10): counting and scanning in one block (``polyline._upsample``'s form);
+    # it pays only to ~2 048 items (1.05-1.13x at 4 096) and the benchmarked grids hold 16-29 k
+    # voxels.
     offsets, n_quads = od.array.counts_to_offsets(counts)
     faces = _launch.empty(n_quads * 6, dtype=wp.int32, device=device)
     _launch.launch(
