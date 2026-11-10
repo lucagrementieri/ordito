@@ -5274,7 +5274,7 @@
  },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-1024]": {
   "counts": {
-   "launch": 5,
+   "launch": 4,
    "alloc": 4,
    "readback": 2,
    "sort": 1
@@ -5282,7 +5282,7 @@
  },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-64]": {
   "counts": {
-   "launch": 3,
+   "launch": 2,
    "alloc": 4,
    "readback": 2
   }

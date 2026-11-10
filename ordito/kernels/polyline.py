@@ -194,6 +194,15 @@ def distance_to_segments(
 # slower.
 # The lanes of a warp are consecutive *queries* in one slice, so they read the same segment and
 # its loads broadcast; ordered the other way, lanes on different slices, it was 2-6x slower.
+# Declined (2026-11-10): a pruned search, a box a chunk of 32-256 consecutive segments (a curve's
+# index ranges are compact), each query walking the boxes and scanning only chunks within its best
+# distance plus a rounding margin, queries in Hilbert order (``_common.space_filling_order``):
+# byte-identical, 0.31x at 65 536 queries against a 65 536-segment circle and 0.46x against
+# 16 384, but 1.3-50x slower everywhere else, 2 ms at 64 queries. A query inside a loop is nearly
+# equidistant from all of it, so any box pruning (a BVH's too) opens most leaves, serially in the
+# query's thread, where the slices spread them over the device.
+# ``proximity.closest_point_on_edges``' iterative deepening over a BVH ran 12-2 500x the brute
+# force on the same loops.
 POINT_DISTANCE_THREADS = 1 << 22
 POINT_DISTANCE_MIN_SLICE = 32
 
@@ -1853,17 +1862,21 @@ def accumulate_turning_angle(points2d: wp.array[wp.vec2], out_sums: wp.array[wp.
     )
 
 
-@wp.kernel
-def project_turning_angle(
-    polyline: wp.array[wp.vec3], sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
-) -> None:
-    # ``polyline_triangulate``'s projection and ``accumulate_turning_angle`` in one pass: each ring
-    # point is projected into the plane frame ``accumulate_loop_frame`` stored at ``sums[0:]``
-    # (``project_to_stored_frame``) where the turning sums need it, written to ``out_points2d`` by
-    # the lane that owns it, and its corner's neighbours projected again in place of a read, which
-    # is the same value bit for bit. ``accumulate_loop_frame`` has already decided ``RING_CLOSING``;
-    # a repeated closing point is projected too, though nothing reads it.
-    chunk, lane = wp.tid()
+@wp.func
+def project_ring_turning(
+    polyline: wp.array[wp.vec3],
+    chunk: wp.int32,
+    lane: wp.int32,
+    sums: wp.array[wp.float32],
+    out_points2d: wp.array[wp.vec2],
+):
+    # Block ``chunk``'s share of ``polyline_triangulate``'s projection and turning sums, in the
+    # frame and with the closing flag ``loop_frame`` stored at ``sums[0:]``: each ring point
+    # projected (``project_to_stored_frame``) where the turning sums need it, written to
+    # ``out_points2d`` by the lane that owns it, and its corner's neighbours projected again in
+    # place of a read, which is the same value bit for bit. A repeated closing point is projected
+    # too, though nothing reads it. Shared by ``project_turning_angle`` and
+    # ``loop_frame_and_turning``.
     n = polyline.shape[0]
     closing = wp.int32(sums[RING_CLOSING])
     frame = stored_frame(sums, 0)
@@ -1872,6 +1885,35 @@ def project_turning_angle(
     ring_turning_pass(
         chunk, lane, n - closing, polyline, frame, sums, projected_ring_point, out_points2d, 1
     )
+
+
+@wp.kernel
+def project_turning_angle(
+    polyline: wp.array[wp.vec3], sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
+) -> None:
+    # ``project_ring_turning`` in the frame ``accumulate_loop_frame`` stored at ``sums[0:]``,
+    # which has also decided ``RING_CLOSING``. A ring one turning block covers takes
+    # ``loop_frame_and_turning`` instead.
+    chunk, lane = wp.tid()
+    project_ring_turning(polyline, chunk, lane, sums, out_points2d)
+
+
+@wp.kernel
+def loop_frame_and_turning(
+    polyline: wp.array[wp.vec3], out_sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
+) -> None:
+    # ``accumulate_loop_frame`` then ``project_turning_angle`` as one block, for a ring the turning
+    # pass's first block covers (``reduce.blocks_1d(n) == 1``), a block barrier between them in
+    # place of the launch boundary: the projection reads the frame and closing flag lane 0 stored.
+    # Taken on the CPU device only, where a launch buys nothing (``polyline_triangulate``).
+    # Launched at ``LOOP_FRAME_BLOCK_DIM`` lanes, the frame's own width, so the frame is
+    # ``accumulate_loop_frame``'s bit for bit; the turning sum is folded over that width rather
+    # than ``TILE_1D``, which only its sign is read for. The reflex counts are whole numbers and the
+    # box a maximum, the same in any order.
+    _block, lane = wp.tid()
+    loop_frame(polyline, 0, polyline.shape[0], lane, out_sums, 0)
+    block_barrier()
+    project_ring_turning(polyline, 0, lane, out_sums, out_points2d)
 
 
 @wp.func

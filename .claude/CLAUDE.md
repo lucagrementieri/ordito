@@ -1234,6 +1234,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
   start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
   another subtree), so what is open is a shorter chain for the same walk.
+- **`proximity.closest_point_on_edges` on a long loop** (2026-11-10): 118 ms for 64 queries over a
+  prebuilt 65 536-edge circle, 4.7 ms over 4 096 edges, 12-2 500x `polyline_point_distance`'s brute
+  force on the same segments. Its first radius is `_EDGE_INITIAL_RADIUS_SCALE` of the scene
+  diagonal, so each thread enumerates most of the tree serially. Open: a seed from a cheap upper
+  bound (a nearest vertex, or the nearest leaf's edges), or `bvh_nearest_point`'s pruned descent
+  with a segment test.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

@@ -1578,23 +1578,39 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
 
     # The plane frame is built and consumed entirely on device: one single-block accumulation, which
     # also decides whether the last point repeats the first, then the turning pass, which projects
-    # every point into the frame it stored as it reads it.
+    # every point into the frame it stored as it reads it. On the CPU device a ring the turning pass
+    # covers in one block takes both in one launch (``kernels/polyline.loop_frame_and_turning``):
+    # 0.75-0.90x to 1 024 points, byte-identical. Declined on CUDA (2026-11-10): 1.04-1.10x on
+    # convex rings of 6-64 points, 0.97-1.0x at 255-1 024, since the second launch and the
+    # projection's allocation are issued while the frame's block runs.
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        kernel_polyline.accumulate_loop_frame,
-        dim=(1,),
-        inputs=[polyline, sums],
-        block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
-        device=device,
-    )
-    points2d = _launch.empty(n, dtype=wp.vec2, device=device)
-    _launch.launch_tiled(
-        kernel_polyline.project_turning_angle,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[polyline, sums, points2d],
-        block_dim=TILE_1D,
-        device=device,
-    )
+    turning_blocks = kernel_reduce.blocks_1d(n)
+    if turning_blocks == 1 and wp.get_device(device).is_cpu:
+        points2d = _launch.empty(n, dtype=wp.vec2, device=device)
+        _launch.launch_tiled(
+            kernel_polyline.loop_frame_and_turning,
+            dim=(1,),
+            inputs=[polyline, sums, points2d],
+            block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
+            device=device,
+        )
+    else:
+        _launch.launch_tiled(
+            kernel_polyline.accumulate_loop_frame,
+            dim=(1,),
+            inputs=[polyline, sums],
+            block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
+            device=device,
+        )
+        # Allocated after the frame's launch, so the allocation runs while the frame's block does.
+        points2d = _launch.empty(n, dtype=wp.vec2, device=device)
+        _launch.launch_tiled(
+            kernel_polyline.project_turning_angle,
+            dim=turning_blocks,
+            inputs=[polyline, sums, points2d],
+            block_dim=TILE_1D,
+            device=device,
+        )
     _, faces, _ = _triangulate_ring(points2d, sums, write_fan=True)
     assert faces is not None
     return faces
