@@ -1296,6 +1296,40 @@ def test_query_nearest_clustered(device: str, backend: Literal["bvh", "hashgrid"
         assert np.allclose(distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
 
 
+def test_query_nearest_k1_default_takes_the_descent(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: an unconfigured ``k = 1`` query is the point tree's descent.
+
+    Pins the dispatch, which only ``backend=None`` reaches (the descent and the grid have their
+    own comparisons against ``scipy.spatial.KDTree``): with nothing chosen for the grid the call
+    builds no hash grid and answers exactly as ``backend="bvh"`` does, bit for bit; an
+    ``initial_radius`` keeps the grid, and so does a cloud past the size gate.
+    """
+    rng = np.random.default_rng(14)
+    points_wp = points_to_warp(rng.random((2000, 3)), device)
+    queries_wp = points_to_warp(rng.random((300, 3)), device)
+    grids: list[int] = []
+    build_grid = cast("Callable[..., wp.HashGrid]", od.neighbors.hashgrid_from_points)
+
+    def counting_grid(*args: object, **kwargs: object) -> wp.HashGrid:
+        grids.append(1)
+        return build_grid(*args, **kwargs)
+
+    monkeypatch.setattr(od.neighbors, "hashgrid_from_points", counting_grid)
+    indices_wp, distances_wp = od.neighbors.query_nearest(points_wp, queries_wp)
+    assert not grids
+    indices_bvh, distances_bvh = od.neighbors.query_nearest(points_wp, queries_wp, backend="bvh")
+    assert np.array_equal(indices_wp.numpy(), indices_bvh.numpy())
+    assert np.array_equal(distances_wp.numpy(), distances_bvh.numpy())
+    od.neighbors.query_nearest(points_wp, queries_wp, initial_radius=0.05)
+    assert len(grids) == 1
+    monkeypatch.setattr(od.neighbors, "_nearest_descends", lambda *_args: False)
+    od.neighbors.query_nearest(points_wp, queries_wp)
+    assert len(grids) == 2
+
+
 def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> None:
     """
     Class A, against ``scipy.spatial.KDTree``: a ``k = 1`` row the grid gives up on is still exact.

@@ -383,7 +383,10 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d", "meshlib", "pytorch3d")
 def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
     """
-    ``k=1`` hash-grid k-NN — the backend ``distance.py`` picks.
+    ``k=1`` hash-grid k-NN, the backend named explicitly.
+
+    An unconfigured ``k=1`` call takes the BVH's descent below its size gate, so this row passes
+    ``backend="hashgrid"`` to keep timing the grid.
 
     The reference rows are the *same four calls* ``query_nearest_bvh_k1`` times, because none of the
     four references has a spatial-index choice to expose: the cloud, the 20 000 displaced queries
@@ -410,7 +413,7 @@ def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: od.neighbors.query_nearest(points, queries, k=1)
+            lambda: od.neighbors.query_nearest(points, queries, k=1, backend="hashgrid")
         )
         assert indices.shape == (queries.size,)
     elif bench_case.kind == "igl":

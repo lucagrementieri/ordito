@@ -234,9 +234,9 @@ def _flag_unmatched_points(
     ``unequal[0]`` is raised unless the match is a bijection within tolerance. Every entry of the
     returned match is a valid ``b`` index either way.
     """
-    # The hash-grid backend, though the BVH's ``k == 1`` descent skips its two readbacks: on a
-    # cloud queried against itself the two ran at par at 100 k points and the grid in 0.36x the
-    # BVH's time at 2 M (CUDA).
+    # The default search: the point tree's ``k == 1`` descent below its size gate, the hash grid
+    # past it. On a cloud queried against itself the descent took 0.70-0.86x the grid's time up to
+    # 1 M points and the grid 0.36x the descent's at 2 M (CUDA).
     match, _distance = od.neighbors.query_nearest(points_b, points_a)
     hits = _launch.zeros(points_b.size, dtype=wp.int32, device=points_a.device)
     _launch.launch(

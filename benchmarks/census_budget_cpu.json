@@ -1672,9 +1672,9 @@
  },
  "benchmarks/test_equality.py::test_meshes_allclose[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
-   "readback": 3,
+   "launch": 5,
+   "alloc": 5,
+   "readback": 1,
    "sort": 2
   }
  },
@@ -1688,9 +1688,9 @@
  },
  "benchmarks/test_equality.py::test_points_allclose[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
-   "readback": 3
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1
   }
  },
  "benchmarks/test_equality.py::test_rows_equal[sphere_small-ordito-cpu]": {
@@ -4393,9 +4393,9 @@
  },
  "benchmarks/test_neighbors.py::test_mutual_nearest[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 6,
-   "alloc": 12,
-   "readback": 5,
+   "launch": 4,
+   "alloc": 8,
+   "readback": 1,
    "scan": 1
   }
  },

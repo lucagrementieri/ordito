@@ -139,6 +139,13 @@ _DESCENT_MAX_POINTS_CUDA = 1 << 20
 # one two-way launch buys nothing: 0.61x at 8 k points but 1.23x on bunny and 1.31x on scrambled
 # dragon.
 _SELF_DESCENT_MAX_POINTS_CPU = 3 << 18
+# ``query_nearest``'s ``k = 1`` default: the descent below ``_DESCENT_MAX_POINTS_CUDA`` on CUDA
+# and below this on the CPU, the grid past them. Jittered queries (a tenth of the spacing), descent
+# / grid, CUDA: 0.72-0.74x to 36 k points, par on dragon, 0.66x on it scrambled, 0.94-0.95x at
+# 1-2 M; an exact self-match 0.70x on bunny, 0.86x on dragon, par at 543 k, 0.86x at 1 M. CPU:
+# 0.68x at 8 k, then 1.25-1.75x from 36 k to 1 M (the grid's one-ring walk is cheap there and the
+# CPU gains nothing from the descent's occupancy).
+_NEAREST_DESCENT_MAX_POINTS_CPU = 1 << 14
 
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
@@ -1205,7 +1212,12 @@ def query_nearest(
     not depend on ``backend``. The candidate row is register-resident for ``k <= 64``.
 
     !!! note "Which backend to use"
-        ``"hashgrid"`` (the default) is the faster broad phase when the query scale matches the
+        With neither ``backend`` nor ``accelerator`` given, ``k == 1`` takes ``"bvh"``'s
+        nearest-point descent on a cloud of up to about a million points (CUDA) or sixteen
+        thousand (CPU), unless ``initial_radius`` or ``grid_bins`` is given; everything else takes
+        ``"hashgrid"``.
+
+        ``"hashgrid"`` is the faster broad phase for ``k > 1`` when the query scale matches the
         cloud's density, because ``initial_radius`` sets the cell width: the walk visits
         ``(2 ceil(r / cell) + 1) ** 3`` cells, so a radius **f** times too large costs ``f ** 3``.
         A row the walk cannot certify within a few cells is finished by a tree over the cloud
@@ -1240,8 +1252,8 @@ def query_nearest(
         raises if it names the other one. A hash grid passed here keeps its own ``cell_width``
         rather than one derived from ``initial_radius``.
     backend
-        ``"hashgrid"`` (the default) or ``"bvh"``, when ``accelerator`` is ``None``. See the note
-        above.
+        ``"hashgrid"`` or ``"bvh"``, when ``accelerator`` is ``None``; ``None`` (the default)
+        chooses by ``k`` and the cloud's size, as the note above says.
     max_radius
         Stop deepening past this distance and leave the remaining slots unfilled (index ``-1``,
         distance ``inf``). Defaults to unbounded. A ``(m,)`` ``float32`` array gives each query
@@ -1255,8 +1267,8 @@ def query_nearest(
         Maximum primitives per leaf when building a BVH; ``None`` picks it from the point count
         (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
         ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree has one
-        point a leaf. The default ``"hashgrid"`` backend builds a BVH only to finish the rows its
-        cell walk cannot certify.
+        point a leaf. The ``"hashgrid"`` backend builds a BVH only to finish the rows its cell walk
+        cannot certify.
     initial_radius
         First search radius. Defaults to
         [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the
@@ -1350,6 +1362,17 @@ def query_nearest(
     )
     kind, resolved = _resolve_accelerator(accelerator, backend)
     _validate_nearest(k, bound, initial_radius)
+    if (
+        k == 1
+        and backend is None
+        and accelerator is None
+        and initial_radius is None
+        and grid_bins is None
+        and _nearest_descends(points, _NEAREST_DESCENT_MAX_POINTS_CPU)
+    ):
+        # With nothing chosen for the grid, one nearest point is the point tree's descent below
+        # the size where its build is the call (``_DESCENT_MAX_POINTS_CUDA``).
+        kind = "bvh"
 
     device = points.device
     single_query = not isinstance(queries, wp.array)
@@ -1771,8 +1794,9 @@ def _resolve_accelerator(
 
     ``backend`` is ``None`` rather than ``"hashgrid"`` in the signatures so that "not passed" is
     distinguishable from "passed as hashgrid": a caller who hands over a ``wp.Bvh`` and nothing else
-    must not be told it contradicts a default they never wrote. The *effective* default is still
-    ``"hashgrid"``, and it applies only when no accelerator is given.
+    must not be told it contradicts a default they never wrote. The *effective* default here is
+    ``"hashgrid"``, and it applies only when no accelerator is given; ``query_nearest`` turns it to
+    ``"bvh"`` for an unconfigured ``k == 1`` search below its size gate.
 
     A prebuilt accelerator already knows what it is, so it wins the dispatch -- but a ``backend``
     that names the other one is a mistake in the call rather than a preference to be silently

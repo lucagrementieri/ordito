@@ -1763,10 +1763,10 @@
  },
  "benchmarks/test_equality.py::test_meshes_allclose[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 7,
-   "memset": 4,
-   "d2h": 3,
+   "launch": 5,
+   "alloc": 5,
+   "memset": 2,
+   "d2h": 1,
    "sort": 2
   }
  },
@@ -1780,10 +1780,10 @@
  },
  "benchmarks/test_equality.py::test_points_allclose[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
-   "memset": 4,
-   "d2h": 3
+   "launch": 2,
+   "alloc": 4,
+   "memset": 2,
+   "d2h": 1
   }
  },
  "benchmarks/test_equality.py::test_rows_equal[sphere_small-ordito-cuda]": {
