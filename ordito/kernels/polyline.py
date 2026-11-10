@@ -232,6 +232,35 @@ def distance_to_first_point(
     out_distances[tid] = wp.length(points[tid] - polyline[0])
 
 
+@wp.func
+def segment_steps(
+    polyline: wp.array[wp.vec3],
+    step_size: wp.float32,
+    wrap_open: wp.int32,
+    bisect: wp.int32,
+    i: wp.int32,
+) -> wp.int32:
+    # Samples segment ``i`` is split into, over ``n - 1`` segments, or ``n`` for ``closed=True``.
+    # Slot ``n - 1`` is then the closing segment when ``closing_segment_flag`` adds one, and a zero
+    # count when the input already repeats its first point: a segment with no samples, which the
+    # offsets search in ``segment_parameter`` never selects, so the output is the
+    # ``n - 1``-segment one. That is what lets the host size the launch without asking whether
+    # the ends coincide. Shared by ``segment_step_counts`` and ``segment_step_offsets_block``.
+    n = polyline.shape[0]
+    if i == n - 1 and closing_segment_flag(polyline, wrap_open) == 0:
+        return wp.int32(0)
+    length = wp.length(polyline[loop_point(i + 1, n)] - polyline[i])
+    if bisect == 0:
+        return wp.max(wp.int32(wp.floor(length / step_size)), wp.int32(1))
+    # Halve every piece until it is no longer than the step: the smallest power of two whose
+    # pieces fit, tested on the piece length itself so a segment exactly ``2 ** k`` steps long
+    # stops at ``2 ** k``. The cap keeps the count an ``int32``.
+    pieces = wp.int32(1)
+    while length > step_size * wp.float32(pieces) and pieces < (1 << 30):
+        pieces = pieces * 2
+    return pieces
+
+
 @wp.kernel
 def segment_step_counts(
     polyline: wp.array[wp.vec3],
@@ -240,27 +269,39 @@ def segment_step_counts(
     bisect: wp.int32,
     out_steps: wp.array[wp.int32],
 ) -> None:
-    # Launched over ``n - 1`` segments, or ``n`` for ``closed=True``. Slot ``n - 1`` is then the
-    # closing segment when ``closing_segment_flag`` adds one, and a zero count when the input
-    # already repeats its first point: a segment with no samples, which the offsets search in
-    # ``segment_parameter`` never selects, so the output is the ``n - 1``-segment one. That is
-    # what lets the host size the launch without asking whether the ends coincide.
+    # ``segment_steps`` of every segment, for a device-wide scan into the offsets; a short
+    # polyline takes ``segment_step_offsets_block`` instead.
     i = wp.int32(wp.tid())
-    n = polyline.shape[0]
-    if i == n - 1 and closing_segment_flag(polyline, wrap_open) == 0:
-        out_steps[i] = 0
-        return
-    length = wp.length(polyline[loop_point(i + 1, n)] - polyline[i])
-    if bisect == 0:
-        out_steps[i] = wp.max(wp.int32(wp.floor(length / step_size)), wp.int32(1))
-        return
-    # Halve every piece until it is no longer than the step: the smallest power of two whose
-    # pieces fit, tested on the piece length itself so a segment exactly ``2 ** k`` steps long
-    # stops at ``2 ** k``. The cap keeps the count an ``int32``.
-    pieces = wp.int32(1)
-    while length > step_size * wp.float32(pieces) and pieces < (1 << 30):
-        pieces = pieces * 2
-    out_steps[i] = pieces
+    out_steps[i] = segment_steps(polyline, step_size, wrap_open, bisect, i)
+
+
+@wp.kernel
+def segment_step_offsets_block(
+    polyline: wp.array[wp.vec3],
+    step_size: wp.float32,
+    wrap_open: wp.int32,
+    bisect: wp.int32,
+    out_steps: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``segment_step_counts`` and the scan of its counts as one block, for a short polyline: each
+    # segment's count, and the ``n_segments + 1`` offsets (a leading zero, then the inclusive scan)
+    # by ``arc_length_table_block``'s carried chunk scan (``reduce.block_running_sum``). An integer
+    # sum is exact, so the offsets equal the device-wide scan's.
+    _block, lane = wp.tid()
+    n_segments = out_steps.shape[0]
+    if lane == 0:
+        out_offsets[0] = wp.int32(0)
+    carry = wp.int32(0)
+    for start in range(0, n_segments, wp.block_dim()):
+        i = start + lane
+        steps = wp.int32(0)
+        if i < n_segments:
+            steps = segment_steps(polyline, step_size, wrap_open, bisect, i)
+            out_steps[i] = steps
+        running, carry = block_running_sum(steps, carry)
+        if i < n_segments:
+            out_offsets[i + 1] = running
 
 
 @wp.func

@@ -5205,9 +5205,8 @@
  "benchmarks/test_polyline.py::test_smooth_upsample_polyline[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
-   "readback": 1,
-   "scan": 1
+   "alloc": 2,
+   "readback": 1
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygon[ordito-cpu-1024]": {
@@ -5291,17 +5290,15 @@
  "benchmarks/test_polyline.py::test_upsample_closed_polyline[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
-   "readback": 1,
-   "scan": 1
+   "alloc": 2,
+   "readback": 1
   }
  },
  "benchmarks/test_polyline.py::test_upsample_polyline[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
-   "readback": 1,
-   "scan": 1
+   "alloc": 2,
+   "readback": 1
   }
  },
  "benchmarks/test_proximity.py::test_closest_point_on_edges[tangle_torus_small-ordito-cpu]": {

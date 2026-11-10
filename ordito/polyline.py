@@ -78,6 +78,15 @@ _DOWNSAMPLE_DOUBLING_FROM = 2048
 # (byte-identical, at par).
 _ARC_TABLE_ONE_BLOCK_SEGMENTS = 4_096
 
+# Segments up to which ``_upsample`` counts each segment's samples and scans the counts into
+# offsets in one block (``kernels/polyline.segment_step_offsets_block``), the arc-length table's
+# form in integers; longer polylines on CUDA by a count launch and ``array.counts_to_offsets``. The
+# offsets are the same integers either way. CUDA, block against the count launch and scan:
+# ``polyline_upsample`` / ``polyline_smooth_upsample`` 0.72-0.77x to 512 segments, 0.95-1.00x at
+# 2 047, 1.05-1.13x at 4 096 (a carried chunk a step, sixteen of them). The CPU device takes the
+# block at every length: 0.90-0.98x to 2 048 segments, at par past it.
+_STEP_OFFSETS_ONE_BLOCK_SEGMENTS = 2_048
+
 
 # ``polyline_radius``'s folded reductions: the kernel's selector and the result slot's seed.
 _RADIUS_REDUCTIONS: dict[str, tuple[wp.int32, float]] = {
@@ -695,14 +704,26 @@ def _upsample(
         return polyline
     n_segments = n_points if closed else n_points - 1
 
-    steps = _launch.empty(n_segments, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_polyline.segment_step_counts,
-        dim=n_segments,
-        inputs=[polyline, wp.float32(step_size), wp.int32(closed), wp.int32(bisect), steps],
-        device=device,
-    )
-    offsets, total = od.array.counts_to_offsets(steps)
+    step_inputs = [polyline, wp.float32(step_size), wp.int32(closed), wp.int32(bisect)]
+    if n_segments <= _STEP_OFFSETS_ONE_BLOCK_SEGMENTS or not wp.get_device(device).is_cuda:
+        steps, offsets = _launch.carve(wp.int32, (n_segments, n_segments + 1), device)
+        _launch.launch_tiled(
+            kernel_polyline.segment_step_offsets_block,
+            dim=1,
+            inputs=[*step_inputs, steps, offsets],
+            device=device,
+        )
+        # Sizes the output: the sample count is the offsets' total.
+        total = int(read_scalar(offsets))
+    else:
+        steps = _launch.empty(n_segments, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_polyline.segment_step_counts,
+            dim=n_segments,
+            inputs=[*step_inputs, steps],
+            device=device,
+        )
+        offsets, total = od.array.counts_to_offsets(steps)
 
     out_points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(

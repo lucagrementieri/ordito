@@ -113,7 +113,7 @@ def block_max(value: Any):
 
 
 @wp.func
-def block_running_sum(value: wp.float32, carry: wp.float32) -> tuple[wp.float32, wp.float32]:
+def block_running_sum(value: Any, carry: Any) -> tuple[Any, Any]:
     # One block-wide chunk of a running sum carried across chunks: the lane's inclusive prefix of
     # ``value`` plus ``carry``, and the carry past the chunk (``carry`` plus the last lane's
     # prefix), block-uniform. A block walking an array a ``wp.block_dim()``-wide chunk at a time
