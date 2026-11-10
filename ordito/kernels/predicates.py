@@ -920,6 +920,17 @@ def segment_segment_distance_sq(
 
 
 @wp.func
+def point_segment_offset_d(ap: wp.vec3d, ab: wp.vec3d) -> wp.vec3d:
+    # ``p`` minus its closest point on the segment from ``a`` to ``b``, given ``p - a`` and
+    # ``b - a``; a zero-length segment is its point.
+    length_sq = wp.length_sq(ab)
+    t = wp.float64(0.0)
+    if length_sq > wp.float64(0.0):
+        t = wp.clamp(wp.dot(ab, ap) / length_sq, wp.float64(0.0), wp.float64(1.0))
+    return ap - ab * t
+
+
+@wp.func
 def point_triangle_offset(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.vec3d:
     # ``p`` minus its closest point on a closed triangle, by the seven-region barycentric test. A
     # degenerate triangle falls through to its edges, which is why the vertex and edge regions are
@@ -956,9 +967,18 @@ def point_triangle_offset(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) ->
     if va <= zero and (d4 - d3) >= zero and (d5 - d6) >= zero:
         return bp - (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
 
+    # ``va + vb + vc`` is ``|ab x ac|^2``, so the degeneracy test is relative to the edges: an
+    # absolute one treated every triangle under ~1e-3 across as degenerate (a scan's faces,
+    # ``dragon``'s at 4e-4 included) and returned ``ap``, 1.5x the true distance there. A sliver
+    # whose corner angle's sine is under 1e-6 takes its nearest edge: its interior is within
+    # rounding of its edges, and the quotients below would divide rounding by rounding.
     denominator = va + vb + vc
-    if denominator <= TOLERANCE_ZERO_F64:
-        return ap  # degenerate: the edge cases above already covered it
+    if not (denominator > TOLERANCE_ZERO_F64 * wp.length_sq(ab) * wp.length_sq(ac)):
+        to_ab = point_segment_offset_d(ap, ab)
+        to_ac = point_segment_offset_d(ap, ac)
+        to_bc = point_segment_offset_d(bp, c - b)
+        best = wp.where(wp.length_sq(to_ac) < wp.length_sq(to_ab), to_ac, to_ab)
+        return wp.where(wp.length_sq(to_bc) < wp.length_sq(best), to_bc, best)
     return ap - ab * (vb / denominator) - ac * (vc / denominator)
 
 
