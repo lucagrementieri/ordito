@@ -1230,11 +1230,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   CG kernels would need to read the condition). `cholesky`'s landmark search batches 16 levels
   with its own advance kernel, whose stop rule (the body's last level reached a row) saves the
   idle body `loop_advance_by` would run.
-- **`polyline._arc_length_table` is `map_vertices_to_circle`'s old shape** (2026-11-10): a length
-  launch, a slice and a device-wide float scan. The one-block carried scan
-  (`kernels/parametrization.circle_positions_block`: CUDA 0.39x to 2 048 points, CPU 0.48-0.74x
-  at every length, byte-identical on the CPU) would serve `cumulative_arc_length` and
-  `polyline_resample` below a length gate. Unpriced there.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

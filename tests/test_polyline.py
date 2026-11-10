@@ -827,16 +827,21 @@ def test_cumulative_arc_length_matches_reference(device: str) -> None:
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
-def test_cumulative_arc_length_on_a_long_polyline(device: str, deterministic: bool) -> None:
+@pytest.mark.parametrize("n_points", [4_097, 4_098, 200_000])
+def test_cumulative_arc_length_on_a_long_polyline(
+    device: str, deterministic: bool, n_points: int
+) -> None:
     """
-    Not a library comparison: a 200k-point table against a ``float64`` NumPy ``cumsum``.
+    Not a library comparison: long tables against a ``float64`` NumPy ``cumsum``.
 
-    The long input spans many chunks of the fixed-order scan (determinism on) and many
-    tiles of CUB's (``False``); both must match the exact sums to float32 rounding, and the
+    4 096 segments are the last a single block writes, its running sum carried across 16 chunks;
+    on CUDA 4 097 and more take the device-wide scan, the 200k-point input spanning many chunks of
+    the fixed-order scan (determinism on) and many tiles of CUB's (``False``); the CPU takes the
+    block at every length. All must match the exact sums to float32 rounding, and the
     deterministic table must come back with the same bits on a second call. A sum that dropped or
     double-counted a chunk is off by a whole chunk's length, far outside the tolerance.
     """
-    pts_np = _random_open_polyline(200_000)
+    pts_np = _random_open_polyline(n_points)
     polyline_wp = points_to_warp(pts_np, device)
     expected_np = np.concatenate(
         [[0.0], np.cumsum(np.linalg.norm(np.diff(pts_np.astype(np.float32), axis=0), axis=1))]

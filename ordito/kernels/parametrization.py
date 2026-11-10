@@ -5,6 +5,7 @@ from ordito.kernels.array import cross2, to_vec2d
 from ordito.kernels.laplacian import signed_cotmatrix_row
 from ordito.kernels.linalg import free_row
 from ordito.kernels.predicates import squared_edge_lengths
+from ordito.kernels.reduce import block_running_sum
 from ordito.kernels.triangles import corner_triple, face_vertices, row_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -222,10 +223,9 @@ def circle_positions_block(
         segment = wp.float32(0.0)
         if i < n:
             segment = boundary_segment_length(boundary, vertices, i)
-        scanned = wp.tile_scan_inclusive(wp.tile(segment))
+        running, carry = block_running_sum(segment, carry)
         if i < n:
-            out_uv[i] = wp.vec2(carry + wp.untile(scanned), wp.float32(0.0))
-        carry += wp.tile_extract(scanned, lanes - 1)
+            out_uv[i] = wp.vec2(running, wp.float32(0.0))
     perimeter = loop_perimeter(boundary, vertices, carry)
     for start in range(0, n, lanes):
         i = start + lane

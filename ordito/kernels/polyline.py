@@ -30,6 +30,7 @@ from ordito.kernels.reduce import (
     block_chunk_1d,
     block_max,
     block_min,
+    block_running_sum,
     block_sum,
     commit_block_sum,
     last_ticket,
@@ -465,6 +466,30 @@ def arc_segment_lengths(
     if i == 0:
         out_cumulative[0] = wp.float32(0.0)
     out_cumulative[i + 1] = arc_table_segment(polyline, wrap_open, i)
+
+
+@wp.kernel
+def arc_length_table_block(
+    polyline: wp.array[wp.vec3], wrap_open: wp.int32, out_cumulative: wp.array[wp.float32]
+) -> None:
+    # ``arc_segment_lengths`` and the scan of its table as one block, for a short polyline: the
+    # same segments (``arc_table_segment``), summed a block-wide chunk at a time with the running
+    # sum carried across chunks (``reduce.block_running_sum``), so the table is written whole in
+    # one launch. The two forms differ in the scan's summation order alone; both are fixed. On the
+    # CPU device the block is one lane, which sums in index order as the scan does.
+    _block, lane = wp.tid()
+    n_segments = out_cumulative.shape[0] - 1
+    if lane == 0:
+        out_cumulative[0] = wp.float32(0.0)
+    carry = wp.float32(0.0)
+    for start in range(0, n_segments, wp.block_dim()):
+        i = start + lane
+        length = wp.float32(0.0)
+        if i < n_segments:
+            length = arc_table_segment(polyline, wrap_open, i)
+        running, carry = block_running_sum(length, carry)
+        if i < n_segments:
+            out_cumulative[i + 1] = running
 
 
 @wp.kernel

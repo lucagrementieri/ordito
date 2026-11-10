@@ -106,6 +106,17 @@ def block_max(value: Any):
 
 
 @wp.func
+def block_running_sum(value: wp.float32, carry: wp.float32) -> tuple[wp.float32, wp.float32]:
+    # One block-wide chunk of a running sum carried across chunks: the lane's inclusive prefix of
+    # ``value`` plus ``carry``, and the carry past the chunk (``carry`` plus the last lane's
+    # prefix), block-uniform. A block walking an array a ``wp.block_dim()``-wide chunk at a time
+    # scans it in one launch, in a fixed order; on the CPU device a chunk is one lane, so the sum
+    # runs in index order. Every lane must call it (the scan is a block barrier).
+    scanned = wp.tile_scan_inclusive(wp.tile(value))
+    return carry + wp.untile(scanned), carry + wp.tile_extract(scanned, wp.block_dim() - 1)
+
+
+@wp.func
 def block_argmin(value: Any, index: wp.int32) -> tuple[Any, wp.int32]:
     # The block-cooperative counterpart of ``update_argmin``: given one candidate per lane, the
     # smallest value over the block and the **lowest index among the lanes attaining it**. Every

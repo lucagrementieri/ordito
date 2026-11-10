@@ -69,6 +69,14 @@ from ordito.kernels import reduce as kernel_reduce
 # win being paid for, so the branch takes the device too.
 _DOWNSAMPLE_DOUBLING_FROM = 2048
 
+# Segments up to which an arc-length table (``_arc_length_table``) is written by one block, its
+# scan carried across chunks, in one launch; longer tables on CUDA by a length launch and a
+# device-wide scan. CUDA, block against the two issues: ``cumulative_arc_length`` 0.42-0.46x and
+# ``polyline_resample`` 0.53x to 4 096 segments, 0.93x / 0.79x at 8 192, 1.4-2.0x at 16 384. The
+# CPU device takes the block at every length, its one lane summing in index order as the scan does
+# (byte-identical, at par).
+_ARC_TABLE_ONE_BLOCK_SEGMENTS = 4_096
+
 
 # ``polyline_radius``'s folded reductions: the kernel's selector and the result slot's seed.
 _RADIUS_REDUCTIONS: dict[str, tuple[wp.int32, float]] = {
@@ -1159,6 +1167,14 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
     n_points = polyline.size
     n_segments = n_points if closed else n_points - 1
     cumulative = _launch.empty(n_segments + 1, dtype=wp.float32, device=device)
+    if n_segments <= _ARC_TABLE_ONE_BLOCK_SEGMENTS or not wp.get_device(device).is_cuda:
+        _launch.launch_tiled(
+            kernel_polyline.arc_length_table_block,
+            dim=1,
+            inputs=[polyline, wp.int32(closed), cumulative],
+            device=device,
+        )
+        return cumulative
     _launch.launch(
         kernel_polyline.arc_segment_lengths,
         dim=n_segments,
