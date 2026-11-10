@@ -4590,11 +4590,11 @@
  },
  "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-10]": {
   "counts": {
-   "launch": 41,
-   "alloc": 15,
-   "readback": 11,
-   "scan": 1,
-   "sort": 1
+   "launch": 409,
+   "alloc": 45,
+   "readback": 6,
+   "scan": 19,
+   "sort": 19
   }
  },
  "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-3]": {
@@ -4608,11 +4608,11 @@
  },
  "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-10]": {
   "counts": {
-   "launch": 41,
-   "alloc": 15,
-   "readback": 11,
-   "scan": 1,
-   "sort": 1
+   "launch": 388,
+   "alloc": 45,
+   "readback": 6,
+   "scan": 17,
+   "sort": 17
   }
  },
  "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-3]": {

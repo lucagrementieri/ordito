@@ -280,7 +280,14 @@ def test_tutte(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "igl")
 @pytest.mark.parametrize("iterations", _ARAP_ITERATIONS)
 def test_arap(bench_case: BenchCase, iterations: int) -> None:
-    """Local/global ARAP from a harmonic warm start: per-face SVD plus a CG solve per iteration."""
+    """
+    Local/global ARAP from a harmonic warm start: per-face SVD plus a CG solve per iteration.
+
+    The patch meshes' warm-started solves are short (1-20 rounds), so these rows iterate on CUDA;
+    ``arap`` factors its operator only once its second solve's rounds times the iterations left
+    reach the device's gate (graded meshes and large schedules, 0.54-0.59x at 10 iterations). The
+    CPU's gate is lower: its 10-iteration rows factor (0.44-0.6x).
+    """
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, loop_uv = _boundary(bench_case)

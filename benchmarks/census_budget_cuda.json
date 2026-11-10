@@ -5055,7 +5055,7 @@
    "launch": 69,
    "alloc": 17,
    "memset": 9,
-   "d2h": 2,
+   "d2h": 3,
    "scan": 2,
    "sort": 1
   }
@@ -5065,7 +5065,7 @@
    "launch": 48,
    "alloc": 17,
    "memset": 9,
-   "d2h": 2,
+   "d2h": 3,
    "scan": 2,
    "sort": 1
   }
@@ -5075,7 +5075,7 @@
    "launch": 69,
    "alloc": 17,
    "memset": 9,
-   "d2h": 2,
+   "d2h": 3,
    "scan": 2,
    "sort": 1
   }
@@ -5085,7 +5085,7 @@
    "launch": 48,
    "alloc": 17,
    "memset": 9,
-   "d2h": 2,
+   "d2h": 3,
    "scan": 2,
    "sort": 1
   }

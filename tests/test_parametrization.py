@@ -584,6 +584,39 @@ def test_arap_default_tolerance_tracks_a_tight_solve(saddle_graded: tuple[tm.Tri
     assert np.array_equal(uv_default_wp.numpy()[boundary_wp.numpy()], boundary_uv_wp.numpy())
 
 
+def test_arap_factored_global_step_tracks_the_iteration(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+):
+    """
+    Ordito against ordito: the two routes of ``arap``'s global step, factored and iterated.
+
+    ``arap`` factors its operator once its second solve proves long; only the iterated route has
+    the igl oracle above for every fixture, so the factored one is pinned to it here, with the gate
+    forced each way and the factored route checked to have run.
+    """
+    _, mesh_wp = saddle_graded
+    boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
+    factored: list[bool] = []
+    build = od.parametrization._arap_factorization  # pyright: ignore[reportPrivateUsage]
+
+    def counted(*args: Any) -> object:
+        held = build(*args)
+        factored.append(held is not None)
+        return held
+
+    monkeypatch.setattr(od.parametrization, "_arap_factorization", counted)
+    uv_np = {}
+    for threshold in (2**62, 0):
+        monkeypatch.setattr(od.parametrization, "_ARAP_FACTOR_FROM_ROUNDS_CUDA", threshold)
+        monkeypatch.setattr(od.parametrization, "_ARAP_FACTOR_FROM_ROUNDS_CPU", threshold)
+        uv_np[threshold] = od.parametrization.arap(
+            mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp
+        ).numpy()
+    assert factored == [True]
+    assert np.allclose(uv_np[0], uv_np[2**62], rtol=1e-5, atol=1e-5)
+    assert np.array_equal(uv_np[0][boundary_wp.numpy()], boundary_uv_wp.numpy())
+
+
 def test_arap_all_vertices_fixed(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # Every vertex pinned: the prescribed UV is returned with no solve, so this runs on CPU too.
     _, mesh_wp = saddle_graded

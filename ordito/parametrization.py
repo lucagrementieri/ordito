@@ -37,7 +37,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_same_device
+from ordito._common import read_scalar, require_same_device
 from ordito.config import is_deterministic
 from ordito.kernels import parametrization as kernel_parametrization
 from ordito.kernels import scatter as kernel_scatter
@@ -50,6 +50,17 @@ _CG_TOLERANCE = 1e-8
 # operator's conditioning is the Laplacian's squared, and ``lscm`` pins only two vertices), and
 # past this size the factorization is the cheaper one-shot solve too.
 _FACTOR_FROM_VERTICES = 4_000
+
+# ``arap`` factors its global-step operator once its second solve's conjugate-gradient rounds,
+# times the iterations still to run, reach this: the later warm-started solves then cost more than
+# a factorization and its solves. On CUDA a factorization costs about 80-160 rounds from 4 k to
+# 330 k vertices, so it is reached on graded meshes (saddle_graded, 112 rounds a solve) and long
+# schedules on large ones (283 k vertices, 52), never on the patch benchmarks' well-conditioned
+# meshes (at most 18). The CPU's rounds are dearer against its factorization: 10 iterations on
+# those patch meshes factor there too (0.45-0.62x), and only a schedule's last solve or two does
+# not pay (1.04-1.08x).
+_ARAP_FACTOR_FROM_ROUNDS_CUDA = 300
+_ARAP_FACTOR_FROM_ROUNDS_CPU = 16
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -655,7 +666,8 @@ def arap(
     step fits, per triangle, the closest rotation between the isometrically flattened rest triangle
     and its current UV image (closed-form 2D polar decomposition, reflections forbidden); the global
     step solves the cotangent-Laplacian Poisson system ``(-L)_uu U_u = (K R)_u - (-L)_ub bc`` for
-    each UV column with conjugate gradient.
+    each UV column with conjugate gradient, or by a factorization of it once those solves prove
+    long (see Notes).
 
     A good ``uv_init`` matters: ARAP is non-convex, so feed a fold-free initial map such as
     [`harmonic`][ordito.parametrization.harmonic] or [`tutte`][ordito.parametrization.tutte], with
@@ -731,6 +743,13 @@ def arap(
     in float64 for determinism while the UV field is stored ``float32`` between iterations (module
     convention); the resulting per-iteration drift is well under the pinned-boundary tolerance for
     the default iteration count.
+
+    The global step's operator is the same at every iteration. When the second iteration's solve
+    shows the solves are long -- a graded mesh, or a long schedule on a large one -- the remaining
+    iterations solve by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] factorization of it,
+    refined to ``tolerance``, held until the call returns: device memory of the order of the
+    operator's fill-in, within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+    An operator that cannot be factored keeps iterating.
 
     **Why ``tolerance`` defaults to ``1e-7`` and not ``1e-8``.** Unlike
     [`harmonic`][ordito.parametrization.harmonic] or [`lscm`][ordito.parametrization.lscm], whose
@@ -905,12 +924,15 @@ def arap(
         tol=tolerance,
         maxiter=10 * n_interior,
         preconditioner="chebyshev",
-        # The global steps are warm-started, short Jacobi-Chebyshev solves of an operator rebuilt
-        # per call, which a factorization on the second step does not beat: ARAP keeps iterating.
+        # The global steps are warm-started Jacobi-Chebyshev solves of an operator rebuilt per
+        # call, mostly too short for a factorization to beat (1.3-3.5x on the patch meshes when
+        # factored at the second step); the loop factors only once they are found long
+        # (``_ARAP_FACTOR_FROM_ROUNDS_CUDA`` / ``_CPU``).
         factorize=False,
     )
 
-    for _ in range(max_iterations):
+    held = None
+    for iteration in range(max_iterations):
         # Local step: fit per-face rotations to the current solution and scatter the rotation RHS.
         _launch.launch(
             kernel_parametrization.arap_local_step,
@@ -935,8 +957,27 @@ def arap(
             inputs=[fixed_mask, interior_map, rhs_const, rhs_rot_x, rhs_rot_y, rhs_rot_sorted, b],
             device=device,
         )
-        # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``.
-        solver()
+        # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``;
+        # by a factorization of the operator once the iteration is found long.
+        if held is not None:
+            held.solve(
+                odt.as_array2d(b, wp.float64), odt.as_array2d(sol, wp.float64), tol=tolerance
+            )
+            continue
+        rounds, _, _ = solver()
+        if iteration == 1 and iteration + 1 < max_iterations:
+            # The second solve's round count, read once a call: it predicts the later solves'
+            # length (the first, from ``uv_init``, does not: a harmonic start's first solve can be
+            # long and every later one short), which decides whether a factorization pays.
+            remaining = max_iterations - iteration - 1
+            if _round_count(rounds) * remaining >= (
+                _ARAP_FACTOR_FROM_ROUNDS_CUDA
+                if wp.get_device(device).is_cuda
+                else _ARAP_FACTOR_FROM_ROUNDS_CPU
+            ):
+                held = _arap_factorization(q_uu, vertices, fixed_mask, interior_map)
+    if held is not None:
+        held.release()
     # The full UV field, the pinned rows at their constraints.
     _launch.launch(
         kernel_parametrization.scatter_solution,
@@ -945,6 +986,32 @@ def arap(
         device=device,
     )
     return out_uv
+
+
+def _arap_factorization(
+    q_uu: odt.BsrMatrix[wp.float64],
+    vertices: wp.array[wp.vec3],
+    fixed_mask: wp.array[wp.bool],
+    interior_map: wp.array[wp.int32],
+) -> twl.OperatorFactorization | None:
+    """
+    Factor ``arap``'s global-step operator for its remaining solves, or ``None`` if it cannot be.
+
+    The factorization records its solve graph on its first solve, since every later iteration
+    replays it.
+    """
+    held = twl.OperatorFactorization(q_uu, vertices, fixed_mask=fixed_mask, free_map=interior_map)
+    if not held.factor() or held.factorization is None:
+        return None
+    held.factorization.records_at_once = True
+    return held
+
+
+def _round_count(rounds: object) -> int:
+    """Return a solve's round count, a device array on CUDA and a host integer on the CPU."""
+    if isinstance(rounds, wp.array):
+        return int(read_scalar(cast("wp.array[wp.int32]", rounds), 0))
+    return int(cast("int", rounds))
 
 
 def _scatter_constraints(
