@@ -778,6 +778,7 @@ def assert_provenance_describes(
     *,
     positions_reproduce: bool = True,
     faces_inside_sources: bool = True,
+    sourceless: bool = False,
     atol: float = 1e-5,
 ) -> None:
     """
@@ -789,7 +790,9 @@ def assert_provenance_describes(
     ``positions_reproduce`` the input positions carried through it are the output positions -- the
     claim that a float field follows the edit by the weights it was formed with; a decimation that
     places vertices by its own rule passes ``False``, and an edit that moves faces off their sources
-    (a collapse) passes ``faces_inside_sources=False``.
+    (a collapse) passes ``faces_inside_sources=False``. ``sourceless`` admits ``-1`` sources (a
+    hole fill's patch faces, a vertex it places by its own rule): such a vertex's operator row is
+    empty and it reads zero, and the position and face claims hold for the sourced elements.
     """
     n_vertices, n_faces = vertices_wp.size, faces_wp.size // 3
     n_out_vertices, n_out_faces = new_vertices_wp.size, new_faces_wp.size // 3
@@ -798,22 +801,32 @@ def assert_provenance_describes(
     face_index_np = provenance.face_index.numpy()
     assert vertex_index_np.shape == (n_out_vertices,)
     assert face_index_np.shape == (n_out_faces,)
+    lowest = -1 if sourceless else 0
     assert vertex_index_np.size == 0 or (
-        0 <= vertex_index_np.min() and vertex_index_np.max() < n_vertices
+        lowest <= vertex_index_np.min() and vertex_index_np.max() < n_vertices
     )
-    assert face_index_np.size == 0 or (0 <= face_index_np.min() and face_index_np.max() < n_faces)
+    assert face_index_np.size == 0 or (
+        lowest <= face_index_np.min() and face_index_np.max() < n_faces
+    )
+    sourced = vertex_index_np >= 0
     if provenance.vertex_operator is not None:
         operator = provenance.vertex_operator
         assert (int(operator.nrow), int(operator.ncol)) == (n_out_vertices, n_vertices)
         row_sums = np.asarray(bsr_to_csr(operator).sum(axis=1)).ravel()
-        assert np.allclose(row_sums, 1.0, rtol=1e-5, atol=1e-5)
+        assert np.allclose(row_sums, sourced.astype(np.float64), rtol=1e-5, atol=1e-5)
     if positions_reproduce:
         carried_np = provenance.vertex_values(vertices_wp).numpy()
-        assert np.allclose(carried_np, new_vertices_wp.numpy(), rtol=0.0, atol=atol)
-    if faces_inside_sources and n_out_faces > 0:
+        assert np.allclose(carried_np[~sourced], 0.0)
+        assert np.allclose(
+            carried_np[sourced], new_vertices_wp.numpy()[sourced], rtol=0.0, atol=atol
+        )
+    face_sourced = face_index_np >= 0
+    if faces_inside_sources and face_sourced.any():
         points_np = vertices_wp.numpy().astype(np.float64)
-        sources_np = points_np[faces_wp.numpy().reshape(-1, 3)[face_index_np]]
-        corners_np = new_vertices_wp.numpy().astype(np.float64)[new_faces_wp.numpy().reshape(-1, 3)]
+        sources_np = points_np[faces_wp.numpy().reshape(-1, 3)[face_index_np[face_sourced]]]
+        corners_np = new_vertices_wp.numpy().astype(np.float64)[
+            new_faces_wp.numpy().reshape(-1, 3)[face_sourced]
+        ]
         normals_np = np.cross(
             sources_np[:, 1] - sources_np[:, 0], sources_np[:, 2] - sources_np[:, 0]
         )

@@ -1066,9 +1066,36 @@ def submesh_from_face_mask(
     return sub_vertices, sub_faces, provenance
 
 
+@overload
 def delete_region_keep_boundary(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_mask: wp.array[wp.bool]
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]: ...
+@overload
+def delete_region_keep_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]], od.interpolation.Provenance
+]: ...
+def delete_region_keep_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]]]
+    | tuple[
+        wp.array[wp.vec3], wp.array[wp.int32], list[wp.array[wp.int32]], od.interpolation.Provenance
+    ]
+):
     """
     Remove a face region and report the boundary loops the removal opened.
 
@@ -1089,6 +1116,9 @@ def delete_region_keep_boundary(
         ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
         ``(n_faces,)`` mask, ``True`` for each face to **delete**.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the surviving submesh.
 
     Returns
     -------
@@ -1100,6 +1130,9 @@ def delete_region_keep_boundary(
         The boundary loops the deletion opened, as vertex-index cycles **into** ``kept_vertices`` --
         the same form [`ordito.boundary.boundary_loops`][ordito.boundary.boundary_loops] returns.
         A loop the input already had is excluded, so an open input's original rims do not appear.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each kept vertex is a copy of the input
+        vertex it was, and each kept face of the input face it is.
 
     Raises
     ------
@@ -1153,11 +1186,24 @@ def delete_region_keep_boundary(
     print([loop.shape for loop in new_loops])  # [(4,)]
     ```
     """
-    kept_vertices, kept_faces, _, _, views = _delete_region_loops(
+    kept_vertices, kept_faces, _, _, views, vertex_index = _delete_region_loops(
         vertices, faces, face_mask, host_bounds=True
     )
     assert views is not None
-    return kept_vertices, kept_faces, views
+    if not return_provenance:
+        return kept_vertices, kept_faces, views
+    device = vertices.device
+    kept = _launch.empty(face_mask.size, dtype=wp.bool, device=device)
+    _launch.map(
+        kernel_array.mask_and_not,
+        _launch.full(face_mask.size, True, dtype=wp.bool, device=device),
+        face_mask,
+        out=kept,
+    )
+    provenance = od.interpolation.Provenance(
+        vertex_index, od.array.flatnonzero(kept), None, vertices.size, face_mask.size
+    )
+    return kept_vertices, kept_faces, views, provenance
 
 
 def delete_region_keep_boundary_with_offsets(
@@ -1233,7 +1279,7 @@ def delete_region_keep_boundary_with_offsets(
     print(loop_offsets.numpy().tolist())  # [0, 4]
     ```
     """
-    kept_vertices, kept_faces, loops, loop_offsets, _ = _delete_region_loops(
+    kept_vertices, kept_faces, loops, loop_offsets, _, _ = _delete_region_loops(
         vertices, faces, face_mask, host_bounds=False
     )
     return kept_vertices, kept_faces, loops, loop_offsets
@@ -1251,9 +1297,12 @@ def _delete_region_loops(
     wp.array[wp.int32],
     wp.array[wp.int32],
     list[wp.array[wp.int32]] | None,
+    wp.array[wp.int32],
 ]:
     """
-    Both ``delete_region_keep_boundary`` forms: ``(vertices, faces, loops, offsets, views)``.
+    Both ``delete_region_keep_boundary`` forms: ``(vertices, faces, loops, offsets, views, index)``.
+
+    ``index`` is the extraction's map from each kept vertex to its input vertex.
 
     With ``host_bounds`` the one readback is every loop's verdict and extent, and ``views`` cuts
     the kept loops straight out of the traced ones (``loops`` / ``offsets`` are then the traced,
@@ -1283,6 +1332,7 @@ def _delete_region_loops(
         wp.array[wp.int32],
         wp.array[wp.int32],
         list[wp.array[wp.int32]] | None,
+        wp.array[wp.int32],
     ]:
         # Built only when returned: two allocations the common path must not pay.
         return (
@@ -1290,6 +1340,7 @@ def _delete_region_loops(
             kept_faces,
             *_launch.empty_packed(wp.int32, device),
             [] if host_bounds else None,
+            vertex_index,
         )
 
     if kept_faces.size == 0:
@@ -1337,7 +1388,7 @@ def _delete_region_loops(
             for kept, size, start in counts_np
             if kept
         ]
-        return kept_vertices, kept_faces, flat_loops, loop_offsets, views
+        return kept_vertices, kept_faces, flat_loops, loop_offsets, views, vertex_index
     _launch.array_scan(kept_counts, out_array=kept_counts, inclusive=True)
     # The packed form's one readback: the scan's tail sizes the kept loops.
     tail = read_scalar(kept_counts)
@@ -1352,7 +1403,7 @@ def _delete_region_loops(
         inputs=[flat_loops, loop_offsets, kept_counts, loops, offsets],
         device=device,
     )
-    return kept_vertices, kept_faces, loops, offsets, None
+    return kept_vertices, kept_faces, loops, offsets, None, vertex_index
 
 
 def _submesh_from_mask(

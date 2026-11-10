@@ -1287,6 +1287,7 @@ def emit_degree3_replacement(
     link_sums: wp.array[wp.int32],
     n_input_faces: wp.int32,
     cursor: wp.array[wp.int32],
+    slot_sources: wp.array[wp.int32],
     out_lost: wp.array[wp.int32],
     out_kept: wp.array[wp.int32],
     out_new_faces: wp.array2d[wp.int32],
@@ -1324,6 +1325,11 @@ def emit_degree3_replacement(
             return
     slot = wp.atomic_add(cursor, 0, 1)
     out_kept[n_input_faces + slot] = 1
+    # ``slot_sources`` (empty unless a provenance is asked for) names each row's input face: the
+    # replacement takes its fan's lowest-halfedge face's, which no other fan of this pass touches.
+    if slot_sources.shape[0] > 0:
+        h0 = wp.min(wp.min(fans[v, 0], fans[v, 1]), fans[v, 2])
+        slot_sources[n_input_faces + slot] = slot_sources[h0 // 3]
     for k in range(3):
         r = rim[k]
         out_kept[fans[v, k] // 3] = 0
@@ -1341,6 +1347,29 @@ def mark_kept_face_vertices(
     h = wp.int32(wp.tid())
     if kept[h // 3] != 0:
         out_flags[faces[h]] = 1
+
+
+@wp.func
+def kept_row(kept_inclusive: wp.array[wp.int32], t: wp.int32) -> wp.int32:
+    # The output row of ``remove_degree3_vertices``' face slot ``t``, ``-1`` when it was dropped.
+    row, kept = scanned_count(kept_inclusive, t)
+    if kept != 0:
+        return row
+    return -1
+
+
+@wp.func
+def referenced_row(
+    referenced_inclusive: wp.array[wp.int32], n_kept: wp.int32, t: wp.int32
+) -> wp.int32:
+    # The output index of vertex ``t``, ``-1`` when no kept face names it. The first referenced
+    # entry's predecessor in the one scan is the last kept flag's, whose value is the kept total.
+    start = n_kept
+    if t > 0:
+        start = referenced_inclusive[t - 1]
+    if referenced_inclusive[t] != start:
+        return start - n_kept
+    return -1
 
 
 @wp.kernel
@@ -1362,18 +1391,37 @@ def compact_kept_faces_and_vertices(
     # for the ``n_used`` face rows ever written.
     t = wp.int32(wp.tid())
     if t < kept_inclusive.shape[0]:
-        row, kept = scanned_count(kept_inclusive, t)
-        if kept != 0:
+        row = kept_row(kept_inclusive, t)
+        if row >= 0:
             for k in range(3):
                 out_faces[3 * row + k] = referenced_inclusive[faces[3 * t + k]] - n_kept - 1
     if t < vertices.shape[0]:
-        # The first referenced entry's predecessor in the one scan is the last kept flag's, whose
-        # value is the kept total.
-        start = n_kept
-        if t > 0:
-            start = referenced_inclusive[t - 1]
-        if referenced_inclusive[t] != start:
-            out_vertices[start - n_kept] = vertices[t]
+        index = referenced_row(referenced_inclusive, n_kept, t)
+        if index >= 0:
+            out_vertices[index] = vertices[t]
+
+
+@wp.kernel
+def degree3_provenance_maps(
+    n_vertices: wp.int32,
+    slot_sources: wp.array[wp.int32],
+    kept_inclusive: wp.array[wp.int32],
+    referenced_inclusive: wp.array[wp.int32],
+    n_kept: wp.int32,
+    out_vertex_index: wp.array[wp.int32],
+    out_face_index: wp.array[wp.int32],
+) -> None:
+    # ``remove_degree3_vertices``' provenance, over the rows ``compact_kept_faces_and_vertices``
+    # writes: each output face's input face, each output vertex's input vertex.
+    t = wp.int32(wp.tid())
+    if t < kept_inclusive.shape[0]:
+        row = kept_row(kept_inclusive, t)
+        if row >= 0:
+            out_face_index[row] = slot_sources[t]
+    if t < n_vertices:
+        index = referenced_row(referenced_inclusive, n_kept, t)
+        if index >= 0:
+            out_vertex_index[index] = t
 
 
 @wp.func

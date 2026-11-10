@@ -124,6 +124,7 @@ _TUNNEL_SCRATCH_ENTRIES = 1 << 22
 _TUNNEL_LENGTH_SLACK = 1e-4
 
 
+@overload
 def make_solid(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -132,7 +133,32 @@ def make_solid(
     join_components: bool = False,
     max_iter: int = 10,
     inner_iter: int = 3,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def make_solid(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    keep_largest: bool = True,
+    join_components: bool = False,
+    max_iter: int = 10,
+    inner_iter: int = 3,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def make_solid(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    keep_largest: bool = True,
+    join_components: bool = False,
+    max_iter: int = 10,
+    inner_iter: int = 3,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Turn a broken digitised surface into a single watertight solid.
 
@@ -200,6 +226,9 @@ def make_solid(
         Cap on the alternating degeneracy / self-intersection rounds.
     inner_iter
         Cap on the cut-and-refill passes inside each self-intersection repair.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -207,6 +236,12 @@ def make_solid(
         ``(n_new_vertices,)`` positions of the repaired mesh, on ``vertices.device``.
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat face buffer of the repaired mesh.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every stage's provenance chained. A vertex
+        the vertex split copies, a component filter or collapse keeps, names its input vertex; a
+        patch vertex a refill inserts interpolates the rim vertices it was placed between; a face
+        names the input face it is or was cut from, and a fill, join or refill patch face has no
+        source (``-1``).
 
     Raises
     ------
@@ -260,7 +295,7 @@ def make_solid(
         )
 
     if faces.size == 0:
-        return vertices, faces
+        return _unchanged(vertices, faces, return_provenance)
 
     # This is the trust boundary for "a broken digitised surface": every stage below indexes
     # ``vertices[faces]`` without a bound check, the same way every other per-face kernel wrapper in
@@ -279,8 +314,22 @@ def make_solid(
     # vertices by corner, so a compaction first would change nothing it returns. It also turns
     # the mates into twins, which pair the split faces into their components without a pairing of
     # their own for the component filter.
+    n_input_vertices, n_input_faces = vertices.size, faces.size // 3
     wound, twins = _wound_with_mates(faces, vertices.size)
-    vertices, faces, _source = _split_corners(vertices, wound, twins, twins)
+    vertices, faces, source = _split_corners(vertices, wound, twins, twins)
+    # Each stage's provenance when one is asked for, chained at the end: the winding keeps every
+    # face where it was and the split copies each vertex from ``source``.
+    steps: list[od.interpolation.Provenance] | None = None
+    if return_provenance:
+        steps = [
+            od.interpolation.Provenance(
+                source,
+                od.array.arange(n_input_faces, device=faces.device),
+                None,
+                n_input_vertices,
+                n_input_faces,
+            )
+        ]
 
     # Every stage below is a deterministic function of the mesh it is handed, and ``version`` counts
     # the changes made to the mesh, so a stage is skipped while the mesh is still one it is known
@@ -296,10 +345,21 @@ def make_solid(
         return vertices.size, faces.size
 
     if keep_largest:
-        vertices, faces, _ = _remove_small_components(vertices, faces, mates=twins)
+        vertices, faces, kept = _remove_small_components(
+            vertices, faces, mates=twins, with_provenance=steps is not None
+        )
+        if steps is not None:
+            assert kept is not None
+            steps.append(kept)
         clean_after["components"] = version
     if join_components:
-        faces = od.holes.join_closest_components(vertices, faces)
+        if steps is not None:
+            faces, joined = od.holes.join_closest_components(
+                vertices, faces, return_provenance=True
+            )
+            steps.append(joined)
+        else:
+            faces = od.holes.join_closest_components(vertices, faces)
         version += 1
 
     # The fill finds the rims itself and returns the faces unchanged (a copy) when there is none, so
@@ -308,9 +368,18 @@ def make_solid(
     # A component filter has compacted the faces, so their indices are below the vertex count by
     # construction and the fill needs no reduction to bound them; the caller's own faces keep it,
     # as the guard against a negative index.
-    faces = od.holes.fill_min_weight(
-        vertices, faces, n_vertices=vertices.size if keep_largest else None
-    )
+    if steps is not None:
+        faces, filled = od.holes.fill_min_weight(
+            vertices,
+            faces,
+            n_vertices=vertices.size if keep_largest else None,
+            return_provenance=True,
+        )
+        steps.append(filled)
+    else:
+        faces = od.holes.fill_min_weight(
+            vertices, faces, n_vertices=vertices.size if keep_largest else None
+        )
     version += int(counts() != before)
     for _ in range(max_iter):
         n_faces_before = faces.size
@@ -320,7 +389,11 @@ def make_solid(
         ):
             if clean_after[name] != version:
                 before = counts()
-                vertices, faces = remover(vertices, faces)
+                if steps is not None:
+                    vertices, faces, removed = remover(vertices, faces, return_provenance=True)
+                    steps.append(removed)
+                else:
+                    vertices, faces = remover(vertices, faces)
                 version += int(counts() != before)
                 clean_after[name] = version
         # The collapse runs on the degeneracy pass's output and keeps only faces passing the same
@@ -330,7 +403,7 @@ def make_solid(
             clean_after["degenerate"] = version
         if clean_after["cut"] != version:
             uncut = faces
-            vertices, faces = _cut_and_refill(vertices, faces, 1, inner_iter)
+            vertices, faces = _cut_and_refill(vertices, faces, 1, inner_iter, steps)
             if faces is uncut:
                 clean_after["cut"] = version
             else:
@@ -340,7 +413,7 @@ def make_solid(
         # component that did not exist yet.
         if keep_largest and clean_after["components"] != version:
             before = counts()
-            vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
+            vertices, faces = _largest_component(vertices, faces, steps)
             if counts() != before:
                 # A subset of the faces on the same positions: what the three stages above found
                 # nothing to do in still holds nothing for them (no degenerate face, none below the
@@ -362,10 +435,34 @@ def make_solid(
     # The faces here are a compacting stage's output, or else the ones the first fill left: it
     # range-checked them whenever it filled a rim, and with none filled there is none here to fill.
     # Either way the bound is the vertex count.
-    faces = od.holes.fill_min_weight(vertices, faces, n_vertices=vertices.size)
+    if steps is not None:
+        faces, filled = od.holes.fill_min_weight(
+            vertices, faces, n_vertices=vertices.size, return_provenance=True
+        )
+        steps.append(filled)
+    else:
+        faces = od.holes.fill_min_weight(vertices, faces, n_vertices=vertices.size)
     version += int(counts() != before)
     if keep_largest and clean_after["components"] != version:
-        vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
+        vertices, faces = _largest_component(vertices, faces, steps)
+    if steps is None:
+        return vertices, faces
+    provenance = _chained_steps(steps, n_input_vertices, n_input_faces, vertices.device)
+    return vertices, faces, provenance
+
+
+def _largest_component(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    steps: list[od.interpolation.Provenance] | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """``make_solid``'s largest-component filter, its provenance appended to ``steps``."""
+    if steps is None:
+        return remove_small_components(vertices, faces, keep_largest=True)
+    vertices, faces, kept = remove_small_components(
+        vertices, faces, keep_largest=True, return_provenance=True
+    )
+    steps.append(kept)
     return vertices, faces
 
 
@@ -2225,13 +2322,35 @@ def _split_corners(
     return new_vertices, new_faces, source
 
 
+@overload
 def collapse_small_triangles(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     epsilon: float = 1e-6,
     *,
     bounds: tuple[wp.vec3, wp.vec3] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def collapse_small_triangles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 1e-6,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def collapse_small_triangles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 1e-6,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Collapse triangles smaller than a bounding-box-relative area threshold.
 
@@ -2259,6 +2378,9 @@ def collapse_small_triangles(
         The box enclosing ``vertices`` when the caller holds it, typically
         [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds]. Its diagonal scales ``epsilon``, so passing
         it spares the reduction and readback that measure the box again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2267,6 +2389,10 @@ def collapse_small_triangles(
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving faces, remapped into
         ``new_vertices``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the vertex
+        its collapsed class kept (whose position it has), and each output face of the input face
+        it is, its corners moved onto those vertices.
 
     Raises
     ------
@@ -2315,7 +2441,7 @@ def collapse_small_triangles(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0 or vertices.size == 0:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
 
     bbd = (
         od.bounds.enclosing_diagonal(vertices)
@@ -2335,6 +2461,12 @@ def collapse_small_triangles(
     n_small = _launch.zeros(2, dtype=wp.int32, device=device)
     n_left = odt.as_dense(n_small[1:])
     small_so_far = 0
+    # The passes' provenances chained, each a compaction's vertex map and kept faces.
+    provenance = (
+        od.interpolation.Provenance.identity(vertices.size, n_faces, device)
+        if return_provenance
+        else None
+    )
     for iteration in range(max_iterations):
         n_current = current_faces.size // 3
         if n_current == 0:
@@ -2380,17 +2512,37 @@ def collapse_small_triangles(
             outputs=[remapped_faces, keep_mask, ranks, n_left],
             device=device,
         )
-        current_vertices, current_faces, _vertex_index, _ranks = _compact_marked_submesh(
-            current_vertices, remapped_faces, keep_mask, ranks, keep_masked=True, with_index=False
+        pass_vertices = current_vertices
+        current_vertices, current_faces, vertex_index, _ranks = _compact_marked_submesh(
+            current_vertices,
+            remapped_faces,
+            keep_mask,
+            ranks,
+            keep_masked=True,
+            with_index=return_provenance,
         )
+        if provenance is not None:
+            assert vertex_index is not None
+            provenance = provenance.then(
+                od.interpolation.Provenance(
+                    vertex_index,
+                    od.array.flatnonzero(keep_mask),
+                    None,
+                    pass_vertices.size,
+                    n_current,
+                )
+            )
         small_total = int(read_scalar(n_small, 1))
         if small_total == small_so_far:
             break
         small_so_far = small_total
 
-    return current_vertices, current_faces
+    if provenance is None:
+        return current_vertices, current_faces
+    return current_vertices, current_faces, provenance
 
 
+@overload
 def fix_degeneracies(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -2401,7 +2553,36 @@ def fix_degeneracies(
     max_angle_change: float = 60.0,
     region_rings: int = 3,
     max_iter: int = 10,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def fix_degeneracies(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_deviation: float,
+    *,
+    tiny_edge_length: float = 0.0,
+    critical_aspect_ratio: float = 1e4,
+    max_angle_change: float = 60.0,
+    region_rings: int = 3,
+    max_iter: int = 10,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fix_degeneracies(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_deviation: float,
+    *,
+    tiny_edge_length: float = 0.0,
+    critical_aspect_ratio: float = 1e4,
+    max_angle_change: float = 60.0,
+    region_rings: int = 3,
+    max_iter: int = 10,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Remove needle and cap triangles and tiny edges by local flips and collapses around them.
 
@@ -2444,6 +2625,9 @@ def fix_degeneracies(
         Rings of faces the region extends past the faces that seed it.
     max_iter
         Cap on the alternating flip-and-collapse rounds.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2451,6 +2635,10 @@ def fix_degeneracies(
         ``(n_new_vertices,)`` vertex positions, compacted from index zero when a collapse ran.
     faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat triangle index buffer.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is the endpoint a collapse
+        kept in place, so it copies that input vertex, and each output face names the input face
+        whose slot it holds after the flips and collapses rewrote its corners.
 
     Raises
     ------
@@ -2510,7 +2698,7 @@ def fix_degeneracies(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
     seeds = _launch.zeros(vertices.size, dtype=wp.bool, device=device)
     n_seeds = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
@@ -2528,7 +2716,7 @@ def fix_degeneracies(
     )
     # The one readback before any work: a mesh with nothing to repair costs one pass.
     if int(read_scalar(n_seeds, 0)) == 0:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
     # The region is held per vertex, a face being inside when its three corners are: the collapse
     # passes compact it with the vertices, which a face mask would not survive.
     grown = od.selection.expand_vertex_mask(faces, seeds, region_rings)
@@ -2544,6 +2732,9 @@ def fix_degeneracies(
     # Collapses only ever remove faces, so one flag buffer sized for the input serves every round
     # through its leading entries.
     region_flags = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # Each committed collapse pass's provenance when one is asked for; a flip keeps each face in
+    # its slot, so it changes no source.
+    steps: list[od.interpolation.Provenance] | None = [] if return_provenance else None
     for _ in range(max_iter):
         n_current = current_faces.size
         # The caller's buffer is copied before the first flips; every later one is this call's own
@@ -2580,6 +2771,7 @@ def fix_degeneracies(
             max_passes=_DEGENERACY_COLLAPSE_PASSES,
             degeneracy=degeneracy,
             rounds=_DEGENERACY_COLLAPSE_ROUNDS,
+            passes=steps,
         )
         assert kept_region is not None
         region = kept_region
@@ -2589,7 +2781,10 @@ def fix_degeneracies(
             break
     if current_vertices is vertices:
         current_vertices = _launch.clone(vertices)
-    return current_vertices, current_faces
+    if steps is None:
+        return current_vertices, current_faces
+    provenance = _chained_steps(steps, vertices.size, n_faces, device)
+    return current_vertices, current_faces, provenance
 
 
 @overload
@@ -2792,6 +2987,7 @@ def remove_degree3_vertices(
     *,
     max_iter: int = 8,
     return_count: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def remove_degree3_vertices(
@@ -2800,15 +2996,38 @@ def remove_degree3_vertices(
     *,
     max_iter: int = 8,
     return_count: Literal[True],
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]: ...
+@overload
+def remove_degree3_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_iter: int = 8,
+    return_count: Literal[False] = False,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def remove_degree3_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_iter: int = 8,
+    return_count: Literal[True],
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]: ...
 def remove_degree3_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     max_iter: int = 8,
     return_count: bool = False,
+    return_provenance: bool = False,
 ) -> (
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]
 ):
     """
     Remove interior vertices with exactly three incident faces, collapsing each fan to one triangle.
@@ -2843,6 +3062,9 @@ def remove_degree3_vertices(
         candidates needs one pass per link; the default covers any chain length likely in practice.
     return_count
         If ``True``, also return ``removed``.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2856,6 +3078,10 @@ def remove_degree3_vertices(
         Present when ``return_count=True``. How many vertices were removed. Zero means the input
         had none and the buffers are it. A diagnostic: the pass loop stops itself when a pass finds
         no candidate, so nothing about calling this correctly depends on reading the count.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex it is, and each output face of the input face it is; a fan's replacement triangle
+        takes the fan face holding the fan's lowest halfedge, chained through earlier passes.
 
     Raises
     ------
@@ -2910,7 +3136,12 @@ def remove_degree3_vertices(
     n_vertices = vertices.size
     n_input = faces.size // 3
     if n_input == 0 or max_iter == 0:
-        return (vertices, faces, 0) if return_count else (vertices, faces)
+        unchanged = (
+            od.interpolation.Provenance.identity(n_vertices, n_input, device)
+            if return_provenance
+            else None
+        )
+        return _degree3_result(vertices, faces, 0, return_count, unchanged)
     # The documented edge-manifold check, on the input only: the twin defects of the halfedge
     # mates, counted inside pass 0's first launch and read back with that pass's counters,
     # rather than a twin table the pass never reads. Replacing an interior degree-3 fan by the one
@@ -2944,6 +3175,9 @@ def remove_degree3_vertices(
     )
     tables = state[per_pass:]
     fan_rows, face_slots = _launch.carve(wp.int32, [3 * n_vertices, 3 * n_slots], device)
+    # The input face each row came from, which a replacement takes from its fan: only for a
+    # provenance, and its rows past the input are written as replacements are appended.
+    slot_sources = od.array.arange(n_slots, device=device) if return_provenance else None
     fans = odt.as_array2d(fan_rows.reshape((n_vertices, 3)), wp.int32)
     new_faces = odt.as_dense(face_slots[3 * n_input :]).reshape((n_slots - n_input, 3))
     emit_inputs = [
@@ -2953,6 +3187,7 @@ def remove_degree3_vertices(
         link_sums,
         n_input,
         cursor,
+        slot_sources,
         lost,
         kept,
         new_faces,
@@ -2974,7 +3209,12 @@ def remove_degree3_vertices(
     removed, n_nonmanifold, n_misoriented, n_referenced, n_next = read_values(state, tail, 5)
     _raise_degree3_defects(n_nonmanifold, n_misoriented)
     if removed == 0:
-        return (vertices, faces, 0) if return_count else (vertices, faces)
+        unchanged = (
+            od.interpolation.Provenance.identity(n_vertices, n_input, device)
+            if return_provenance
+            else None
+        )
+        return _degree3_result(vertices, faces, 0, return_count, unchanged)
     for _pass_index in range(1, max_iter):
         if n_next == 0:
             break
@@ -3016,7 +3256,40 @@ def remove_degree3_vertices(
         inputs=[vertices, face_slots, kept, referenced, n_kept, out_vertices, out_faces],
         device=device,
     )
-    return (out_vertices, out_faces, removed) if return_count else (out_vertices, out_faces)
+    provenance = None
+    if slot_sources is not None:
+        vertex_index = _launch.empty(n_referenced, dtype=wp.int32, device=device)
+        face_index = _launch.empty(n_kept, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_repair.degree3_provenance_maps,
+            dim=max(n_vertices, n_used),
+            inputs=[n_vertices, slot_sources, kept, referenced, n_kept, vertex_index, face_index],
+            device=device,
+        )
+        provenance = od.interpolation.Provenance(
+            vertex_index, face_index, None, n_vertices, n_input
+        )
+    return _degree3_result(out_vertices, out_faces, removed, return_count, provenance)
+
+
+def _degree3_result(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    removed: int,
+    return_count: bool,
+    provenance: od.interpolation.Provenance | None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]
+):
+    """Assemble ``remove_degree3_vertices``' returns, ``provenance`` ``None`` when not asked."""
+    if provenance is None:
+        return (vertices, faces, removed) if return_count else (vertices, faces)
+    if return_count:
+        return vertices, faces, removed, provenance
+    return vertices, faces, provenance
 
 
 def _raise_degree3_defects(n_nonmanifold: int, n_misoriented: int) -> None:
@@ -3749,6 +4022,7 @@ def remove_folded_faces(
     return new_vertices, new_faces
 
 
+@overload
 def fix_self_intersections(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -3757,7 +4031,32 @@ def fix_self_intersections(
     max_expand: int = 1,
     max_iter: int = 3,
     voxel_size: float | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def fix_self_intersections(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    method: Literal["local", "voxel"] = "local",
+    max_expand: int = 1,
+    max_iter: int = 3,
+    voxel_size: float | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fix_self_intersections(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    method: Literal["local", "voxel"] = "local",
+    max_expand: int = 1,
+    max_iter: int = 3,
+    voxel_size: float | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
 
     Remove a mesh's self-intersections, either locally or by rebuilding it.
@@ -3792,12 +4091,21 @@ def fix_self_intersections(
     voxel_size
         Lattice spacing for the ``"voxel"`` method. ``None`` uses 1/128 of the bounding-box
         diagonal.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(n_new_vertices,)`` vertices and ``(3 * n_new_faces,)`` faces, as ``(vertices, faces)``
-        on ``vertices.device``. A clean input is returned as a copy.
+    new_vertices : wp.array[wp.vec3]
+        ``(n_new_vertices,)`` vertices on ``vertices.device``. A clean input is returned as a copy.
+    new_faces : wp.array[wp.int32]
+        ``(3 * n_new_faces,)`` faces on ``vertices.device``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Under ``"local"``, the cut-and-refill passes'
+        provenances chained, as [`refill_region`][ordito.holes.refill_region] reports them: what
+        survives every cut is its own source and the patches' faces have none. Under ``"voxel"``
+        nothing of the input survives, so no vertex or face has a source (``-1``).
 
     Raises
     ------
@@ -3897,34 +4205,54 @@ def fix_self_intersections(
         raise ValueError("max_iter must be at least 1")
 
     if faces.size == 0:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
 
     if method == "voxel":
         spacing = voxel_size
         if spacing is None:
             spacing = float(od.bounds.enclosing_diagonal(vertices)) / _VOXEL_REBUILD_RESOLUTION
         shape, box = od.proximity.signed_distance_lattice(vertices, spacing, pad=2)
-        return od.levelset.signed_distance_level_set(
+        new_vertices, new_faces = od.levelset.signed_distance_level_set(
             vertices, faces, 0.0, shape, bounds=box, sign_mode="winding"
         )
+        if not return_provenance:
+            return new_vertices, new_faces
+        device = vertices.device
+        provenance = od.interpolation.Provenance(
+            _launch.full(new_vertices.size, -1, dtype=wp.int32, device=device),
+            _launch.full(new_faces.size // 3, -1, dtype=wp.int32, device=device),
+            None,
+            vertices.size,
+            faces.size // 3,
+        )
+        return new_vertices, new_faces, provenance
 
     # The input buffers are only read until the first refill replaces them, so the copy a clean
     # input is owed is taken here rather than paid on every pass.
-    new_vertices, new_faces = _cut_and_refill(vertices, faces, max_expand, max_iter)
+    steps: list[od.interpolation.Provenance] | None = [] if return_provenance else None
+    new_vertices, new_faces = _cut_and_refill(vertices, faces, max_expand, max_iter, steps)
     if new_faces is faces:
-        return _launch.clone(vertices), _launch.clone(faces)
-    return new_vertices, new_faces
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
+    if steps is None:
+        return new_vertices, new_faces
+    provenance = _chained_steps(steps, vertices.size, faces.size // 3, vertices.device)
+    return new_vertices, new_faces, provenance
 
 
 def _cut_and_refill(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_expand: int, max_iter: int
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_expand: int,
+    max_iter: int,
+    steps: list[od.interpolation.Provenance] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     [`fix_self_intersections`][ordito.repair.fix_self_intersections]' ``"local"`` passes.
 
     Returns ``vertices`` and ``faces`` themselves, not copies, when nothing intersects, so a caller
     tells "unchanged" by identity: [`make_solid`][ordito.repair.make_solid] then knows the mesh is
-    one this pass leaves alone, and skips it while nothing else has changed the mesh.
+    one this pass leaves alone, and skips it while nothing else has changed the mesh. ``steps``,
+    when a list, receives each refill's provenance.
     """
     current_vertices, current_faces = vertices, faces
     # Two decision words per pass, each raised on the device by the launch that produced its mask
@@ -3944,9 +4272,15 @@ def _cut_and_refill(
         )
         if int(read_scalar(state, 1)) != stamp:
             break  # the region swallowed the mesh: refilling it would delete everything
-        current_vertices, current_faces = od.holes.refill_region(
-            current_vertices, current_faces, region
-        )
+        if steps is not None:
+            current_vertices, current_faces, refilled = od.holes.refill_region(
+                current_vertices, current_faces, region, return_provenance=True
+            )
+            steps.append(refilled)
+        else:
+            current_vertices, current_faces = od.holes.refill_region(
+                current_vertices, current_faces, region
+            )
         if current_faces.size == 0:
             break
     return current_vertices, current_faces
@@ -4650,3 +4984,15 @@ def flip_t_vertices(
     return od.remesh.flip_by_objective(
         vertices, faces, objective="t_vertex", aspect_threshold=threshold, max_iter=max_iter
     )
+
+
+def _chained_steps(
+    steps: list[od.interpolation.Provenance], n_vertices: int, n_faces: int, device: wp.DeviceLike
+) -> od.interpolation.Provenance:
+    """Chain a repair's per-stage provenances into one from its input, the identity for none."""
+    if not steps:
+        return od.interpolation.Provenance.identity(n_vertices, n_faces, device)
+    chained = steps[0]
+    for later in steps[1:]:
+        chained = chained.then(later)
+    return chained

@@ -90,6 +90,24 @@ def fan_faces(
 
 
 @wp.kernel
+def kept_then_sources(
+    n_kept: wp.int32, tail: wp.array[wp.int32], out_index: wp.array[wp.int32]
+) -> None:
+    # The source map of an edit that keeps its input's first ``n_kept`` elements where they were
+    # and appends the rest behind them (every filler, extension and bridge here): a kept element is
+    # its own source, an appended one has ``tail``'s entry where ``tail`` lists one (an extension's
+    # rim vertex) and none, ``-1``, past it (a patch face, a strip's sample).
+    i = wp.int32(wp.tid())
+    j = i - n_kept
+    if j < 0:
+        out_index[i] = i
+    elif j < tail.shape[0]:
+        out_index[i] = tail[j]
+    else:
+        out_index[i] = -1
+
+
+@wp.kernel
 def cone_fill(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
@@ -118,6 +136,38 @@ def cone_fill(
         out_faces[3 * t + 0] = apex
         out_faces[3 * t + 1] = flat_loops[nxt]
         out_faces[3 * t + 2] = flat_loops[o + j]
+
+
+@wp.kernel
+def cone_operator_rows(
+    n_vertices: wp.int32,
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # The interpolation operator of ``cone_fill``'s output, one entry a thread over
+    # ``n_vertices + total``: an identity row for every input vertex, then each apex's row over its
+    # loop at the weight ``cone_fill`` forms the centroid with. Every loop holds a vertex, so each
+    # apex row's start is written by the thread of its loop's first slot.
+    t = wp.int32(wp.tid())
+    n_loops = loop_offsets.shape[0] - 1
+    if t == 0:
+        out_offsets[n_vertices + n_loops] = n_vertices + loop_offsets[n_loops]
+    if t < n_vertices:
+        out_offsets[t] = t
+        out_columns[t] = t
+        out_weights[t] = 1.0
+        return
+    j = t - n_vertices
+    ell = kernel_array.loop_owner(loop_id, loop_offsets, j)
+    o = loop_offsets[ell]
+    if j == o:
+        out_offsets[n_vertices + ell] = t
+    out_columns[t] = flat_loops[j]
+    out_weights[t] = 1.0 / wp.float32(loop_offsets[ell + 1] - o)
 
 
 @wp.func

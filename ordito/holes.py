@@ -244,13 +244,32 @@ def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[w
     return _launch.empty(0, dtype=wp.int32, device=tables.device)
 
 
+@overload
 def fill_fan(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     preserve_largest_hole: bool = False,
     *,
     mates: wp.array[wp.int32] | None = None,
-) -> wp.array[wp.int32]:
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def fill_fan(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fill_fan(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Fill every boundary hole with a triangle fan from each loop's first vertex.
 
@@ -273,14 +292,20 @@ def fill_fan(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat face buffer of the original faces followed by the new fill
         triangles, on ``faces.device``. A watertight or empty mesh — or, with
         ``preserve_largest_hole``, a mesh whose only hole is the largest — is returned unchanged (a
         copy).
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the fill triangles have none (``-1``).
 
     Raises
     ------
@@ -326,13 +351,13 @@ def fill_fan(
         _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
     )
     if packed is None:
-        return _launch.clone(faces)
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
 
     flat_loops, loop_offsets = packed.flat_loops, packed.offsets
     n_loops, total = packed.n_loops, packed.total
     n_tri = total - 2 * n_loops
     if n_tri <= 0:
-        return _launch.clone(faces)
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
     # The fan is written straight into the tail of the returned buffer, behind a copy of ``faces``.
     filled = _launch.empty(faces.size + 3 * n_tri, dtype=wp.int32, device=device)
     _launch.copy(filled, faces, count=faces.size)
@@ -342,16 +367,38 @@ def fill_fan(
         inputs=[flat_loops, loop_offsets, odt.as_dense(filled[faces.size :])],
         device=device,
     )
-    return filled
+    return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
+@overload
 def fill_cone(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     preserve_largest_hole: bool = False,
     *,
     mates: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def fill_cone(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fill_cone(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Fill every boundary hole by coning it onto a new centroid vertex.
 
@@ -375,6 +422,9 @@ def fill_cone(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -386,6 +436,10 @@ def fill_cone(
         ``faces.device``. A watertight or
         empty mesh — or, with ``preserve_largest_hole``, a mesh whose only hole is the largest —
         is returned unchanged (copies).
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every input vertex and face is its own
+        source, each centroid averages its rim's vertices with equal weights, so a float field
+        carried through it gets its rim's mean, and the cone triangles have no source (``-1``).
 
     Raises
     ------
@@ -430,8 +484,17 @@ def fill_cone(
         _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
     )
     if packed is None:
-        return _launch.clone(vertices), _launch.clone(faces)
-    return _cone_packed_loops(vertices, faces, packed)
+        return _mesh_and_provenance(
+            vertices, faces, _launch.clone(vertices), _launch.clone(faces), return_provenance
+        )
+    new_vertices, new_faces = _cone_packed_loops(vertices, faces, packed)
+    if not return_provenance:
+        return new_vertices, new_faces
+    operator = _cone_operator(vertices.size, packed)
+    provenance = _appended_provenance(
+        vertices.size, faces.size // 3, new_faces, new_vertices.size, operator=operator
+    )
+    return new_vertices, new_faces, provenance
 
 
 # Fill-metric name -> kernel selector (must match the METRIC_* constants in
@@ -594,6 +657,7 @@ class _EdgeTable:
         )
 
 
+@overload
 def fill_min_weight(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -604,7 +668,33 @@ def fill_min_weight(
     *,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
-) -> wp.array[wp.int32]:
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def fill_min_weight(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    metric: str = "plane_normalized",
+    resolve_multiple_edges: bool = True,
+    preserve_largest_hole: bool = False,
+    smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fill_min_weight(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    metric: str = "plane_normalized",
+    resolve_multiple_edges: bool = True,
+    preserve_largest_hole: bool = False,
+    smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Fill every boundary hole with a minimum-weight triangulation over its existing vertices.
 
@@ -685,14 +775,20 @@ def fill_min_weight(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat face buffer of the original faces followed by the fill
         triangles, on ``faces.device``. A watertight or empty mesh — or, with
         ``preserve_largest_hole``, a mesh whose only hole is the largest — is returned unchanged (a
         copy).
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the fill triangles have none (``-1``).
 
     Raises
     ------
@@ -735,12 +831,12 @@ def fill_min_weight(
     require_same_device(vertices=vertices, faces=faces, mates=mates)
     _check_fill_metric(metric)
     n_faces = faces.size // 3
-    if n_faces == 0:
-        return _launch.clone(faces)
-    loops = _hole_loops(vertices, faces, preserve_largest_hole, mates=mates)
+    loops = (
+        _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
+    )
     if loops is None:
-        return _launch.clone(faces)
-    return _fill_packed_loops(
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
+    filled = _fill_packed_loops(
         vertices,
         faces,
         loops,
@@ -749,8 +845,10 @@ def fill_min_weight(
         smooth_boundary,
         n_vertices=n_vertices,
     )
+    return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
+@overload
 def fill_loops_min_weight(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -760,7 +858,31 @@ def fill_loops_min_weight(
     smooth_boundary: bool = True,
     *,
     n_vertices: int | None = None,
-) -> wp.array[wp.int32]:
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def fill_loops_min_weight(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    loops: list[wp.array[wp.int32]],
+    metric: str,
+    resolve_multiple_edges: bool,
+    smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fill_loops_min_weight(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    loops: list[wp.array[wp.int32]],
+    metric: str,
+    resolve_multiple_edges: bool,
+    smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Min-weight-triangulate the given boundary ``loops`` and append the fill faces.
 
@@ -791,12 +913,18 @@ def fill_loops_min_weight(
         Optional exclusive bound on the vertex indices, ``vertices.size`` when ``None``. The
         passes that read ``faces`` check every index against it as they go, with no pass or
         readback of their own.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat face buffer of ``faces`` followed by the fill triangles for
         ``loops``, on ``faces.device``. Unchanged (a copy) when ``loops`` is empty.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the fill triangles have none (``-1``).
 
     Raises
     ------
@@ -836,8 +964,8 @@ def fill_loops_min_weight(
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     _check_fill_metric(metric)
     if len(loops) == 0:
-        return _launch.clone(faces)
-    return _fill_packed_loops(
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
+    filled = _fill_packed_loops(
         vertices,
         faces,
         _pack_loops(loops),
@@ -846,6 +974,7 @@ def fill_loops_min_weight(
         smooth_boundary,
         n_vertices=n_vertices,
     )
+    return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
 def _fill_packed_loops(
@@ -1377,6 +1506,7 @@ def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
     return _PackedLoops(flat_loops, sizes_np, offsets)
 
 
+@overload
 def fill_small(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1385,7 +1515,29 @@ def fill_small(
     max_edges: int | None = None,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
-) -> wp.array[wp.int32]:
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def fill_small(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_perimeter: float | None = None,
+    *,
+    max_edges: int | None = None,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def fill_small(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_perimeter: float | None = None,
+    *,
+    max_edges: int | None = None,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Fill only the *small* boundary loops, sized either by perimeter or by boundary-edge count.
 
@@ -1432,13 +1584,19 @@ def fill_small(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` flat face buffer of ``faces`` followed by the fill triangles for the
         small loops, on ``faces.device``. A copy of ``faces`` when no boundary loop meets the
         threshold.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the fill triangles have none (``-1``).
 
     Raises
     ------
@@ -1494,7 +1652,8 @@ def fill_small(
     filled = _fill_small(
         vertices, faces, max_perimeter, max_edges, mates=mates, n_vertices=n_vertices
     )
-    return _launch.clone(faces) if filled is faces else filled
+    filled = _launch.clone(faces) if filled is faces else filled
+    return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
 def _fill_small(
@@ -1565,6 +1724,7 @@ def fill_smooth(
     return_patch: Literal[False] = False,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def fill_smooth(
@@ -1586,7 +1746,54 @@ def fill_smooth(
     return_patch: Literal[True],
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def fill_smooth(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    metric: str = "plane_normalized",
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    max_edge_splits: int = 1000,
+    max_angle_change_after_flip: float = math.radians(30.0),
+    smooth_curvature: bool = True,
+    natural_smooth: bool = False,
+    edge_weights: str = "cotan",
+    preserve_largest_hole: bool = False,
+    resolve_multiple_edges: bool = True,
+    smooth_boundary: bool = True,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[False] = False,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def fill_smooth(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    metric: str = "plane_normalized",
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    max_edge_splits: int = 1000,
+    max_angle_change_after_flip: float = math.radians(30.0),
+    smooth_curvature: bool = True,
+    natural_smooth: bool = False,
+    edge_weights: str = "cotan",
+    preserve_largest_hole: bool = False,
+    resolve_multiple_edges: bool = True,
+    smooth_boundary: bool = True,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[True],
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
 def fill_smooth(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1606,9 +1813,12 @@ def fill_smooth(
     return_patch: bool = False,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
 ):
     """
     Fill every boundary hole with a smooth, refined patch.
@@ -1675,6 +1885,9 @@ def fill_smooth(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -1686,6 +1899,13 @@ def fill_smooth(
     patch_mask : wp.array[wp.bool]
         ``(n_out_faces,)`` mask of the patch faces in ``new_faces``; only when ``return_patch`` is
         ``True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every input vertex and face is its own
+        source and a coned hole's centroid averages its rim. A patch vertex the refinement
+        inserts interpolates the vertices of the edge or face it split, which the smoothing then
+        moves without changing where it came from, so a carried float field is that
+        interpolation rather than the smoothed position. The patch faces have no source
+        (``-1``).
 
     Raises
     ------
@@ -1748,8 +1968,14 @@ def fill_smooth(
     )
     if packed is None:
         empty = _patch_mask(faces.size // 3, faces.size // 3, device)
-        result = (_launch.clone(vertices), _launch.clone(faces))
-        return (*result, empty) if return_patch else result
+        unchanged = (
+            od.interpolation.Provenance.identity(vertices.size, n_faces, device)
+            if return_provenance
+            else None
+        )
+        return _patched_result(
+            _launch.clone(vertices), _launch.clone(faces), empty, return_patch, unchanged
+        )
 
     n_faces_before = n_faces
     n_vertices_before = vertices.size
@@ -1765,33 +1991,46 @@ def fill_smooth(
         all_or_nothing=True,
     )
     vertices_filled = vertices
+    blocked = None
     if packed.blocked_np.size > 0:
-        vertices_filled, faces_filled = _cone_packed_loops(
-            vertices, faces_filled, packed.subset(packed.blocked_np)
-        )
+        blocked = packed.subset(packed.blocked_np)
+        vertices_filled, faces_filled = _cone_packed_loops(vertices, faces_filled, blocked)
     n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
+    filled = None
+    if return_provenance:
+        filled = _appended_provenance(
+            n_vertices_before,
+            n_faces_before,
+            faces_filled,
+            vertices_filled.size,
+            operator=None if blocked is None else _cone_operator(n_vertices_before, blocked),
+        )
 
     if triangulate_only:
-        result = (_launch.clone(vertices_filled), faces_filled)
-        return (*result, patch_mask) if return_patch else result
+        return _patched_result(
+            _launch.clone(vertices_filled), faces_filled, patch_mask, return_patch, filled
+        )
 
     target_edge = max_edge if max_edge is not None else _mean_rim_edge_length(vertices, packed)
-    new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
+    return _refined_result(
         vertices_filled,
         faces_filled,
         n_vertices_before,
         patch_mask,
-        target_edge,
-        max_edge_splits,
-        max_angle_change_after_flip,
-        smooth_curvature,
-        smooth_boundary,
-        natural_smooth,
-        edge_weights,
-        refine=refine,
+        (
+            target_edge,
+            max_edge_splits,
+            max_angle_change_after_flip,
+            smooth_curvature,
+            smooth_boundary,
+            natural_smooth,
+            edge_weights,
+        ),
+        refine,
+        return_patch,
+        filled,
     )
-    return (new_vertices, new_faces, out_patch) if return_patch else (new_vertices, new_faces)
 
 
 def _cone_packed_loops(
@@ -1835,6 +2074,7 @@ def refill_region(
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def refill_region(
@@ -1848,7 +2088,38 @@ def refill_region(
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[True],
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def refill_region(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    metric: str = "plane_normalized",
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    smooth_curvature: bool = True,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[False] = False,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def refill_region(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    metric: str = "plane_normalized",
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    smooth_curvature: bool = True,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[True],
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
 def refill_region(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1860,9 +2131,12 @@ def refill_region(
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: bool = False,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
 ):
     """
     Replace a face region with a fresh patch: delete it, then fill the hole nicely.
@@ -1903,14 +2177,26 @@ def refill_region(
     return_patch
         Also return the per-face mask of the new patch, for a caller that wants to keep working on
         it.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[..., wp.array[wp.bool]]
-        ``(n_out_vertices,)`` vertices and ``(3 * n_out_faces,)`` faces of the rebuilt mesh, plus
-        the ``(n_out_faces,)`` patch mask when ``return_patch`` is ``True``. When the mask selects
-        nothing, or selects faces whose removal opens no new rim, the surviving mesh is returned
-        with an all-``False`` patch.
+    new_vertices : wp.array[wp.vec3]
+        ``(n_out_vertices,)`` vertices of the rebuilt mesh.
+    new_faces : wp.array[wp.int32]
+        ``(3 * n_out_faces,)`` faces of the rebuilt mesh. When the mask selects nothing, or
+        selects faces whose removal opens no new rim, the surviving mesh is returned with an
+        all-``False`` patch.
+    patch_mask : wp.array[wp.bool]
+        ``(n_out_faces,)`` mask of the patch faces; only when ``return_patch`` is ``True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each surviving vertex and face names the
+        input one it is. A patch vertex the refinement inserts interpolates the vertices of the
+        edge or face it split, which the smoothing then moves without changing where it came
+        from, so a carried float field is that interpolation rather than the smoothed position.
+        The patch faces have no source (``-1``).
 
     Raises
     ------
@@ -1954,15 +2240,20 @@ def refill_region(
     _check_fill_metric(metric)
     _check_refine(refine)
 
-    kept_vertices, kept_faces, new_loops = od.selection.delete_region_keep_boundary(
-        vertices, faces, face_mask
-    )
+    deleted = None
+    if return_provenance:
+        kept_vertices, kept_faces, new_loops, deleted = od.selection.delete_region_keep_boundary(
+            vertices, faces, face_mask, return_provenance=True
+        )
+    else:
+        kept_vertices, kept_faces, new_loops = od.selection.delete_region_keep_boundary(
+            vertices, faces, face_mask
+        )
     device = faces.device
     n_kept_faces = kept_faces.size // 3
     if not new_loops:
         empty = _patch_mask(n_kept_faces, n_kept_faces, device)
-        result = (kept_vertices, kept_faces)
-        return (*result, empty) if return_patch else result
+        return _patched_result(kept_vertices, kept_faces, empty, return_patch, deleted)
 
     packed = _pack_loops(new_loops)
     # The kept faces come out of the deletion's compaction, so every index is below the kept
@@ -1978,35 +2269,59 @@ def refill_region(
         measure_perimeters=max_edge is None and not triangulate_only,
     )
     patch_mask = _patch_mask(n_kept_faces, faces_filled.size // 3, device)
+    filled = None
+    if deleted is not None:
+        filled = deleted.then(
+            _appended_provenance(kept_vertices.size, n_kept_faces, faces_filled, kept_vertices.size)
+        )
     if triangulate_only:
-        result = (kept_vertices, faces_filled)
-        return (*result, patch_mask) if return_patch else result
+        return _patched_result(kept_vertices, faces_filled, patch_mask, return_patch, filled)
 
     target_edge = max_edge if max_edge is not None else _mean_rim_edge_length(kept_vertices, packed)
-    new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
+    return _refined_result(
         kept_vertices,
         faces_filled,
         kept_vertices.size,
         patch_mask,
-        target_edge,
-        1000,
-        math.radians(30.0),
-        smooth_curvature,
-        True,
-        False,
-        "cotan",
-        refine=refine,
+        (target_edge, 1000, math.radians(30.0), smooth_curvature, True, False, "cotan"),
+        refine,
+        return_patch,
+        filled,
     )
-    return (new_vertices, new_faces, out_patch) if return_patch else (new_vertices, new_faces)
 
 
+@overload
 def extend_hole(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
     loops: Sequence[wp.array[wp.int32]] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def extend_hole(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    loops: Sequence[wp.array[wp.int32]] | None = None,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def extend_hole(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    loops: Sequence[wp.array[wp.int32]] | None = None,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Extend every boundary rim out to a plane, adding the ruled surface between them.
 
@@ -2035,6 +2350,9 @@ def extend_hole(
     loops
         Rims to extend. ``None`` extends every one, via
         [`boundary_loops`][ordito.boundary.boundary_loops]; pass a subset to extend only those.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2043,6 +2361,11 @@ def extend_hole(
         appended per rim vertex.
     faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` input faces with the bridge triangles appended -- two per rim edge.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every input vertex and face is its own
+        source, each projected vertex copies the rim vertex it was projected from (a field is
+        copied, not interpolated, so carried positions stay on the rim), and the bridge triangles
+        have no source (``-1``).
 
     Raises
     ------
@@ -2095,17 +2418,49 @@ def extend_hole(
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     packed = _packed_rims(vertices, faces, loops)
     if packed is None:
-        return _launch.clone(vertices), _launch.clone(faces)
-    return _extend_packed_rims(vertices, faces, packed, plane_normal, origin=plane_origin)
+        return _mesh_and_provenance(
+            vertices, faces, _launch.clone(vertices), _launch.clone(faces), return_provenance
+        )
+    new_vertices, new_faces = _extend_packed_rims(
+        vertices, faces, packed, plane_normal, origin=plane_origin
+    )
+    return _mesh_and_provenance(
+        vertices, faces, new_vertices, new_faces, return_provenance, packed.flat_loops
+    )
 
 
+@overload
 def build_bottom(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     direction: wp.vec3,
     hole_extension: float = 0.0,
     loops: Sequence[wp.array[wp.int32]] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def build_bottom(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    direction: wp.vec3,
+    hole_extension: float = 0.0,
+    loops: Sequence[wp.array[wp.int32]] | None = None,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def build_bottom(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    direction: wp.vec3,
+    hole_extension: float = 0.0,
+    loops: Sequence[wp.array[wp.int32]] | None = None,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Extend every boundary rim down to a flat base placed under its own lowest vertex.
 
@@ -2137,6 +2492,9 @@ def build_bottom(
     loops
         Rims to extend. ``None`` extends every one, via
         [`boundary_loops`][ordito.boundary.boundary_loops].
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2145,6 +2503,11 @@ def build_bottom(
         appended per rim vertex.
     faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` input faces with the bridge triangles appended -- two per rim edge.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every input vertex and face is its own
+        source, each projected vertex copies the rim vertex it was projected from (a field is
+        copied, not interpolated, so carried positions stay on the rim), and the bridge triangles
+        have no source (``-1``).
 
     Raises
     ------
@@ -2183,7 +2546,9 @@ def build_bottom(
     device = faces.device
     packed = _packed_rims(vertices, faces, loops)
     if packed is None:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _mesh_and_provenance(
+            vertices, faces, _launch.clone(vertices), _launch.clone(faces), return_provenance
+        )
 
     extremes = _launch.full(packed.n_loops, math.inf, dtype=wp.float32, device=device)
     _launch.launch(
@@ -2193,8 +2558,11 @@ def build_bottom(
         device=device,
     )
     # Each rim's plane origin is formed from its extreme as the extension reads it.
-    return _extend_packed_rims(
+    new_vertices, new_faces = _extend_packed_rims(
         vertices, faces, packed, direction, extremes=extremes, extension=hole_extension
+    )
+    return _mesh_and_provenance(
+        vertices, faces, new_vertices, new_faces, return_provenance, packed.flat_loops
     )
 
 
@@ -2504,6 +2872,7 @@ def stitch(
     return stitch_loops(vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b)
 
 
+@overload
 def stitch_min_weight(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -2516,7 +2885,40 @@ def stitch_min_weight(
     n_vertices_b: int | None = None,
     mates_a: wp.array[wp.int32] | None = None,
     mates_b: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def stitch_min_weight(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def stitch_min_weight(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Stitch two single-boundary open meshes with a minimum-weight band.
 
@@ -2543,6 +2945,9 @@ def stitch_min_weight(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
         when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
         which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2550,6 +2955,11 @@ def stitch_min_weight(
         ``(n_out_vertices,)`` concatenated vertices, on ``faces_a.device``.
     new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band triangles.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its input is the two meshes concatenated, A's
+        vertices and faces first (as [`combine.concatenate`][ordito.combine.concatenate] joins
+        them): every input vertex and face is its own source, and the band triangles have none
+        (``-1``).
 
     Raises
     ------
@@ -2609,7 +3019,7 @@ def stitch_min_weight(
         mates_a=mates_a,
         mates_b=mates_b,
     )
-    return stitch_loops_min_weight(
+    new_vertices, new_faces = stitch_loops_min_weight(
         vertices_a,
         faces_a,
         loop_a,
@@ -2620,6 +3030,9 @@ def stitch_min_weight(
         up_dir,
         n_vertices_a=n_vertices_a,
         n_vertices_b=n_vertices_b,
+    )
+    return _stitched_result(
+        vertices_a, faces_a, vertices_b, faces_b, new_vertices, new_faces, return_provenance
     )
 
 
@@ -2645,6 +3058,7 @@ def stitch_smooth(
     n_vertices_b: int | None = None,
     mates_a: wp.array[wp.int32] | None = None,
     mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def stitch_smooth(
@@ -2668,7 +3082,58 @@ def stitch_smooth(
     n_vertices_b: int | None = None,
     mates_a: wp.array[wp.int32] | None = None,
     mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def stitch_smooth(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    max_edge_splits: int = 1000,
+    max_angle_change_after_flip: float = math.radians(30.0),
+    smooth_curvature: bool = True,
+    natural_smooth: bool = False,
+    edge_weights: str = "cotan",
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[False] = False,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def stitch_smooth(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    triangulate_only: bool = False,
+    max_edge: float | None = None,
+    max_edge_splits: int = 1000,
+    max_angle_change_after_flip: float = math.radians(30.0),
+    smooth_curvature: bool = True,
+    natural_smooth: bool = False,
+    edge_weights: str = "cotan",
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_patch: Literal[True],
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
 def stitch_smooth(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -2690,9 +3155,12 @@ def stitch_smooth(
     n_vertices_b: int | None = None,
     mates_a: wp.array[wp.int32] | None = None,
     mates_b: wp.array[wp.int32] | None = None,
+    return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
 ):
     """
     Stitch two open meshes with a smooth, refined band.
@@ -2739,6 +3207,9 @@ def stitch_smooth(
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
         when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
         which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2749,6 +3220,13 @@ def stitch_smooth(
         ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band faces.
     patch_mask : wp.array[wp.bool]
         ``(n_out_faces,)`` mask of the band faces; only when ``return_patch`` is ``True``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its input is the two meshes concatenated, A's
+        vertices and faces first (as [`combine.concatenate`][ordito.combine.concatenate] joins
+        them). Every input vertex and face is its own source. A band vertex the refinement
+        inserts interpolates the vertices of the edge or face it split, which the smoothing then
+        moves without changing where it came from, so a carried float field is that
+        interpolation rather than the smoothed position. The band faces have no source (``-1``).
 
     Raises
     ------
@@ -2841,10 +3319,16 @@ def stitch_smooth(
     )
     n_faces_after = combined_faces.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
+    stitched = None
+    if return_provenance:
+        stitched = _appended_provenance(
+            n_vertices_before, n_faces_before, combined_faces, n_vertices_before
+        )
 
     if triangulate_only:
-        result = (combined_vertices, combined_faces)
-        return (*result, patch_mask) if return_patch else result
+        return _patched_result(
+            combined_vertices, combined_faces, patch_mask, return_patch, stitched
+        )
 
     target_edge = max_edge
     if target_edge is None:
@@ -2866,21 +3350,83 @@ def stitch_smooth(
             combined_vertices,
             _PackedLoops(flat_rims, np.array([n_a, n_b], dtype=np.int64), rim_offsets),
         )
-    new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
+    return _refined_result(
         combined_vertices,
         combined_faces,
         n_vertices_before,
         patch_mask,
-        target_edge,
-        max_edge_splits,
-        max_angle_change_after_flip,
-        smooth_curvature,
-        True,  # the reference pipeline forces the cross-boundary smooth here
-        natural_smooth,
-        edge_weights,
-        refine=refine,
+        (
+            target_edge,
+            max_edge_splits,
+            max_angle_change_after_flip,
+            smooth_curvature,
+            True,  # the reference pipeline forces the cross-boundary smooth here
+            natural_smooth,
+            edge_weights,
+        ),
+        refine,
+        return_patch,
+        stitched,
     )
-    return (new_vertices, new_faces, out_patch) if return_patch else (new_vertices, new_faces)
+
+
+def _refined_result(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_vertices_before: int,
+    patch_mask: wp.array[wp.bool],
+    settings: tuple[float, int, float, bool, bool, bool, str],
+    refine: Literal["max_edge", "density"],
+    return_patch: bool,
+    patched: od.interpolation.Provenance | None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
+    """
+    Refine and smooth a patched mesh: the shared tail of the three ``*_smooth`` / refill paths.
+
+    ``settings`` is ``refine_and_smooth_region``'s positional run from ``max_edge`` to
+    ``edge_weights``; ``patched`` is the provenance of the patch, ``None`` when none is asked for,
+    which the refinement's is chained onto.
+    """
+    if patched is None:
+        new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
+            vertices, faces, n_vertices_before, patch_mask, *settings, refine=refine
+        )
+        return _patched_result(new_vertices, new_faces, out_patch, return_patch, None)
+    new_vertices, new_faces, out_patch, refined = od.smoothing.refine_and_smooth_region(
+        vertices,
+        faces,
+        n_vertices_before,
+        patch_mask,
+        *settings,
+        refine=refine,
+        return_provenance=True,
+    )
+    return _patched_result(new_vertices, new_faces, out_patch, return_patch, patched.then(refined))
+
+
+def _patched_result(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    patch_mask: wp.array[wp.bool],
+    return_patch: bool,
+    provenance: od.interpolation.Provenance | None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
+    """Assemble a patching call's returns: the mask if asked, then the provenance if any."""
+    if provenance is None:
+        return (vertices, faces, patch_mask) if return_patch else (vertices, faces)
+    if return_patch:
+        return vertices, faces, patch_mask, provenance
+    return vertices, faces, provenance
 
 
 def _check_fill_metric(metric: str) -> None:
@@ -3306,6 +3852,7 @@ def _longest_increasing_subsequence(numbers: np.ndarray) -> np.ndarray:
 _STITCH_METRIC_IDS = {"complex_stitch": 0, "edge_length_stitch": 1, "vertical": 2}
 
 
+@overload
 def stitch_loops_min_weight(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -3318,7 +3865,40 @@ def stitch_loops_min_weight(
     *,
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def stitch_loops_min_weight(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def stitch_loops_min_weight(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    metric: str = "complex_stitch",
+    up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Join two meshes with a **minimum-weight** cylindrical band between one boundary loop on each.
 
@@ -3352,6 +3932,9 @@ def stitch_loops_min_weight(
         Optional exclusive bounds on each mesh's vertex indices, ``vertices_a.size`` and
         ``vertices_b.size`` when ``None``. The passes that read each mesh's faces check every index
         against its bound as they go, with no pass or readback of their own.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -3361,6 +3944,11 @@ def stitch_loops_min_weight(
     new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` original faces (B reindexed by ``len(vertices_a)``) followed by the
         band triangles.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``. Its input is the two meshes concatenated, A's
+        vertices and faces first (as [`combine.concatenate`][ordito.combine.concatenate] joins
+        them): every input vertex and face is its own source, and the band triangles have none
+        (``-1``).
 
     Raises
     ------
@@ -3520,12 +4108,42 @@ def stitch_loops_min_weight(
     if bad_index != 0:
         _raise_face_range(faces_a, table_a.n_vertices, "faces_a")
         _raise_face_range(faces_b, table_b.n_vertices, "faces_b")
-    if n_band == n_steps:
-        return combined_vertices, combined_faces
-    # A short band is the buffer's prefix, a contiguous view: nothing is copied.
-    return combined_vertices, odt.as_dense(
-        combined_faces[: combined_faces.size - 3 * (n_steps - n_band)]
+    if n_band != n_steps:
+        # A short band is the buffer's prefix, a contiguous view: nothing is copied.
+        combined_faces = odt.as_dense(
+            combined_faces[: combined_faces.size - 3 * (n_steps - n_band)]
+        )
+    return _stitched_result(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        combined_vertices,
+        combined_faces,
+        return_provenance,
     )
+
+
+def _stitched_result(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    new_vertices: wp.array[wp.vec3],
+    new_faces: wp.array[wp.int32],
+    return_provenance: bool,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
+    """Return a stitch's mesh, with its provenance over A and B concatenated if asked."""
+    if not return_provenance:
+        return new_vertices, new_faces
+    n_vertices = vertices_a.size + vertices_b.size
+    provenance = _appended_provenance(
+        n_vertices, (faces_a.size + faces_b.size) // 3, new_faces, n_vertices
+    )
+    return new_vertices, new_faces, provenance
 
 
 def _raise_face_range(faces: wp.array[wp.int32], n_vertices: int, name: str) -> None:
@@ -3675,13 +4293,35 @@ def _closest_loop_pair(
     )
 
 
+@overload
 def bridge_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     edge_a: tuple[int, int],
     edge_b: tuple[int, int],
     validate: bool = True,
-) -> wp.array[wp.int32]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def bridge_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edge_a: tuple[int, int],
+    edge_b: tuple[int, int],
+    validate: bool = True,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def bridge_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edge_a: tuple[int, int],
+    edge_b: tuple[int, int],
+    validate: bool = True,
+    *,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Join two boundary edges with a two-triangle patch, leaving the rest of both rims open.
 
@@ -3713,13 +4353,19 @@ def bridge_edges(
         edge table; pass ``False`` when the edges came from
         [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] and the pairing is
         known good.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_faces + 3,)`` or ``(3 * n_faces + 6,)`` input faces with the patch appended, on
         ``faces.device``. The appended block is the tail -- ``3`` entries longer than the input for
         the shared-vertex case, ``6`` otherwise -- so its size is what says which case was taken.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the patch triangles have none (``-1``).
 
     Raises
     ------
@@ -3776,7 +4422,8 @@ def bridge_edges(
         census, _ = _bridge_census(faces, [edge_a, edge_b, *joined])
         _require_rim_edges(edge_a, edge_b, census)
         _require_new_chords(edge_a, edge_b, joined, census[2:])
-    return _append_bridge_patch(faces, edge_a, edge_b)
+    bridged = _append_bridge_patch(faces, edge_a, edge_b)
+    return _faces_and_provenance(vertices, faces, bridged, return_provenance)
 
 
 def _append_bridge_patch(
@@ -3817,6 +4464,7 @@ def _bridge_joined_pairs(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> li
     return pairs
 
 
+@overload
 def bridge_edges_smooth(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -3824,7 +4472,33 @@ def bridge_edges_smooth(
     edge_b: tuple[int, int],
     sampling_step: float,
     validate: bool = True,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    *,
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def bridge_edges_smooth(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edge_a: tuple[int, int],
+    edge_b: tuple[int, int],
+    sampling_step: float,
+    validate: bool = True,
+    *,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def bridge_edges_smooth(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edge_a: tuple[int, int],
+    edge_b: tuple[int, int],
+    sampling_step: float,
+    validate: bool = True,
+    *,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Join two boundary edges with a curved strip that leaves both surfaces smoothly.
 
@@ -3859,6 +4533,9 @@ def bridge_edges_smooth(
     validate
         Check that both edges are boundary edges of ``faces`` and that the patch would not
         duplicate an existing edge, as in [`bridge_edges`][ordito.holes.bridge_edges].
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -3867,6 +4544,10 @@ def bridge_edges_smooth(
         vertices appended.
     faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` input faces with the strip's triangles appended.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every input vertex and face is its own
+        source; the strip's vertices, placed on the curve rather than between input vertices, and
+        its triangles have none (``-1``).
 
     Raises
     ------
@@ -3952,14 +4633,18 @@ def bridge_edges_smooth(
         # so the chord half of the check applies to it as it does in ``bridge_edges``.
         if validate:
             _require_new_chords((a0, a1), (b0, b1), joined, census[2:])
-        return _launch.clone(vertices), _append_bridge_patch(faces, (a0, a1), (b0, b1))
+        patched = _append_bridge_patch(faces, (a0, a1), (b0, b1))
+        return _mesh_and_provenance(
+            vertices, faces, _launch.clone(vertices), patched, return_provenance
+        )
 
     bridged_vertices = _launch.empty(
         n_vertices + interior_np.shape[0], dtype=wp.vec3, device=device
     )
     _launch.copy(bridged_vertices[:n_vertices], vertices)
     bridged_vertices[n_vertices:].assign(interior_np.astype(np.float32))
-    return bridged_vertices, _append_host_faces(faces, strip_np.reshape(-1))
+    bridged_faces = _append_host_faces(faces, strip_np.reshape(-1))
+    return _mesh_and_provenance(vertices, faces, bridged_vertices, bridged_faces, return_provenance)
 
 
 def _bridge_strip(
@@ -4085,13 +4770,32 @@ def _unit(vector: np.ndarray) -> np.ndarray:
     return vector if norm == 0.0 else vector / norm
 
 
+@overload
 def join_closest_components(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     max_distance: float | None = None,
     max_joins: int | None = None,
-) -> wp.array[wp.int32]:
+    return_provenance: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def join_closest_components(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_distance: float | None = None,
+    max_joins: int | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.int32], od.interpolation.Provenance]: ...
+def join_closest_components(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_distance: float | None = None,
+    max_joins: int | None = None,
+    return_provenance: bool = False,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
     """
     Bridge the closest pairs of *open* components until the mesh is connected.
 
@@ -4126,13 +4830,19 @@ def join_closest_components(
     max_joins
         Stop after this many bridges. ``None`` (default) continues until one component remains or no
         admissible pair is left.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
-    wp.array[wp.int32]
+    new_faces : wp.array[wp.int32]
         ``(3 * n_out_faces,)`` input face buffer with the bridge triangles appended, on
         ``faces.device``. A copy of ``faces`` when there is nothing to join -- fewer than two
         components, or no component with a boundary.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: every vertex and every input face is its own
+        source, and the bridge triangles have none (``-1``).
 
     Raises
     ------
@@ -4195,7 +4905,7 @@ def join_closest_components(
 
     rim = _JoinRim.of(vertices, faces, max_joins)
     if rim is None or rim.rounds == 0:
-        return _launch.clone(faces)
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
     rounds = rim.rounds
     if wp.get_device(faces.device).is_cpu:
         # The CPU device runs every round in one launch, which stops itself at the first round
@@ -4213,11 +4923,11 @@ def join_closest_components(
     # The patch triangles, appended in join order: one read of how many there are.
     n_patch = rim.patch_size()
     if n_patch == 0:
-        return _launch.clone(faces)
+        return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
     joined = _launch.empty(faces.size + n_patch, dtype=wp.int32, device=faces.device)
     _launch.copy(joined, faces, count=faces.size)
     _launch.copy(joined, rim.patch, dest_offset=faces.size, count=n_patch)
-    return joined
+    return _faces_and_provenance(vertices, faces, joined, return_provenance)
 
 
 # ``pack_nearest_key`` is non-negative for any real candidate, so the largest ``int64`` is a seed no
@@ -4672,3 +5382,99 @@ def _packed_loop_argument(
     for loop in loops:
         odt.ensure_ndim(loop, 1, dtype=wp.int32)
     return _pack_loops(loops) if loops else None
+
+
+def _faces_and_provenance(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    new_faces: wp.array[wp.int32],
+    return_provenance: bool,
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], od.interpolation.Provenance]:
+    """Return a filler's ``new_faces``, with the provenance of the faces it appended if asked."""
+    if not return_provenance:
+        return new_faces
+    return new_faces, _appended_provenance(vertices.size, faces.size // 3, new_faces, vertices.size)
+
+
+def _mesh_and_provenance(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    new_vertices: wp.array[wp.vec3],
+    new_faces: wp.array[wp.int32],
+    return_provenance: bool,
+    vertex_sources: wp.array[wp.int32] | None = None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
+    """
+    Return an extension's or a bridge's mesh, with the provenance of what it appended if asked.
+
+    ``vertex_sources`` names the input vertex each appended vertex copies, in order (an
+    extension's rim vertex); without it an appended vertex has no source.
+    """
+    if not return_provenance:
+        return new_vertices, new_faces
+    provenance = _appended_provenance(
+        vertices.size, faces.size // 3, new_faces, new_vertices.size, vertex_sources=vertex_sources
+    )
+    return new_vertices, new_faces, provenance
+
+
+def _appended_provenance(
+    n_vertices: int,
+    n_faces: int,
+    new_faces: wp.array[wp.int32],
+    n_out_vertices: int,
+    *,
+    vertex_sources: wp.array[wp.int32] | None = None,
+    operator: odt.BsrMatrix[wp.float32] | None = None,
+) -> od.interpolation.Provenance:
+    """
+    Provenance of an edit that keeps its input mesh in place and appends behind it.
+
+    Every input vertex and face is its own source; an appended face has none (a patch). An
+    appended vertex copies ``vertex_sources``' entry, or has no source past it; with ``operator``,
+    which then holds every row, the representatives are its own. The input is ``n_vertices``
+    vertices and ``n_faces`` faces (two stitched meshes' together, A's first).
+    """
+    device = new_faces.device
+    if operator is not None:
+        vertex_index = od.interpolation.operator_representatives(operator)
+    else:
+        vertex_index = _kept_then_sources(n_vertices, n_out_vertices, vertex_sources, device)
+    face_index = _kept_then_sources(n_faces, new_faces.size // 3, None, device)
+    return od.interpolation.Provenance(vertex_index, face_index, operator, n_vertices, n_faces)
+
+
+def _kept_then_sources(
+    n_kept: int, n_out: int, tail: wp.array[wp.int32] | None, device: wp.DeviceLike
+) -> wp.array[wp.int32]:
+    """``(n_out,)`` sources: the first ``n_kept`` their own, then ``tail``, then ``-1``."""
+    index = _launch.empty(n_out, dtype=wp.int32, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_holes.kept_then_sources,
+            dim=n_out,
+            inputs=[wp.int32(n_kept), tail, index],
+            device=device,
+        )
+    return index
+
+
+def _cone_operator(n_vertices: int, packed: _PackedLoops) -> odt.BsrMatrix[wp.float32]:
+    """``(n_vertices + n_loops, n_vertices)`` the weights ``_cone_packed_loops`` places with."""
+    device = packed.device
+    n_entries = n_vertices + packed.total
+    n_rows = n_vertices + packed.n_loops
+    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    weights = _launch.empty(n_entries, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_holes.cone_operator_rows,
+        dim=n_entries,
+        inputs=[wp.int32(n_vertices), packed.flat_loops, None, packed.offsets],
+        outputs=[offsets, columns, weights],
+        device=device,
+    )
+    return od.array.bsr_from_csr(n_rows, n_vertices, offsets, columns, weights, nnz=n_entries)
