@@ -1821,6 +1821,10 @@ def _triangulate_long_rings(
         device=device,
     )
 
+    def clip_rounds() -> None:
+        for _ in range(_LONG_RING_ROUNDS_PER_BODY if wp.get_device(device).is_cuda else 1):
+            clip_round()
+
     def clip_round() -> None:
         _launch.launch(
             kernel_polyline.ring_compute_ears,
@@ -1844,7 +1848,18 @@ def _triangulate_long_rings(
         )
 
     condition = odt.as_dense(rounds[kernel_array.LOOP_CONDITION_VIEW])
-    run_device_loop(device, condition, clip_round)
+    run_device_loop(device, condition, clip_rounds)
+
+
+# Rounds a replayed body of the packed long-ring loop runs on CUDA, each the same three launches:
+# the conditional-graph test (about 3 us) is paid once a pair. A round past the last clip is
+# nearly idle as it stands (a finished loop has no active corner to grade and its clips skip it),
+# so the body needs no gate. 2026-11-10, CUDA new/old over two passes, same faces under the
+# deterministic setting: star rings of 1 024 and 4 096 points (four a call) 0.97-0.98x, noisy
+# circles (16 of 1 024, four of 16 384) 0.96-0.99x, wavy rings (64 of 2 048, two of 65 536)
+# 0.95-0.98x; 3 rounds 0.95-0.99x, 4 rounds 0.95-1.01x. The CPU device keeps one, reading the
+# condition after every round.
+_LONG_RING_ROUNDS_PER_BODY = 2
 
 
 def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], wp.array[wp.int32]]:
