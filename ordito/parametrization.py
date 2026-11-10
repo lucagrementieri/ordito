@@ -1038,8 +1038,9 @@ def _scatter_constraints(
     ``fixed_mask`` marks the constrained vertices; ``fixed_values`` is the ``(2, n_vertices)``
     prescribed-UV buffer (row 0 = u, row 1 = v) the assembly and scatter kernels read. Shared by
     ``_fixed_boundary_map`` and
-    [`arap`][ordito.parametrization.arap]; an empty ``indices`` yields an all-``False`` mask and
-    an all-zero value buffer, which each caller rejects on its own terms.
+    [`arap`][ordito.parametrization.arap]; an empty ``indices`` yields an all-``False`` mask, which
+    each caller rejects on its own terms. Only the fixed entries of ``fixed_values`` are written:
+    every reader (the extraction's right-hand side, the scatters) reads it behind the mask.
 
     Raises
     ------
@@ -1054,7 +1055,7 @@ def _scatter_constraints(
     # skipped or repeated index fixes fewer vertices than ``indices`` lists, which each caller
     # rejects from the free count it reads anyway (``_require_fixed_count``, ``arap``).
     fixed_mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
-    fixed_values = _launch.zeros((2, n_vertices), dtype=wp.float64, device=device)
+    fixed_values = _launch.empty((2, n_vertices), dtype=wp.float64, device=device)
     if n_fixed > 0:
         _launch.launch(
             kernel_parametrization.scatter_fixed_uv,
@@ -1373,7 +1374,8 @@ class FixedVertexSolver:
         if n_vertices == 0:
             return True
         n_fixed = fixed_indices.size
-        no_uv = _launch.zeros(n_fixed, dtype=wp.vec2, device=mesh.device)
+        # The values are scattered into a buffer the factorization never reads.
+        no_uv = _launch.empty(n_fixed, dtype=wp.vec2, device=mesh.device)
         if method == "lscm":
             fixed_mask, _ = _pin_stacked(n_vertices, fixed_indices, no_uv, mesh.device)
             n_fixed *= 2
@@ -1837,6 +1839,8 @@ def _pin_stacked(
     """
     ``lscm``'s pins over the stacked ``[u; v]`` unknowns: pin ``i`` fixes DOF ``i`` and ``i + n``.
 
+    Only the fixed entries of the values are written, as ``_scatter_constraints`` writes them.
+
     Raises
     ------
     ValueError
@@ -1849,7 +1853,7 @@ def _pin_stacked(
             f"pinned_indices and pinned_uv must have the same length, got {n_pinned} and {uv.size}."
         )
     fixed_mask = _launch.zeros(2 * n_vertices, dtype=wp.bool, device=device)
-    fixed_values = _launch.zeros((1, 2 * n_vertices), dtype=wp.float64, device=device)
+    fixed_values = _launch.empty((1, 2 * n_vertices), dtype=wp.float64, device=device)
     if n_pinned > 0:
         _launch.launch(
             kernel_parametrization.scatter_pinned_stacked,

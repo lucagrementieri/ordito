@@ -5035,7 +5035,7 @@
   "counts": {
    "launch": 69,
    "alloc": 17,
-   "memset": 9,
+   "memset": 8,
    "d2h": 3,
    "scan": 2,
    "sort": 1
@@ -5045,7 +5045,7 @@
   "counts": {
    "launch": 48,
    "alloc": 17,
-   "memset": 9,
+   "memset": 8,
    "d2h": 3,
    "scan": 2,
    "sort": 1
@@ -5055,7 +5055,7 @@
   "counts": {
    "launch": 69,
    "alloc": 17,
-   "memset": 9,
+   "memset": 8,
    "d2h": 3,
    "scan": 2,
    "sort": 1
@@ -5065,7 +5065,7 @@
   "counts": {
    "launch": 48,
    "alloc": 17,
-   "memset": 9,
+   "memset": 8,
    "d2h": 3,
    "scan": 2,
    "sort": 1
@@ -5089,7 +5089,7 @@
   "counts": {
    "launch": 284,
    "alloc": 38,
-   "memset": 16,
+   "memset": 14,
    "d2d": 1,
    "d2h": 4,
    "scan": 19,
@@ -5100,7 +5100,7 @@
   "counts": {
    "launch": 237,
    "alloc": 38,
-   "memset": 16,
+   "memset": 14,
    "d2d": 1,
    "d2h": 4,
    "scan": 17,
@@ -5111,7 +5111,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 6,
+   "memset": 5,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
@@ -5122,7 +5122,7 @@
   "counts": {
    "launch": 441,
    "alloc": 53,
-   "memset": 21,
+   "memset": 20,
    "d2h": 7,
    "sync": 2,
    "scan": 22,
@@ -5133,7 +5133,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 6,
+   "memset": 5,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
@@ -5144,7 +5144,7 @@
   "counts": {
    "launch": 308,
    "alloc": 53,
-   "memset": 21,
+   "memset": 20,
    "d2h": 7,
    "sync": 2,
    "scan": 20,
@@ -5155,7 +5155,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 6,
+   "memset": 5,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
@@ -5166,7 +5166,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 6,
+   "memset": 5,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
@@ -5177,7 +5177,7 @@
   "counts": {
    "launch": 455,
    "alloc": 46,
-   "memset": 19,
+   "memset": 18,
    "d2h": 7,
    "sync": 2,
    "scan": 22,
@@ -5188,7 +5188,7 @@
   "counts": {
    "launch": 327,
    "alloc": 46,
-   "memset": 19,
+   "memset": 18,
    "d2h": 7,
    "sync": 2,
    "scan": 20,
@@ -5211,7 +5211,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 5,
+   "memset": 4,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
@@ -5222,7 +5222,7 @@
   "counts": {
    "launch": 14,
    "alloc": 13,
-   "memset": 5,
+   "memset": 4,
    "d2d": 1,
    "d2h": 3,
    "scan": 2,
