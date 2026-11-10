@@ -28,7 +28,7 @@ import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import smoothing as kernel_smoothing
-from tests.comparisons import meshlab_umbrella
+from tests.comparisons import assert_provenance_describes, meshlab_umbrella
 from tests.conftest import (
     MESHES,
     OPEN_MESHES,
@@ -2909,6 +2909,55 @@ def test_refine_and_smooth_region_moves_only_the_vertices_subdivision_added(devi
         np.zeros(n_vertices_before, dtype=displacement_np.dtype),
     )
     assert np.all(displacement_np[n_vertices_before:] > 1e-9)
+
+
+def test_refine_and_smooth_region_reports_provenance(device: str) -> None:
+    """
+    Not a library comparison: the refinement's provenance, carried through the smoothing.
+
+    Without smoothing the input positions carried through it are the output's (each inserted
+    vertex interpolates the edge it split); with smoothing the inserted vertices move off that
+    interpolation and the input's own vertices stay where they were, which is what the carried
+    positions show. Asking for the provenance does not change the answer.
+    """
+    vertices_wp, faces_wp, patch_wp, n_vertices_before = _patch_to_refine(device)
+    max_edge = float(od.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
+    for smooth in (False, True):
+        plain = od.smoothing.refine_and_smooth_region(
+            vertices_wp,
+            faces_wp,
+            n_vertices_before,
+            patch_wp,
+            max_edge=max_edge,
+            smooth_curvature=smooth,
+            **_REFINE_KWARGS,
+        )
+        new_vertices_wp, new_faces_wp, _patch, provenance = od.smoothing.refine_and_smooth_region(
+            vertices_wp,
+            faces_wp,
+            n_vertices_before,
+            patch_wp,
+            max_edge=max_edge,
+            smooth_curvature=smooth,
+            return_provenance=True,
+            **_REFINE_KWARGS,
+        )
+        assert new_vertices_wp.size > vertices_wp.size
+        assert np.array_equal(new_vertices_wp.numpy(), plain[0].numpy())
+        assert np.array_equal(new_faces_wp.numpy(), plain[1].numpy())
+        assert_provenance_describes(
+            provenance,
+            vertices_wp,
+            faces_wp,
+            new_vertices_wp,
+            new_faces_wp,
+            positions_reproduce=not smooth,
+            faces_inside_sources=not smooth,
+        )
+        carried_np = provenance.vertex_values(vertices_wp).numpy()
+        assert np.allclose(carried_np[:n_vertices_before], vertices_wp.numpy())
+        moved = np.abs(carried_np - new_vertices_wp.numpy()).max(axis=1)[n_vertices_before:]
+        assert (moved > 1e-9).any() == smooth
 
 
 def test_refine_and_smooth_region_natural_smoothing_stays_near_the_seam(device: str) -> None:

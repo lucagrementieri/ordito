@@ -4138,6 +4138,127 @@ def test_join_closest_components_reports_provenance(
     assert np.array_equal(provenance.face_index.numpy()[:n_faces], np.arange(n_faces))
 
 
+@pytest.mark.parametrize("smooth_curvature", [False, True])
+def test_smooth_patches_report_provenance(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    device: str,
+    smooth_curvature: bool,
+) -> None:
+    """
+    Not a library comparison: no reference reports where a smooth patch's elements came from.
+
+    ``fill_smooth`` (a hole of ``saddle_graded``'s with a centre ring cut out), ``refill_region``
+    (the top of ``sphere_irregular``) and ``stitch_smooth`` (two spherical caps, input A then B)
+    each chain their patch's provenance with the refinement's. Without smoothing the input
+    positions carried through it are the output's, refined patch vertices included, and the patch
+    faces have no source; with it the refined vertices move, and every claim but the position one
+    still holds. ``triangulate_only`` reports the patch alone. Asking for the provenance does not
+    change the answer.
+    """
+    checks = []
+
+    _, saddle_wp = saddle_graded
+    vertices_wp, faces_wp = saddle_wp.points, saddle_wp.indices
+    centres_np = vertices_wp.numpy()[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)
+    keep_wp = wp.array(
+        np.linalg.norm(centres_np[:, :2], axis=1) > 0.3, dtype=wp.bool, device=vertices_wp.device
+    )
+    holed_wp, holed_faces_wp = od.selection.submesh_from_face_mask(vertices_wp, faces_wp, keep_wp)
+    kwargs: dict[str, Any] = {"smooth_curvature": smooth_curvature, "max_edge": 0.05}
+    checks.append(
+        (
+            holed_wp,
+            holed_faces_wp,
+            od.holes.fill_smooth(holed_wp, holed_faces_wp, **kwargs),
+            od.holes.fill_smooth(holed_wp, holed_faces_wp, return_provenance=True, **kwargs),
+        )
+    )
+    checks.append(
+        (
+            holed_wp,
+            holed_faces_wp,
+            od.holes.fill_smooth(holed_wp, holed_faces_wp, triangulate_only=True),
+            od.holes.fill_smooth(
+                holed_wp, holed_faces_wp, triangulate_only=True, return_provenance=True
+            ),
+        )
+    )
+
+    _, sphere_wp = sphere_irregular
+    sphere_v, sphere_f = sphere_wp.points, sphere_wp.indices
+    sphere_centres_np = sphere_v.numpy()[sphere_f.numpy().reshape(-1, 3)].mean(axis=1)
+    top = np.percentile(sphere_centres_np[:, 2], 85)
+    region_wp = wp.array(sphere_centres_np[:, 2] > top, dtype=wp.bool, device=sphere_v.device)
+    refill: dict[str, Any] = {"smooth_curvature": smooth_curvature}
+    checks.append(
+        (
+            sphere_v,
+            sphere_f,
+            od.holes.refill_region(sphere_v, sphere_f, region_wp, **refill),
+            od.holes.refill_region(sphere_v, sphere_f, region_wp, return_provenance=True, **refill),
+        )
+    )
+
+    top_v, top_f = od.creation.sphere_cap(angle=np.pi / 3, subdivisions=2, device=device)
+    bottom_v = wp.array(top_v.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3, device=device)
+    bottom_f = od.repair.reverse_winding(top_f)
+    both_v, both_f = od.combine.concatenate([(top_v, top_f), (bottom_v, bottom_f)])
+    stitch: dict[str, Any] = {"smooth_curvature": smooth_curvature, "max_edge": 0.25}
+    checks.append(
+        (
+            both_v,
+            both_f,
+            od.holes.stitch_smooth(top_v, top_f, bottom_v, bottom_f, **stitch),
+            od.holes.stitch_smooth(
+                top_v, top_f, bottom_v, bottom_f, return_provenance=True, **stitch
+            ),
+        )
+    )
+
+    for input_v, input_f, plain, (new_v, new_f, provenance) in checks:
+        assert np.array_equal(new_v.numpy(), plain[0].numpy())
+        assert np.array_equal(new_f.numpy(), plain[1].numpy())
+        assert new_f.size > input_f.size  # non-vacuity: every call adds a patch
+        assert_provenance_describes(
+            provenance,
+            input_v,
+            input_f,
+            new_v,
+            new_f,
+            positions_reproduce=not smooth_curvature,
+            faces_inside_sources=not smooth_curvature,
+            sourceless=True,
+        )
+        assert (provenance.vertex_index.numpy() >= 0).all()
+        assert (provenance.face_index.numpy() == -1).any()
+
+
+def test_min_weight_stitches_report_provenance(device: str) -> None:
+    """
+    Not a library comparison: no reference reports where a stitch's elements came from.
+
+    The input is the two caps concatenated, A first: every input vertex and face is its own source
+    and the band triangles have none. Asking for the provenance does not change the answer.
+    """
+    top_v, top_f = od.creation.sphere_cap(angle=np.pi / 3, subdivisions=2, device=device)
+    bottom_v = wp.array(top_v.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3, device=device)
+    bottom_f = od.repair.reverse_winding(top_f)
+    both_v, both_f = od.combine.concatenate([(top_v, top_f), (bottom_v, bottom_f)])
+    n_faces = both_f.size // 3
+
+    new_v, new_f, provenance = od.holes.stitch_min_weight(
+        top_v, top_f, bottom_v, bottom_f, return_provenance=True
+    )
+    plain_v, plain_f = od.holes.stitch_min_weight(top_v, top_f, bottom_v, bottom_f)
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert new_f.size > both_f.size
+    assert_provenance_describes(provenance, both_v, both_f, new_v, new_f, sourceless=True)
+    assert np.array_equal(provenance.face_index.numpy()[:n_faces], np.arange(n_faces))
+    assert (provenance.face_index.numpy()[n_faces:] == -1).all()
+
+
 _INVALID_ARGUMENT_CASES = [
     "fill_smooth_edge_weights",
     "stitch_watertight",

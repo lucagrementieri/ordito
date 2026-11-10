@@ -3299,6 +3299,7 @@ def smooth_region(
     return _solve_region_smooth(vertices, faces, free_mask, region, edge_weights)
 
 
+@overload
 def refine_and_smooth_region(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -3313,7 +3314,46 @@ def refine_and_smooth_region(
     edge_weights: str,
     *,
     refine: Literal["max_edge", "density"] = "max_edge",
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def refine_and_smooth_region(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_vertices_before: int,
+    patch_face_mask: wp.array[wp.bool],
+    max_edge: float,
+    max_edge_splits: int,
+    max_angle_change_after_flip: float,
+    smooth_curvature: bool,
+    smooth_boundary: bool,
+    natural_smooth: bool,
+    edge_weights: str,
+    *,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_provenance: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance
+]: ...
+def refine_and_smooth_region(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_vertices_before: int,
+    patch_face_mask: wp.array[wp.bool],
+    max_edge: float,
+    max_edge_splits: int,
+    max_angle_change_after_flip: float,
+    smooth_curvature: bool,
+    smooth_boundary: bool,
+    natural_smooth: bool,
+    edge_weights: str,
+    *,
+    refine: Literal["max_edge", "density"] = "max_edge",
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
     """
     Subdivide the patch and smooth its new vertices.
 
@@ -3358,6 +3398,9 @@ def refine_and_smooth_region(
         Laplacian edge weights for the smooth solve: ``"cotan"`` or ``"unit"``.
     refine
         Subdivision criterion, as above.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -3369,6 +3412,12 @@ def refine_and_smooth_region(
     patch_face_mask : wp.array[wp.bool]
         ``(n_new_faces,)`` patch mask carried through the refinement, one flag per face of the
         *returned* buffer -- longer than the input mask, since subdivision adds faces.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: the refinement's, each inserted vertex
+        interpolating the vertices of the edge or face it split and each face naming the face it
+        was cut from. The smoothing moves vertices without changing where they came from, so a
+        float field carried through it is the interpolation the refinement placed them by, not
+        the smoothed positions.
 
     Raises
     ------
@@ -3415,37 +3464,71 @@ def refine_and_smooth_region(
     require_same_device(vertices=vertices, faces=faces, patch_face_mask=patch_face_mask)
     device = faces.device
     edges: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None
+    provenance: od.interpolation.Provenance | None = None
     if refine == "density":
-        vertices, faces, patch_face_mask = od.remesh.refine_region_to_density(
-            vertices, faces, patch_face_mask, max_angle_change=max_angle_change_after_flip
-        )
+        if return_provenance:
+            vertices, faces, patch_face_mask, provenance = od.remesh.refine_region_to_density(
+                vertices,
+                faces,
+                patch_face_mask,
+                max_angle_change=max_angle_change_after_flip,
+                return_provenance=True,
+            )
+        else:
+            vertices, faces, patch_face_mask = od.remesh.refine_region_to_density(
+                vertices, faces, patch_face_mask, max_angle_change=max_angle_change_after_flip
+            )
     elif refine == "max_edge" and smooth_curvature:
         # The refinement already holds the sort of its result's edges, which the smoothing below
         # groups.
-        refined = od.remesh.subdivide_region_to_size(
-            vertices,
-            faces,
-            patch_face_mask,
-            max_edge=max_edge,
-            max_splits=max_edge_splits,
-            max_angle_change=max_angle_change_after_flip,
-            return_edges=True,
-        )
-        vertices, faces, patch_face_mask, unique_edges, inverse = refined
+        if return_provenance:
+            refined_with = od.remesh.subdivide_region_to_size(
+                vertices,
+                faces,
+                patch_face_mask,
+                max_edge=max_edge,
+                max_splits=max_edge_splits,
+                max_angle_change=max_angle_change_after_flip,
+                return_edges=True,
+                return_provenance=True,
+            )
+            vertices, faces, patch_face_mask, unique_edges, inverse, provenance = refined_with
+        else:
+            refined = od.remesh.subdivide_region_to_size(
+                vertices,
+                faces,
+                patch_face_mask,
+                max_edge=max_edge,
+                max_splits=max_edge_splits,
+                max_angle_change=max_angle_change_after_flip,
+                return_edges=True,
+            )
+            vertices, faces, patch_face_mask, unique_edges, inverse = refined
         edges = (unique_edges, inverse)
     elif refine == "max_edge":
-        vertices, faces, patch_face_mask = od.remesh.subdivide_region_to_size(
-            vertices,
-            faces,
-            patch_face_mask,
-            max_edge=max_edge,
-            max_splits=max_edge_splits,
-            max_angle_change=max_angle_change_after_flip,
-        )
+        if return_provenance:
+            vertices, faces, patch_face_mask, provenance = od.remesh.subdivide_region_to_size(
+                vertices,
+                faces,
+                patch_face_mask,
+                max_edge=max_edge,
+                max_splits=max_edge_splits,
+                max_angle_change=max_angle_change_after_flip,
+                return_provenance=True,
+            )
+        else:
+            vertices, faces, patch_face_mask = od.remesh.subdivide_region_to_size(
+                vertices,
+                faces,
+                patch_face_mask,
+                max_edge=max_edge,
+                max_splits=max_edge_splits,
+                max_angle_change=max_angle_change_after_flip,
+            )
     else:
         raise ValueError(f"unknown refine {refine!r}, expected 'max_edge' or 'density'")
     if not smooth_curvature:
-        return vertices, faces, patch_face_mask
+        return _with_provenance(vertices, faces, patch_face_mask, provenance)
 
     n = vertices.size
     # One edge grouping serves the boundary mask and both regions' topology: the solves move
@@ -3498,7 +3581,22 @@ def refine_and_smooth_region(
                 vertices = _solve_region_fixed_rim(vertices, faces, free2, region, 0.0)
                 vertices = _solve_region_smooth(vertices, faces, free2, region, edge_weights)
 
-    return vertices, faces, patch_face_mask
+    return _with_provenance(vertices, faces, patch_face_mask, provenance)
+
+
+def _with_provenance(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    patch_face_mask: wp.array[wp.bool],
+    provenance: od.interpolation.Provenance | None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
+    """Return ``refine_and_smooth_region``'s result, with its provenance when one was asked for."""
+    if provenance is None:
+        return vertices, faces, patch_face_mask
+    return vertices, faces, patch_face_mask, provenance
 
 
 def _boundary_verts_mask(

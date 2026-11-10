@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Sequence
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 import igl
 import numpy as np
@@ -251,6 +251,34 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     uncut_wp, uncut_faces_wp = od.repair.make_solid(vertices_wp, faces_wp, inner_iter=0)
     assert np.array_equal(uncut_faces_wp.numpy(), largest_faces_wp.numpy())
     assert np.array_equal(uncut_wp.numpy(), largest_wp.numpy())
+
+
+def test_make_solid_reports_provenance(device: str) -> None:
+    """
+    Not a library comparison: no reference reports where a repaired mesh's elements came from.
+
+    Three open bowls, under both component policies: the stages' provenances are chained into one
+    from the input, which must describe the solid -- every vertex names an input vertex (the
+    caps add none), the caps' faces have no source and every other face names the input face it
+    is. Asking for the provenance does not change the answer.
+    """
+    mesh_tm = _spaced_bowls_tm(3)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    policies: list[dict[str, Any]] = [{}, {"keep_largest": False, "join_components": True}]
+    for kwargs in policies:
+        plain_v, plain_f = od.repair.make_solid(vertices_wp, faces_wp, **kwargs)
+        new_v, new_f, provenance = od.repair.make_solid(
+            vertices_wp, faces_wp, return_provenance=True, **kwargs
+        )
+        assert np.array_equal(new_v.numpy(), plain_v.numpy())
+        assert np.array_equal(new_f.numpy(), plain_f.numpy())
+        assert_provenance_describes(
+            provenance, vertices_wp, faces_wp, new_v, new_f, sourceless=True
+        )
+        assert (provenance.vertex_index.numpy() >= 0).all()
+        face_index_np = provenance.face_index.numpy()
+        assert (face_index_np == -1).any()
+        assert (face_index_np >= 0).any()
 
 
 def test_make_solid_leaves_a_solid_alone(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -3205,6 +3233,33 @@ def test_fix_degeneracies_collapses_a_tiny_edge_only_when_asked(device: str) -> 
     assert fewer_vertices.size == vertices_wp.size - 1
 
 
+def test_fix_degeneracies_reports_provenance(device: str) -> None:
+    """
+    Not a library comparison: MeshLib's repair reports no provenance.
+
+    The tiny-edge collapse of the grid above keeps one endpoint in place, so every output vertex
+    copies an input vertex at its own position, and the faces name the input faces whose slots
+    they hold; with nothing to repair the provenance is the identity. Asking for it does not
+    change the answer.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(6, 6), device=device)
+    vertices_np = vertices_wp.numpy()
+    vertices_np[14] = 0.5 * (vertices_np[14] + vertices_np[15])
+    shrunk_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    plain_v, plain_f = od.repair.fix_degeneracies(shrunk_wp, faces_wp, 0.0, tiny_edge_length=0.15)
+    new_v, new_f, provenance = od.repair.fix_degeneracies(
+        shrunk_wp, faces_wp, 0.0, tiny_edge_length=0.15, return_provenance=True
+    )
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert new_v.size == shrunk_wp.size - 1  # non-vacuity: one collapse
+    assert_provenance_describes(
+        provenance, shrunk_wp, faces_wp, new_v, new_f, faces_inside_sources=False
+    )
+    same = od.repair.fix_degeneracies(shrunk_wp, faces_wp, 0.0, return_provenance=True)
+    assert np.array_equal(same[2].face_index.numpy(), np.arange(faces_wp.size // 3))
+
+
 # ---------------------------------------------------------------------------
 # Geometric defects: bad faces, folds and T-vertices (pymeshlab reference)
 # ---------------------------------------------------------------------------
@@ -3441,6 +3496,47 @@ def test_fix_self_intersections_is_reproducible_when_deterministic(device: str) 
         again_vertices_wp, again_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
         assert np.array_equal(again_faces_wp.numpy(), fixed_faces_np)
         assert np.array_equal(again_vertices_wp.numpy(), fixed_vertices_np)
+
+
+@pytest.mark.parametrize("method", ["local", "voxel"])
+def test_fix_self_intersections_reports_provenance(
+    torus_self_intersecting: tuple[tm.Trimesh, wp.Mesh], method: str
+) -> None:
+    """
+    Not a library comparison: no reference reports where a repaired mesh's elements came from.
+
+    ``"local"`` chains each cut-and-refill pass's provenance: what survives the cuts names its
+    input element and the patch faces have none. ``"voxel"`` keeps nothing of the input, so
+    nothing has a source. Asking for the provenance does not change the answer.
+    """
+    _, mesh_wp = torus_self_intersecting
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    kwargs: dict[str, Any] = {"method": method}
+    if method == "voxel":
+        kwargs["voxel_size"] = 0.1
+    plain_v, plain_f = od.repair.fix_self_intersections(vertices_wp, faces_wp, **kwargs)
+    new_v, new_f, provenance = od.repair.fix_self_intersections(
+        vertices_wp, faces_wp, return_provenance=True, **kwargs
+    )
+    assert np.array_equal(new_v.numpy(), plain_v.numpy())
+    assert np.array_equal(new_f.numpy(), plain_f.numpy())
+    assert_provenance_describes(
+        provenance,
+        vertices_wp,
+        faces_wp,
+        new_v,
+        new_f,
+        positions_reproduce=False,
+        faces_inside_sources=False,
+        sourceless=True,
+    )
+    face_index_np = provenance.face_index.numpy()
+    if method == "voxel":
+        assert (face_index_np == -1).all()
+        assert (provenance.vertex_index.numpy() == -1).all()
+    else:
+        assert (face_index_np == -1).any()
+        assert (face_index_np >= 0).any()
 
 
 def test_fix_self_intersections_leaves_a_clean_mesh_alone(

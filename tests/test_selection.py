@@ -1260,6 +1260,31 @@ def test_delete_region_keep_boundary_matches_meshlib(
     assert len(kept_boundary_np) == sum(loop.size for loop in new_loops)
 
 
+def test_delete_region_keep_boundary_reports_provenance(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: MeshLib's deletion reports no provenance.
+
+    Each kept vertex copies the input vertex it was and each kept face is the input face with the
+    mask off, in order; the deletion's loops and mesh are the ones asked without it.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    centroid_z_np = vertices_wp.numpy()[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)[:, 2]
+    mask_np = centroid_z_np > np.median(centroid_z_np)
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=vertices_wp.device)
+
+    kept_wp, kept_faces_wp, loops, provenance = od.selection.delete_region_keep_boundary(
+        vertices_wp, faces_wp, mask_wp, return_provenance=True
+    )
+    plain = od.selection.delete_region_keep_boundary(vertices_wp, faces_wp, mask_wp)
+    assert np.array_equal(kept_faces_wp.numpy(), plain[1].numpy())
+    assert len(loops) == len(plain[2]) > 0
+    assert_provenance_describes(provenance, vertices_wp, faces_wp, kept_wp, kept_faces_wp)
+    assert np.array_equal(provenance.face_index.numpy(), np.flatnonzero(~mask_np))
+
+
 def test_delete_region_keep_boundary_reports_no_rim_where_none_opens(
     device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
