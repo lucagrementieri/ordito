@@ -812,7 +812,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.convex_hull", "pick_tetrahedron_corner"): frozenset({"keys"}),
     ("algorithms.convex_hull", "growth_round_serial"): frozenset({"offsets"}),
     ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
-    ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
+    # ``slot_sources`` is in place: a replacement reads its fan face's source and writes its own.
+    ("repair", "emit_degree3_replacement"): frozenset({"cursor", "slot_sources"}),
     ("repair", "emit_straighten_faces"): frozenset({"cursor"}),
     # ``counter`` and ``overflow`` are the work list the capped first pass hands the tiled second
     # one -- scratch, not the answer.

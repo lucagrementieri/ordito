@@ -19,6 +19,7 @@ import ordito.typing as odt
 from ordito.holes import _non_increasing_indices  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import holes as kernel_holes
 from tests.comparisons import (
+    assert_provenance_describes,
     boundary_loop_sizes,
     hausdorff_surface_two_sided,
     lexsort_rows,
@@ -273,6 +274,43 @@ def test_fill_fan_and_cone_mates_change_no_answer(
     given_vertices_wp, given_faces_wp = od.holes.fill_cone(vertices_wp, faces_wp, mates=mates_wp)
     assert np.array_equal(given_vertices_wp.numpy(), cone_vertices_wp.numpy())
     assert np.array_equal(given_faces_wp.numpy(), cone_faces_wp.numpy())
+
+
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
+def test_fill_fan_and_cone_report_provenance(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: no reference reports where a fill's elements came from.
+
+    Each provenance must describe the filled mesh: every input vertex and face is its own source
+    and every fill triangle has none. The cone's centroids carry an operator row averaging their
+    rim, so the input positions carried through it are the output's, apexes included; a provenance
+    that copied the apex from a rim vertex fails there. The answer asked with a provenance is the
+    one asked without, bit for bit.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_faces = faces_wp.size // 3
+
+    fan_wp, fan = od.holes.fill_fan(vertices_wp, faces_wp, return_provenance=True)
+    assert np.array_equal(fan_wp.numpy(), od.holes.fill_fan(vertices_wp, faces_wp).numpy())
+    assert fan_wp.size > faces_wp.size  # non-vacuity: every fixture has a rim to fill
+    assert_provenance_describes(fan, vertices_wp, faces_wp, vertices_wp, fan_wp, sourceless=True)
+    assert np.array_equal(fan.face_index.numpy()[n_faces:], np.full(fan_wp.size // 3 - n_faces, -1))
+
+    cone_vertices_wp, cone_faces_wp, cone = od.holes.fill_cone(
+        vertices_wp, faces_wp, return_provenance=True
+    )
+    plain_vertices_wp, plain_faces_wp = od.holes.fill_cone(vertices_wp, faces_wp)
+    assert np.array_equal(cone_vertices_wp.numpy(), plain_vertices_wp.numpy())
+    assert np.array_equal(cone_faces_wp.numpy(), plain_faces_wp.numpy())
+    assert cone_vertices_wp.size > vertices_wp.size
+    assert cone.vertex_operator is not None
+    assert_provenance_describes(
+        cone, vertices_wp, faces_wp, cone_vertices_wp, cone_faces_wp, sourceless=True
+    )
+    assert (cone.vertex_index.numpy() >= 0).all()  # every apex has its rim as a source
 
 
 @pytest.mark.parametrize("method", ["fill_fan", "fill_cone", "fill_min_weight"])
@@ -1619,6 +1657,52 @@ def _two_rims_of_different_edge_count(device: str):
     vertices_wp, faces_wp = numpy_to_warp(holed_tm.vertices, holed_tm.faces, device)
     sizes = [loop_wp.size for loop_wp in od.boundary.boundary_loops(vertices_wp, faces_wp)]
     return holed_tm, vertices_wp, faces_wp, sizes
+
+
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
+@pytest.mark.parametrize("method", ["fill_min_weight", "fill_loops_min_weight", "fill_small"])
+def test_min_weight_fills_report_provenance(
+    request: pytest.FixtureRequest, mesh_name: str, method: str
+) -> None:
+    """
+    Not a library comparison: no reference reports where a fill's elements came from.
+
+    The three entry points of the minimum-weight engine append their patch behind the input, so
+    the provenance keeps every input vertex and face as its own source and gives the fill triangles
+    none; it must describe the filled mesh, and asking for it must not change the faces.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_faces = faces_wp.size // 3
+    loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
+
+    def fill(return_provenance: bool) -> Any:
+        if method == "fill_min_weight":
+            return od.holes.fill_min_weight(
+                vertices_wp, faces_wp, return_provenance=return_provenance
+            )
+        if method == "fill_loops_min_weight":
+            return od.holes.fill_loops_min_weight(
+                vertices_wp,
+                faces_wp,
+                loops,
+                "plane_normalized",
+                True,
+                return_provenance=return_provenance,
+            )
+        return od.holes.fill_small(
+            vertices_wp, faces_wp, max_edges=1 << 20, return_provenance=return_provenance
+        )
+
+    filled_wp, provenance = fill(True)
+    assert np.array_equal(filled_wp.numpy(), fill(False).numpy())
+    assert filled_wp.size > faces_wp.size  # non-vacuity: every fixture has a rim to fill
+    assert_provenance_describes(
+        provenance, vertices_wp, faces_wp, vertices_wp, filled_wp, sourceless=True
+    )
+    face_index_np = provenance.face_index.numpy()
+    assert np.array_equal(face_index_np[:n_faces], np.arange(n_faces))
+    assert (face_index_np[n_faces:] == -1).all()
 
 
 @pytest.mark.parity(
@@ -3311,6 +3395,52 @@ def test_build_bottom_fits_each_rim_separately(
     assert np.array_equal(same_vertices_wp.numpy(), vertices_wp.numpy())
 
 
+@pytest.mark.parametrize("method", ["extend_hole", "build_bottom"])
+def test_extensions_report_provenance(
+    sphere_irregular_band: tuple[tm.Trimesh, wp.Mesh], method: str
+) -> None:
+    """
+    Not a library comparison: no reference reports where an extension's elements came from.
+
+    Each projected vertex copies the rim vertex it was projected from, so a label carried through
+    the provenance lands on the ring below its rim vertex, and the ruled triangles have no source.
+    The projection is not an interpolation, so the carried positions are the rim's, not the ring's:
+    the position claim is made for the input vertices only.
+    """
+    _, mesh_wp = sphere_irregular_band
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_vertices = vertices_wp.size
+    up = wp.vec3(0.0, 0.0, 1.0)
+    if method == "extend_hole":
+        lowest = float(vertices_wp.numpy()[:, 2].min()) - 0.5
+        new_vertices_wp, new_faces_wp, provenance = od.holes.extend_hole(
+            vertices_wp, faces_wp, up, wp.vec3(0.0, 0.0, lowest), return_provenance=True
+        )
+    else:
+        new_vertices_wp, new_faces_wp, provenance = od.holes.build_bottom(
+            vertices_wp, faces_wp, up, 0.25, return_provenance=True
+        )
+    assert new_vertices_wp.size > n_vertices
+    assert_provenance_describes(
+        provenance,
+        vertices_wp,
+        faces_wp,
+        new_vertices_wp,
+        new_faces_wp,
+        positions_reproduce=False,
+        sourceless=True,
+    )
+    vertex_index_np = provenance.vertex_index.numpy()
+    assert np.array_equal(vertex_index_np[:n_vertices], np.arange(n_vertices))
+    ring_np = new_vertices_wp.numpy()[n_vertices:]
+    rim_np = vertices_wp.numpy()[vertex_index_np[n_vertices:]]
+    # Each ring vertex sits straight below the rim vertex it names.
+    assert np.allclose(ring_np[:, :2], rim_np[:, :2], atol=1e-5)
+    assert (ring_np[:, 2] < rim_np[:, 2] + 1e-6).all()
+    carried_np = provenance.vertex_values(vertices_wp).numpy()
+    assert np.allclose(carried_np[:n_vertices], vertices_wp.numpy())
+
+
 def _rim_successors(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> dict[int, int]:
     """Map each rim vertex to the next one along the boundary, in face-winding direction."""
     return {
@@ -3602,6 +3732,48 @@ def test_bridge_edges_smooth_one_segment_is_bridge_edges(device: str) -> None:
     assert np.array_equal(smooth_vertices_wp.numpy(), vertices_np.astype(np.float32))
     assert smooth_faces_wp.size == faces_wp.size + 6  # non-vacuity: two patch triangles
     assert np.array_equal(smooth_faces_wp.numpy(), flat_faces_wp.numpy())
+
+
+def test_bridges_report_provenance(device: str) -> None:
+    """
+    Not a library comparison: no reference reports where a bridge's elements came from.
+
+    Two parallel grids facing away from each other: the flat bridge appends two sourceless
+    triangles, the smooth strip also appends vertices placed on its curve, which have no source
+    either. Every input vertex and face is its own source, and asking for the provenance does not
+    change the answer.
+    """
+    grid_vertices, grid_faces = od.creation.grid(count=(3, 3), device=device)
+    lower = grid_vertices.numpy()
+    vertices_wp = wp.array(
+        np.vstack([lower, lower + np.array([0.0, 0.0, 1.0])]), dtype=wp.vec3, device=device
+    )
+    faces_wp = wp.array(
+        np.concatenate([od.repair.reverse_winding(grid_faces).numpy(), grid_faces.numpy() + 9]),
+        dtype=wp.int32,
+        device=device,
+    )
+    n_vertices = vertices_wp.size
+
+    bridged_wp, flat = od.holes.bridge_edges(
+        vertices_wp, faces_wp, (0, 1), (10, 9), return_provenance=True
+    )
+    assert np.array_equal(
+        bridged_wp.numpy(), od.holes.bridge_edges(vertices_wp, faces_wp, (0, 1), (10, 9)).numpy()
+    )
+    assert_provenance_describes(
+        flat, vertices_wp, faces_wp, vertices_wp, bridged_wp, sourceless=True
+    )
+    assert (flat.face_index.numpy()[faces_wp.size // 3 :] == -1).all()
+
+    strip_vertices_wp, strip_faces_wp, strip = od.holes.bridge_edges_smooth(
+        vertices_wp, faces_wp, (0, 1), (10, 9), 0.25, return_provenance=True
+    )
+    assert strip_vertices_wp.size > n_vertices  # non-vacuity: the strip has interior samples
+    assert_provenance_describes(
+        strip, vertices_wp, faces_wp, strip_vertices_wp, strip_faces_wp, sourceless=True
+    )
+    assert (strip.vertex_index.numpy()[n_vertices:] == -1).all()
 
 
 # Not ``saddle_graded``: its rim edges 0 and 12 lie along one side of the grid, where the smooth
@@ -3938,6 +4110,32 @@ def test_join_closest_components_leaves_closed_and_single_meshes_alone(
         joined_wp = od.holes.join_closest_components(vertices_wp, faces_wp)
         assert np.array_equal(joined_wp.numpy(), faces_wp.numpy())
         assert joined_wp.ptr != faces_wp.ptr
+
+
+def test_join_closest_components_reports_provenance(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str
+) -> None:
+    """
+    Not a library comparison: no reference reports where a join's elements came from.
+
+    Three open shells take two joins of two triangles each, none of which has a source; every
+    input vertex and face is its own, and asking for the provenance does not change the faces.
+    """
+    mesh_tm = _open_shells_tm(saddle_graded, 3)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    n_faces = faces_wp.size // 3
+
+    joined_wp, provenance = od.holes.join_closest_components(
+        vertices_wp, faces_wp, return_provenance=True
+    )
+    assert np.array_equal(
+        joined_wp.numpy(), od.holes.join_closest_components(vertices_wp, faces_wp).numpy()
+    )
+    assert joined_wp.size // 3 == n_faces + 4
+    assert_provenance_describes(
+        provenance, vertices_wp, faces_wp, vertices_wp, joined_wp, sourceless=True
+    )
+    assert np.array_equal(provenance.face_index.numpy()[:n_faces], np.arange(n_faces))
 
 
 _INVALID_ARGUMENT_CASES = [

@@ -2225,13 +2225,35 @@ def _split_corners(
     return new_vertices, new_faces, source
 
 
+@overload
 def collapse_small_triangles(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     epsilon: float = 1e-6,
     *,
     bounds: tuple[wp.vec3, wp.vec3] | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return_provenance: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def collapse_small_triangles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 1e-6,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+def collapse_small_triangles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 1e-6,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    return_provenance: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+):
     """
     Collapse triangles smaller than a bounding-box-relative area threshold.
 
@@ -2259,6 +2281,9 @@ def collapse_small_triangles(
         The box enclosing ``vertices`` when the caller holds it, typically
         [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds]. Its diagonal scales ``epsilon``, so passing
         it spares the reduction and readback that measure the box again. Trusted, not checked.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2267,6 +2292,10 @@ def collapse_small_triangles(
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving faces, remapped into
         ``new_vertices``.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the vertex
+        its collapsed class kept (whose position it has), and each output face of the input face
+        it is, its corners moved onto those vertices.
 
     Raises
     ------
@@ -2315,7 +2344,7 @@ def collapse_small_triangles(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0 or vertices.size == 0:
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _unchanged(_launch.clone(vertices), _launch.clone(faces), return_provenance)
 
     bbd = (
         od.bounds.enclosing_diagonal(vertices)
@@ -2335,6 +2364,12 @@ def collapse_small_triangles(
     n_small = _launch.zeros(2, dtype=wp.int32, device=device)
     n_left = odt.as_dense(n_small[1:])
     small_so_far = 0
+    # The passes' provenances chained, each a compaction's vertex map and kept faces.
+    provenance = (
+        od.interpolation.Provenance.identity(vertices.size, n_faces, device)
+        if return_provenance
+        else None
+    )
     for iteration in range(max_iterations):
         n_current = current_faces.size // 3
         if n_current == 0:
@@ -2380,15 +2415,34 @@ def collapse_small_triangles(
             outputs=[remapped_faces, keep_mask, ranks, n_left],
             device=device,
         )
-        current_vertices, current_faces, _vertex_index, _ranks = _compact_marked_submesh(
-            current_vertices, remapped_faces, keep_mask, ranks, keep_masked=True, with_index=False
+        pass_vertices = current_vertices
+        current_vertices, current_faces, vertex_index, _ranks = _compact_marked_submesh(
+            current_vertices,
+            remapped_faces,
+            keep_mask,
+            ranks,
+            keep_masked=True,
+            with_index=return_provenance,
         )
+        if provenance is not None:
+            assert vertex_index is not None
+            provenance = provenance.then(
+                od.interpolation.Provenance(
+                    vertex_index,
+                    od.array.flatnonzero(keep_mask),
+                    None,
+                    pass_vertices.size,
+                    n_current,
+                )
+            )
         small_total = int(read_scalar(n_small, 1))
         if small_total == small_so_far:
             break
         small_so_far = small_total
 
-    return current_vertices, current_faces
+    if provenance is None:
+        return current_vertices, current_faces
+    return current_vertices, current_faces, provenance
 
 
 def fix_degeneracies(
@@ -2792,6 +2846,7 @@ def remove_degree3_vertices(
     *,
     max_iter: int = 8,
     return_count: Literal[False] = False,
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def remove_degree3_vertices(
@@ -2800,15 +2855,38 @@ def remove_degree3_vertices(
     *,
     max_iter: int = 8,
     return_count: Literal[True],
+    return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]: ...
+@overload
+def remove_degree3_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_iter: int = 8,
+    return_count: Literal[False] = False,
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
+@overload
+def remove_degree3_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    max_iter: int = 8,
+    return_count: Literal[True],
+    return_provenance: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]: ...
 def remove_degree3_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
     max_iter: int = 8,
     return_count: bool = False,
+    return_provenance: bool = False,
 ) -> (
-    tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]
 ):
     """
     Remove interior vertices with exactly three incident faces, collapsing each fan to one triangle.
@@ -2843,6 +2921,9 @@ def remove_degree3_vertices(
         candidates needs one pass per link; the default covers any chain length likely in practice.
     return_count
         If ``True``, also return ``removed``.
+    return_provenance
+        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
+        any per-vertex or per-face field onto the result.
 
     Returns
     -------
@@ -2856,6 +2937,10 @@ def remove_degree3_vertices(
         Present when ``return_count=True``. How many vertices were removed. Zero means the input
         had none and the buffers are it. A diagnostic: the pass loop stops itself when a pass finds
         no candidate, so nothing about calling this correctly depends on reading the count.
+    provenance : Provenance
+        Only when ``return_provenance`` is ``True``: each output vertex is a copy of the input
+        vertex it is, and each output face of the input face it is; a fan's replacement triangle
+        takes the fan face holding the fan's lowest halfedge, chained through earlier passes.
 
     Raises
     ------
@@ -2910,7 +2995,12 @@ def remove_degree3_vertices(
     n_vertices = vertices.size
     n_input = faces.size // 3
     if n_input == 0 or max_iter == 0:
-        return (vertices, faces, 0) if return_count else (vertices, faces)
+        unchanged = (
+            od.interpolation.Provenance.identity(n_vertices, n_input, device)
+            if return_provenance
+            else None
+        )
+        return _degree3_result(vertices, faces, 0, return_count, unchanged)
     # The documented edge-manifold check, on the input only: the twin defects of the halfedge
     # mates, counted inside pass 0's first launch and read back with that pass's counters,
     # rather than a twin table the pass never reads. Replacing an interior degree-3 fan by the one
@@ -2944,6 +3034,9 @@ def remove_degree3_vertices(
     )
     tables = state[per_pass:]
     fan_rows, face_slots = _launch.carve(wp.int32, [3 * n_vertices, 3 * n_slots], device)
+    # The input face each row came from, which a replacement takes from its fan: only for a
+    # provenance, and its rows past the input are written as replacements are appended.
+    slot_sources = od.array.arange(n_slots, device=device) if return_provenance else None
     fans = odt.as_array2d(fan_rows.reshape((n_vertices, 3)), wp.int32)
     new_faces = odt.as_dense(face_slots[3 * n_input :]).reshape((n_slots - n_input, 3))
     emit_inputs = [
@@ -2953,6 +3046,7 @@ def remove_degree3_vertices(
         link_sums,
         n_input,
         cursor,
+        slot_sources,
         lost,
         kept,
         new_faces,
@@ -2974,7 +3068,12 @@ def remove_degree3_vertices(
     removed, n_nonmanifold, n_misoriented, n_referenced, n_next = read_values(state, tail, 5)
     _raise_degree3_defects(n_nonmanifold, n_misoriented)
     if removed == 0:
-        return (vertices, faces, 0) if return_count else (vertices, faces)
+        unchanged = (
+            od.interpolation.Provenance.identity(n_vertices, n_input, device)
+            if return_provenance
+            else None
+        )
+        return _degree3_result(vertices, faces, 0, return_count, unchanged)
     for _pass_index in range(1, max_iter):
         if n_next == 0:
             break
@@ -3016,7 +3115,40 @@ def remove_degree3_vertices(
         inputs=[vertices, face_slots, kept, referenced, n_kept, out_vertices, out_faces],
         device=device,
     )
-    return (out_vertices, out_faces, removed) if return_count else (out_vertices, out_faces)
+    provenance = None
+    if slot_sources is not None:
+        vertex_index = _launch.empty(n_referenced, dtype=wp.int32, device=device)
+        face_index = _launch.empty(n_kept, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_repair.degree3_provenance_maps,
+            dim=max(n_vertices, n_used),
+            inputs=[n_vertices, slot_sources, kept, referenced, n_kept, vertex_index, face_index],
+            device=device,
+        )
+        provenance = od.interpolation.Provenance(
+            vertex_index, face_index, None, n_vertices, n_input
+        )
+    return _degree3_result(out_vertices, out_faces, removed, return_count, provenance)
+
+
+def _degree3_result(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    removed: int,
+    return_count: bool,
+    provenance: od.interpolation.Provenance | None,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], int, od.interpolation.Provenance]
+):
+    """Assemble ``remove_degree3_vertices``' returns, ``provenance`` ``None`` when not asked."""
+    if provenance is None:
+        return (vertices, faces, removed) if return_count else (vertices, faces)
+    if return_count:
+        return vertices, faces, removed, provenance
+    return vertices, faces, provenance
 
 
 def _raise_degree3_defects(n_nonmanifold: int, n_misoriented: int) -> None:

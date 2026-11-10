@@ -3033,6 +3033,46 @@ def test_collapse_small_triangles_bounds_change_no_answer(
     assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
+def test_collapse_small_triangles_reports_provenance(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: igl's ``collapse_small_triangles`` reports no provenance.
+
+    Every pass's compaction map is chained into one provenance from the input: each output vertex
+    copies the representative it is (so the positions carried through it are the output's) and
+    each output face names the input face it was before its corners moved. A collapse moves only
+    sub-threshold geometry, so a face's corners lie within a tenth of the box diagonal of its
+    source's, in corner order; a shuffled face map fails that ninefold. Asking for
+    the provenance does not change the answer.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+
+    plain = od.repair.collapse_small_triangles(vertices_wp, faces_wp, epsilon=1e-4)
+    new_vertices_wp, new_faces_wp, provenance = od.repair.collapse_small_triangles(
+        vertices_wp, faces_wp, epsilon=1e-4, return_provenance=True
+    )
+    assert new_faces_wp.size < faces_wp.size  # non-vacuity: some faces collapse
+    assert np.array_equal(new_vertices_wp.numpy(), plain[0].numpy())
+    assert np.array_equal(new_faces_wp.numpy(), plain[1].numpy())
+    assert_provenance_describes(
+        provenance, vertices_wp, faces_wp, new_vertices_wp, new_faces_wp, faces_inside_sources=False
+    )
+    vertices_np = vertices_wp.numpy()
+    sources_np = vertices_np[faces_wp.numpy().reshape(-1, 3)[provenance.face_index.numpy()]]
+    corners_np = new_vertices_wp.numpy()[new_faces_wp.numpy().reshape(-1, 3)]
+    diagonal = float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+    # Measured 0.048 of the diagonal (a class chained along a run of needles), and 0.89 with the
+    # face map shuffled.
+    assert np.linalg.norm(corners_np - sources_np, axis=2).max() < 0.1 * diagonal
+
+    unchanged = od.repair.collapse_small_triangles(
+        vertices_wp, faces_wp, epsilon=0.0, return_provenance=True
+    )
+    assert np.array_equal(unchanged[2].face_index.numpy(), np.arange(faces_wp.size // 3))
+
+
 def _kept_input_vertices(vertices_np: np.ndarray, output: tm.Trimesh) -> set[int]:
     # The input vertex each output vertex sits on; the float32 round trip is the only slack.
     distance, index = KDTree(vertices_np).query(np.asarray(output.vertices))
@@ -4012,6 +4052,43 @@ def test_remove_degree3_vertices_runs_a_cascade_to_its_fixpoint(device: str, clo
         out_vertices_wp, out_faces_wp, return_count=True
     )
     assert again_removed == 0
+
+
+def test_remove_degree3_vertices_reports_provenance(device: str) -> None:
+    """
+    Not a library comparison: MeshLib's removal reports no provenance.
+
+    A cascade of nested centroid splits on an icosphere is undone to the icosphere itself, so every
+    output face is a replacement chained over passes or an untouched face. Each output vertex copies
+    the input vertex it is, and each output face names an input face lying inside it: one that
+    shares at least two of its corners. A replacement that took a face of another fan, or a chained
+    one read from the wrong slot, fails that. Asking for the provenance does not change the answer.
+    """
+    depth = 3
+    mesh_tm = tm.creation.icosphere(subdivisions=1)
+    vertices_np, faces_np = _nested_face_splits(mesh_tm, list(range(0, 80, 9)), depth)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel().astype(np.int32), device)
+
+    plain = od.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+    new_vertices_wp, new_faces_wp, removed, provenance = od.repair.remove_degree3_vertices(
+        vertices_wp, faces_wp, return_count=True, return_provenance=True
+    )
+    assert removed == 9 * depth  # non-vacuity: the cascade runs over several passes
+    assert np.array_equal(new_vertices_wp.numpy(), plain[0].numpy())
+    assert np.array_equal(new_faces_wp.numpy(), plain[1].numpy())
+    assert_provenance_describes(
+        provenance, vertices_wp, faces_wp, new_vertices_wp, new_faces_wp, faces_inside_sources=False
+    )
+    vertex_index_np = provenance.vertex_index.numpy()
+    output_np = vertex_index_np[new_faces_wp.numpy().reshape(-1, 3)]
+    sources_np = faces_np.reshape(-1, 3)[provenance.face_index.numpy()]
+    shared = (output_np[:, :, None] == sources_np[:, None, :]).any(axis=2).sum(axis=1)
+    assert (shared >= 2).all()
+
+    _, _, unchanged = od.repair.remove_degree3_vertices(
+        new_vertices_wp, new_faces_wp, return_provenance=True
+    )
+    assert np.array_equal(unchanged.face_index.numpy(), np.arange(new_faces_wp.size // 3))
 
 
 @pytest.mark.parity("flatten_degree3_vertices", "meshlib")
