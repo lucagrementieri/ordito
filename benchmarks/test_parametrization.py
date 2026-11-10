@@ -189,8 +189,10 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
     ``ordito.cholesky`` kept each pattern's analysis across calls, a cache that is not
     kept. Off this axis, on ``saddle_graded``, the ``k=2`` system is past what
     any iteration converges on (condition number ~1e17): the solve is verified and falls back to a
-    factorization after ``linalg.CG_FACTOR_AFTER_ROUNDS`` rounds, 105 ms where it used to run its
-    whole cap (13.5 s) and return a map 54 % of the range off. The verification costs ~0.1 ms on
+    factorization after ``linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`` rounds, where it used to run
+    its whole cap (13.5 s) and return a map 54 % of the range off (then 1 000 rounds, 105 ms; at
+    64 rounds a 1.6 k-vertex graded ``k=2`` system 0.11x that and ``k=1`` on ``saddle_graded``
+    0.65x, 2026-11-10). The verification costs ~0.1 ms on
     these rows (0.95x at ``k=1``, 0.99-1.0x at ``k=2``).
 
     **A factorization prepared on a ``Trimesh`` is the reuse path** (2026-10-07,

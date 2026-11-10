@@ -109,8 +109,8 @@ A ``k=2`` biharmonic operator on a strongly graded patch is outside what any pre
 conjugate gradient reaches in ``float64``: its condition number nears the reciprocal of the unit
 round-off, and the iteration stalls at a residual of a few percent. That is the case the verified
 solves exist for -- the stalled iterate fails its check after
-[`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds and the factorization
-answers.
+[`CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS] rounds and
+the factorization answers.
 
 The heat system ``M - tL`` that [`heat_geodesic`][ordito.heat.heat_geodesic] solves needs no
 multilevel help of its own: it converges in a small, size-independent number of iterations, because
@@ -168,12 +168,21 @@ SETTLE_DIRECT_TOLERANCE = 1e-12
 
 # Rounds a solve holding a fallback factorization (``solve_spd_columns(factorization=...)``, which
 # every ``min_quad_with_fixed`` solve does) iterates before it stops and factors instead: the rent
-# of a rent-or-buy choice. A factorization of the reduced systems the parametrizations solve costs
-# about what 200-400 conjugate-gradient rounds do, and every well-posed solve measured converges
-# well inside the budget (18-855 rounds; ``lscm`` on a graded patch is the longest), so the budget
-# stops a solve that is not converging -- a biharmonic system with a condition number near 1e17
-# stalls at a few percent residual for its whole ``10 n`` cap -- long before the cap would.
+# of a rent-or-buy choice. This budget is in rounds of one mat-vec or about (``"diag"``, and the
+# Jacobi probe ``"adaptive"`` starts with: a 50 %-pinned graded patch settles in 96 of them, 3.4x
+# cheaper than factoring it) or of a multigrid cycle; it stops a solve that is not converging -- a
+# biharmonic system with a condition number near 1e17 stalls at a few percent residual for its
+# whole ``10 n`` cap -- long before the cap would.
 CG_FACTOR_AFTER_ROUNDS = 1000
+
+# The same rent for a solve under a polynomial preconditioner (``"chebyshev"``, a
+# ``SquaredLaplacianPreconditioner``), whose round is a degree-12 polynomial's dozen mat-vecs: a
+# factorization and its solve cost about 60-80 such rounds on CUDA from 1.6 k to 330 k vertices,
+# so the rent is that price. On the parametrization systems, against the general budget: graded
+# patches 0.25-0.65x (a 1.6 k-vertex graded biharmonic system 0.11x: it ran its whole 1 000
+# rounds), every solve converging inside 64 rounds at par, the worst case a solve just past it
+# (a 330 k-vertex hemisphere, 99 rounds) 1.27x.
+CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS = 64
 
 # The componentwise backward error ``|b - A x|_i / (|A| |x| + |b|)_i`` a verified solve's iterate
 # may carry anywhere -- or 100 times the solve's tolerance, if that is larger -- before the solve
@@ -346,7 +355,9 @@ def min_quad_with_fixed(
     The solve is verified: it runs as
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns] does with a ``factorization``, so a
     conjugate-gradient result that has not converged within
-    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, or fails the
+    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds
+    ([`CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS] under
+    ``"chebyshev"``), or fails the
     componentwise backward-error test, is replaced by a solve through a
     [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] factorization of ``Q_uu``, built for the
     call and dropped.
@@ -1667,10 +1678,12 @@ def solve_spd_columns(
         ``None``, or an [`OperatorFactorization`][ordito.linalg.OperatorFactorization] of
         ``matrix``, which makes the solve *verified*. One that already holds a factorization is
         solved by directly, with no iteration. Otherwise the iteration runs at most
-        [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds (or ``maxiter``,
-        if fewer), and its result must have converged and pass a componentwise backward-error
-        test ([`VERIFIED_BACKWARD_ERROR`][ordito.linalg.VERIFIED_BACKWARD_ERROR]); one that does
-        not is solved again by factoring ``matrix`` into ``factorization``, where the caller keeps
+        [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds
+        ([`CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS]
+        under ``"chebyshev"`` or a ``SquaredLaplacianPreconditioner``; or ``maxiter``, if fewer),
+        and its result must have converged and pass a componentwise backward-error test
+        ([`VERIFIED_BACKWARD_ERROR`][ordito.linalg.VERIFIED_BACKWARD_ERROR]); one that does not is
+        solved again by factoring ``matrix`` into ``factorization``, where the caller keeps
         it. An operator that cannot be factored keeps iterating, warm-started, to the full
         ``maxiter`` -- unless it is not definite in ``float64``, which no iteration solves either.
         The verification reads back one flag whatever ``check_every`` is.
@@ -1824,7 +1837,8 @@ def _solve_columns_verified(
     """
     ``solve_spd_columns`` under a ``factorization``: iterate under a budget, verify, else factor.
 
-    Rent or buy: the iteration may spend up to ``CG_FACTOR_AFTER_ROUNDS`` rounds, about what the
+    Rent or buy: the iteration may spend up to ``CG_FACTOR_AFTER_ROUNDS`` rounds
+    (``CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`` under a polynomial preconditioner), about what the
     factorization would cost, and its result is kept only if it converged and passes the
     componentwise backward-error test. Otherwise the factorization is bought and solves the
     system from zero. An operator that cannot be factored has only the iteration left, which then
@@ -1836,7 +1850,10 @@ def _solve_columns_verified(
     if factorization.factorization is not None:
         factorization.solve(rhs, solution, tol=tol)
         return _direct_result(factorization, tol, check_every, rhs.device)
-    rent = min(cap, CG_FACTOR_AFTER_ROUNDS)
+    polynomial = preconditioner == "chebyshev" or isinstance(
+        preconditioner, SquaredLaplacianPreconditioner
+    )
+    rent = min(cap, CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS if polynomial else CG_FACTOR_AFTER_ROUNDS)
     verdict: int | None = None
     if preconditioner == "adaptive":
         # The probe's escalation test and the verification share one read: the verification's

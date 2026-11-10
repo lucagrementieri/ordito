@@ -1236,14 +1236,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   dragon and 0.94-0.95x at 1-2 M, but `equality`'s exact self-match measured the grid at 0.36x
   the descent at 2 M. A default change under `_DESCENT_MAX_POINTS_CUDA` alters documented
   behaviour and tied neighbours' identity: needs the user's choice.
-- **The verified solve's rent is priced from before the Cholesky speedups** (2026-11-10,
-  `linalg.CG_FACTOR_AFTER_ROUNDS = 1000`, whose comment prices a factorization at 200-400
-  rounds): `harmonic(k=1)` on `saddle_graded` iterates 212 rounds (12.4 ms) where
-  `solver="direct"` takes 4.3 ms (0.35x), a factorization and solve now about 55 rounds at 17.7 k
-  vertices; the well-conditioned patch solves take 16-33 rounds (direct loses 1.7-2.3x there). A
-  rent near the factorization's price (~64 rounds) would take the graded row to about 0.6x. Open:
-  `heat`'s verified solves share the budget, so re-pricing it needs their rows priced too (or a
-  per-call budget keyword on `solve_spd_columns` for the parametrization alone).
 - **`polyline._arc_length_table` is `map_vertices_to_circle`'s old shape** (2026-11-10): a length
   launch, a slice and a device-wide float scan. The one-block carried scan
   (`kernels/parametrization.circle_positions_block`: CUDA 0.39x to 2 048 points, CPU 0.48-0.74x

@@ -964,6 +964,36 @@ def test_solve_spd_columns_verified_solve_factors_only_when_it_must(
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
 
 
+@pytest.mark.parametrize("preconditioner", ["diag", "chebyshev"])
+def test_solve_spd_columns_polynomial_solves_take_their_own_budget(
+    device: str, preconditioner: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a polynomial-preconditioned solve's budget is its own.
+
+    With ``CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`` at two rounds and the general budget untouched,
+    the Jacobi-Chebyshev solve is rejected and factored, the Jacobi one iterates to convergence.
+    """
+    monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS", 2)
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    iterations, _, _ = od.linalg.solve_spd_columns(
+        matrix_wp,
+        rhs_wp,
+        solution_wp,
+        tol=1e-10,
+        check_every=1,
+        preconditioner=preconditioner,
+        factorization=held,
+    )
+    polynomial = preconditioner == "chebyshev"
+    assert (held.factorization is not None) == polynomial
+    assert (iterations == 0) == polynomial
+    expected_np = np.linalg.solve(dense_np, rhs_np.T).T
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+
+
 def test_solve_spd_columns_warns_when_no_verified_solution_exists(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

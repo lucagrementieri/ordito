@@ -1273,3 +1273,35 @@ def test_a_refused_factorization_is_not_attempted_again_on_a_trimesh(
     for expected in (3, 4):
         od.parametrization.lscm(vertices, faces, pins, pins_uv)
         assert len(attempts) == expected
+
+
+@pytest.mark.parametrize("method", ["harmonic", "tutte"])
+def test_a_k1_system_factors_at_once_on_the_cpu_from_its_size(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """
+    Ordito against ordito: the CPU's ``k == 1`` factor-at-once gate, at its boundary.
+
+    With the gate set to this mesh's vertex count the CPU device factors before iterating and
+    CUDA does not; one vertex above it neither does. The factored and iterated maps agree; the
+    iterated route has the igl oracle above.
+    """
+    _, mesh_wp = sphere_irregular_cap
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    boundary, boundary_uv = _fixed_vertex_call(method, mesh_wp, 1.0)
+    built: list[int] = []
+    analyse = od.linalg.sparse_cholesky
+
+    def counted(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
+        built.append(1)
+        return analyse(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "sparse_cholesky", counted)
+    call = getattr(od.parametrization, method)
+    uv_np = {}
+    for gate in (vertices.size + 1, vertices.size):
+        monkeypatch.setattr(od.parametrization, "_FACTOR_K1_FROM_VERTICES_CPU", gate)
+        built.clear()
+        uv_np[gate] = call(vertices, faces, boundary, boundary_uv).numpy()
+        assert len(built) == int(gate == vertices.size and wp.get_device(vertices.device).is_cpu)
+    assert np.allclose(uv_np[vertices.size], uv_np[vertices.size + 1], rtol=1e-5, atol=1e-5)

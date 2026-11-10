@@ -50,6 +50,12 @@ _CG_TOLERANCE = 1e-8
 # operator's conditioning is the Laplacian's squared, and ``lscm`` pins only two vertices), and
 # past this size the factorization is the cheaper one-shot solve too.
 _FACTOR_FROM_VERTICES = 4_000
+# Vertices from which the CPU device factors a ``k == 1`` harmonic / tutte system at once: its
+# rounds cost far more against its factorization than on CUDA, where the iteration's verified
+# budget (``linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS``) is the only switch. A factored solve
+# against the iteration on the CPU, on saddles: 1.05-1.54x to 4 624 vertices, 0.49-0.67x at 6 400,
+# 0.30-0.40x at 17 689.
+_FACTOR_K1_FROM_VERTICES_CPU = 5_000
 
 # ``arap`` factors its global-step operator once its second solve's conjugate-gradient rounds,
 # times the iterations still to run, reach this: the later warm-started solves then cost more than
@@ -343,8 +349,9 @@ def harmonic(
     ``boundary_uv``. For ``k == 1`` this is the harmonic map (each interior UV is the
     cotangent-weighted average of its neighbors); ``k == 2`` is the biharmonic map, and so on. The
     interior system is solved with conjugate gradient at ``k == 1``, and at ``k == 2`` on a mesh of
-    fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at ``k >= 3``, and at
-    ``k == 2`` from 4 000 vertices. An iterative result is verified and replaced by the
+    fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at ``k >= 3``, at
+    ``k == 2`` from 4 000 vertices, and on the CPU device at ``k == 1`` from 5 000. An iterative
+    result is verified and replaced by the
     factorization's when it is not the system's answer (see Notes).
 
     Parameters
@@ -366,14 +373,14 @@ def harmonic(
         [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]. The operator is assembled in
         float64 (built native, never recast) so the ill-conditioned ``k > 1`` solve is accurate.
     solver
-        ``"auto"`` (default) factors the system at once at ``k >= 3``, where the iteration does
-        not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a factorization
-        costs less than the iteration; otherwise it solves by conjugate gradient, verified, and
-        factors the system only when the iteration's result fails the check. ``"direct"`` factors
-        it at once (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so
-        every later call fixing the same vertices -- whatever their values -- is a factored solve
-        with no iteration. Pays from about the second such call; a one-shot call is usually faster
-        under ``"auto"``.
+        ``"auto"`` (default) factors the system at once at ``k >= 3``, where the iteration does not
+        converge, at ``k == 2`` on a mesh of 4 000 vertices or more, and on the CPU device at
+        ``k == 1`` on one of 5 000 or more, where a factorization costs less than the iteration;
+        otherwise it solves by conjugate gradient, verified, and factors the system only when the
+        iteration's result fails the check. ``"direct"`` factors it at once (a sparse Cholesky);
+        given a `Trimesh`, the factorization is kept on it, so every later call fixing the same
+        vertices -- whatever their values -- is a factored solve with no iteration. Pays from about
+        the second such call; a one-shot call is usually faster under ``"auto"``.
 
     Returns
     -------
@@ -422,7 +429,8 @@ def harmonic(
     mesh of fewer than 4 000 vertices; from 4 000 the ``k == 2`` system is factored at once, as
     ``k >= 3`` is below, its iteration growing faster with the mesh than the factorization. Both
     results are verified -- converged within
-    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, with a componentwise
+    [`CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_POLYNOMIAL_ROUNDS] rounds,
+    with a componentwise
     backward error under
     [`VERIFIED_BACKWARD_ERROR`][ordito.linalg.VERIFIED_BACKWARD_ERROR] -- and a result that is not
     is replaced by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] solve: on a strongly
@@ -552,11 +560,12 @@ def tutte(
         Laplacian power (``>= 1``). ``k == 1`` is the classic Tutte embedding.
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check (always at ``k >= 3``, and at ``k == 2`` on a
-        mesh of 4 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);
-        given a `Trimesh`, the factorization is kept on it, so every later call fixing the same
-        vertices -- whatever their values -- is a factored solve with no iteration. Pays from
-        about the second such call; a one-shot call is usually faster under ``"auto"``.
+        when the iteration's result fails the check (always at ``k >= 3``, at ``k == 2`` on a mesh
+        of 4 000 vertices or more, and on the CPU device at ``k == 1`` on one of 5 000 or more).
+        ``"direct"`` factors it at once (a sparse Cholesky); given a `Trimesh`, the factorization is
+        kept on it, so every later call fixing the same vertices -- whatever their values -- is a
+        factored solve with no iteration. Pays from about the second such call; a one-shot call is
+        usually faster under ``"auto"``.
 
     Returns
     -------
@@ -1262,8 +1271,9 @@ class FixedVertexSolver:
     builds it ahead of the calls, when a call asks for one (``solver="direct"``), or when a call
     built one anyway: the iteration's result failed
     its verification (see [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]), or the
-    system is factored from the start -- at ``k >= 3``, and for a ``k == 2`` ``harmonic`` /
-    ``tutte`` system or an ``lscm`` one on a mesh of 4 000 vertices or more. A call fixing other
+    system is factored from the start -- at ``k >= 3``, for a ``k == 2`` ``harmonic`` / ``tutte``
+    system or an ``lscm`` one on a mesh of 4 000 vertices or more, and on the CPU device for a
+    ``k == 1`` one on a mesh of 5 000 or more. A call fixing other
     vertices than the kept factorization's solves as if none were kept, and replaces it with its
     own when it builds one. A system factored from the start that cannot be factored (over
     [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not definite) is
@@ -1415,8 +1425,9 @@ class FixedVertexSolver:
             The harmonic power (``1`` for ``"lscm"``).
         solver
             ``"auto"`` iterates, verified, and factors only when the check fails -- or at once at
-            ``k >= 3``, and for ``k == 2`` and ``"lscm"`` on a mesh of 4 000 vertices or more,
-            unless that system was already refused; ``"direct"`` factors at once. A factorization
+            ``k >= 3``, for ``k == 2`` and ``"lscm"`` on a mesh of 4 000 vertices or more, and on
+            the CPU device for ``k == 1`` on one of 5 000 or more, unless that system was already
+            refused; ``"direct"`` factors at once. A factorization
             either builds is kept.
 
         Returns
@@ -1492,7 +1503,7 @@ class FixedVertexSolver:
         preconditioner: str | twl.SquaredLaplacianPreconditioner = "adaptive"
         built = system is None
         if system is None:
-            at_once = _factors_at_once(method, k, mesh.vertices.size)
+            at_once = _factors_at_once(method, k, mesh.vertices.size, mesh.device)
             refused = at_once and solver == "auto" and (method, k) in self._refused
             system, preconditioner = _fixed_vertex_system(
                 mesh,
@@ -1588,7 +1599,7 @@ def _solve_fixed_vertices_once(
     vertices = mesh.vertices
     require_same_device(vertices=vertices, fixed_mask=fixed_mask, fixed_values=fixed_values)
     device = fixed_mask.device
-    at_once = _factors_at_once(method, k, vertices.size)
+    at_once = _factors_at_once(method, k, vertices.size, vertices.device)
     q, laplacian, mass_diag = _fixed_vertex_operator(mesh, method, k)
     q_uu, rhs, free_map, n_free = twl.partitioned_interior_system(q, fixed_mask, fixed_values)
     _require_fixed_count(fixed_mask.size - n_free, n_fixed, method)
@@ -1644,11 +1655,13 @@ def _require_fixed_vertex_method(method: str, k: int, caller: str) -> None:
         raise ValueError(f"{caller}: k={k} is not a power {method} takes.")
 
 
-def _factors_at_once(method: str, k: int, n_vertices: int) -> bool:
+def _factors_at_once(method: str, k: int, n_vertices: int, device: wp.DeviceLike) -> bool:
     """Whether ``"auto"`` factors ``method``'s system before iterating (see ``solve``)."""
     if method == "lscm":
         return n_vertices >= _FACTOR_FROM_VERTICES
-    return k >= 3 or (k == 2 and n_vertices >= _FACTOR_FROM_VERTICES)
+    if k == 1:
+        return n_vertices >= _FACTOR_K1_FROM_VERTICES_CPU and not wp.get_device(device).is_cuda
+    return k >= 3 or n_vertices >= _FACTOR_FROM_VERTICES
 
 
 def _fixed_vertex_system(

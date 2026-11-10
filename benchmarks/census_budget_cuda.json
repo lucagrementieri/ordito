@@ -5255,13 +5255,14 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic_conditioning[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 14,
-   "alloc": 13,
-   "memset": 5,
+   "launch": 346,
+   "alloc": 47,
+   "memset": 24,
    "d2d": 1,
-   "d2h": 3,
-   "scan": 2,
-   "sort": 1
+   "d2h": 8,
+   "sync": 2,
+   "scan": 20,
+   "sort": 19
   }
  },
  "benchmarks/test_parametrization.py::test_lscm[hemisphere-ordito-cuda]": {
