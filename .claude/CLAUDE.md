@@ -1128,6 +1128,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   0.17-0.57x from 128 k to 655 k, 0.08-0.24x on lucy; a scan's own order 0.73-0.90x from 2^18;
   coherent 64-256 k 1.00-1.04x (the test); CPU scrambled 0.74-0.95x, coherent at par; answers
   bit-identical.
+- **Rays take a Hilbert order of their origins only when they leave the surface** (2026-11-11,
+  CUDA, sort included, answers identical): from 2**18 rays cast along jittered normals, 0.73-0.87x
+  (0.46-0.59x at 2**20) on `sphere_med` to `lucy`; rays fired from a shell around the mesh lose at
+  every size (1.04-1.18x at 2**20; the ordered cast at par, the 0.11-0.2 ms sort the loss), and
+  below 2**18 every shape loses (1.15-1.65x). CPU likewise: shell rays 1.12-1.29x, normals
+  0.57-0.96x. Declined in `ray`, whose callers' ray shape is unknown (`kernels/ray.first_hit`).
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
@@ -1245,9 +1251,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   (`kernels/proximity`) can take the split `contains_points` took (a `mesh_query_point_no_sign`
   search, whose pruning and sliver skip match the parity query's, then `inside_parity_vote` only
   outside the merge band), byte-identical by construction, saving up to two of five vote rays a
-  point; not priced (another session was sweeping `proximity`). Unmeasured: `ray`'s casts in the
-  Hilbert order of their origins (`_common.search_order`) from `2**18` rays, where §14's tree
-  searches start to pay; the benchmark casts 10 000.
+  point; not priced (another session was reworking `signed_distance_on_mesh`). `visibility`'s
+  along-normal casts are the ray shape a Hilbert order of origins pays for (§14); not priced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

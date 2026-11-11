@@ -15,6 +15,13 @@ def first_hit(
     # (``first_hit_append``'s ``face >= 0`` and ``ray.intersects_first``'s documented ``-1``
     # sentinel) -- so there is no separate hit flag to keep in step with it. On a miss the
     # location is the zero vector and no caller reads it.
+    #
+    # The casts take their rays in index order. Taking them in the Hilbert order of their origins
+    # (``_common.space_filling_order``, as the tree searches do) was measured and declined
+    # (2026-11-11, CUDA, the sort included): rays fired from a shell around the mesh lose at every
+    # size (1.04-1.18x at 2**20 rays, 1.1-1.65x below), the ordered cast itself at par, while rays
+    # leaving the surface gain from 2**18 (0.73-0.87x; 0.46-0.59x at 2**20). Telling the two apart
+    # takes a sampled test and a readback, a host sync these casts do not otherwise make.
     unit_direction = wp.normalize(direction)
     query = wp.mesh_query_ray(mesh_id, origin, unit_direction, max_t)
     if query.result:
