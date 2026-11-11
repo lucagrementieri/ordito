@@ -19,6 +19,7 @@ from ordito.kernels.array import (
 from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
 from ordito.kernels.normals import normalized_accumulated_row
 from ordito.kernels.proximity import closest_offset_d, closest_point_query
+from ordito.kernels.reduce import block_max
 from ordito.kernels.triangles import corner_triple, face_vertices
 
 
@@ -178,15 +179,19 @@ def cone_bounds(
 ) -> None:
     # A ball around each component's apex holding its whole cone (the convex hull of the apex and
     # the component's boundary vertices), for the far-field bound in ``cone_winding``. Inflated by
-    # a rounding margin so the bound stays one.
-    c = wp.int32(wp.tid())
+    # a rounding margin so the bound stays one. A block a component, its lanes striding the
+    # component's edges (one lane on the CPU); a maximum is the same in any order. Components
+    # are few, and a thread walking each long rim alone cost 0.04x of the call on ``rim_short``.
+    c, lane = wp.tid()
     apex = vertices[sorted_keys[starts[c]]]
     radius = wp.float32(0.0)
-    for t in range(starts[c], starts[c + 1]):
+    for t in range(starts[c] + lane, starts[c + 1], wp.block_dim()):
         e = order[t]
         radius = wp.max(radius, wp.length(vertices[chain[e, 0]] - apex))
         radius = wp.max(radius, wp.length(vertices[chain[e, 1]] - apex))
-    out_radius[c] = radius * 1.001 + 1.0e-30
+    radius = block_max(radius)
+    if lane == 0:
+        out_radius[c] = radius * 1.001 + 1.0e-30
 
 
 @wp.kernel

@@ -1120,9 +1120,9 @@ def _cone_components(
         kernel_scatter.scatter_index_where_scanned, dim=m, inputs=[flags, starts], device=device
     )
     radius = _launch.empty(n_components, dtype=wp.float32, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_levelset.cone_bounds,
-        dim=n_components,
+        dim=[n_components],
         inputs=[vertices, chain, order, sorted_keys, starts, radius],
         device=device,
     )
