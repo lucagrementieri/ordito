@@ -2203,27 +2203,3 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
             od.array.copyto(
                 wp.zeros((3, 2), dtype=wp.float32, device=device), odt.as_dense(table_wp[:, ::2])
             )
-
-
-@pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (0, 0, 2)])
-def test_segment_owner_labels_matches_repeat(device: str, sizes: tuple[int, ...]):
-    """
-    Not a library comparison: pins the owner labels to ``numpy.repeat`` of the segment indices.
-
-    ``segment_owner_labels`` takes the total-terminated offsets; the answer must be the owner array
-    ``numpy.repeat`` builds, including empty segments and an empty trailing segment.
-    """
-    from ordito.kernels import array as kernel_array
-
-    sizes_np = np.asarray(sizes, dtype=np.int32)
-    total = int(sizes_np.sum())
-    offsets_np = np.concatenate([[0], np.cumsum(sizes_np)]).astype(np.int32)
-    offsets_wp = wp.array(offsets_np, dtype=wp.int32, device=device)
-    owner_wp = wp.full(total, -1, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel_array.segment_owner_labels,
-        dim=len(sizes),
-        inputs=[offsets_wp, owner_wp],
-        device=device,
-    )
-    assert np.array_equal(owner_wp.numpy(), np.repeat(np.arange(len(sizes)), sizes_np))

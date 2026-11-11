@@ -665,23 +665,6 @@ def arange_repeat(repeats: wp.Int, out_indices: wp.array[wp.Int]) -> None:
     out_indices[i] = i // repeats
 
 
-@wp.kernel
-def segment_owner_labels(offsets: wp.array[wp.int32], out_owner: wp.array[wp.int32]) -> None:
-    # For every element of a packed ragged array, which segment it belongs to -- the ragged
-    # counterpart of ``arange_repeat``, whose segments are all one width. ``offsets`` is the
-    # total-terminated ``n + 1`` form, so segment ``s`` ends at ``offsets[s + 1]``. Launched over
-    # the *segment* count; each thread writes its own label across its own span.
-    #
-    # One thread per segment rather than one per element (a binary search into ``offsets``) is the
-    # right shape for the callers here: ``geodesic_walk`` labels each packed loop position with its
-    # loop and ``boundary`` each rim slot with its rim -- the segments are few and short, so this
-    # beats a search *and* needs no readback of the offsets. Where the segments are few but
-    # enormous, the per-element form would win instead -- nothing in the tree is in that regime.
-    segment = wp.int32(wp.tid())
-    for slot in range(offsets[segment], offsets[segment + 1]):
-        out_owner[slot] = segment
-
-
 @wp.func
 def element_priority(seed: wp.int32, index: wp.int32) -> wp.uint32:
     # Element ``index``'s draw of the priority order ``random_priorities`` below writes. Named so a

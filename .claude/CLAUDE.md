@@ -1330,15 +1330,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **Techniques of the `selection` sweep not yet tried elsewhere** (2026-11-11, unpriced; results
-  in `reference/component-status.md`, "`selection` sweep"): a prehook storing a per-face bit the
-  hook reads instead of repeating a search (`seams.corner_union_prehook` / `corner_union_hook`
-  both run `corner_union`'s binary search in the marked keys); a unique emit specialised off the
-  run ranks instead of an inverse plus later scatters (`reconstruction`'s octree `unique_1d` at
-  ~`:1604` feeding two `_octree_group_sums` through the inverse; `homology` and
-  `remesh._edge_incidence`'s `scatter_edge_incidence` over an `edges_unique` inverse, which
-  `remesh.emit_edge_topology` already folds; `smoothing`'s single-use edge vertices); a block a
-  segment, lanes striding independent steps, for few long segments walked a thread each
-  (`boundary.emit_pinch_cycles`' rotated copy, 11 % of dragon's `delete_region_keep_boundary`
-  device time; `holes.fan_faces`, the cone half of `holes.cone_fill`, `levelset.cone_bounds`).
-  `kernels/array.segment_owner_labels` has no launcher left.
+- **`smoothing`'s single-use edge vertices** (2026-11-11, unpriced): `_boundary_verts_mask` counts
+  each unique edge's uses over the `edges_unique` inverse (`count_occurrences`) and then marks the
+  single-use edges' vertices a slot a thread; the counts are each sorted run's length, so the mark
+  could ride in the grouping's emit (the `selection` sweep's emit off run ranks,
+  `reference/component-status.md`). Not tried: that module was being edited at the time.
+- **`signed_distance_level_set(sign_mode="winding")` on `rim_long`** (2026-11-11): 0.69 s at a
+  `64**3` lattice, against 5 ms on `rim_short`; not attributed. The cone kernels do not run there.
