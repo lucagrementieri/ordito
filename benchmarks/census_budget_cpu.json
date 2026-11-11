@@ -6039,20 +6039,20 @@
  },
  "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cpu-0.35]": {
   "counts": {
-   "launch": 13,
-   "alloc": 15,
-   "readback": 5,
-   "scan": 8,
-   "sort": 3
+   "launch": 10,
+   "alloc": 12,
+   "readback": 6,
+   "scan": 6,
+   "sort": 2
   }
  },
  "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cpu-0.7]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
+   "launch": 5,
+   "alloc": 6,
    "readback": 3,
-   "scan": 5,
-   "sort": 2
+   "scan": 3,
+   "sort": 1
   }
  },
  "benchmarks/test_repair.py::test_collapse_small_triangles[saddle-ordito-cpu]": {

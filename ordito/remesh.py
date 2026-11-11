@@ -5044,7 +5044,7 @@ def subdivide_to_size(
     require_same_device(vertices=vertices, faces=faces, max_edge=max_edge)
     passes: list[od.interpolation.Provenance] | None = [] if return_provenance else None
     new_vertices, new_faces, index, _grouping = _subdivide_to_size(
-        vertices, faces, max_edge, max_iter, index=return_provenance, passes=passes
+        vertices, faces, max_edge, max_iter, index=return_provenance, passes=passes, regroup=False
     )
     if passes is None:
         return new_vertices, new_faces
@@ -5065,6 +5065,7 @@ def _subdivide_to_size(
     copy: bool = True,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
     passes: list[od.interpolation.Provenance] | None = None,
+    regroup: bool = True,
 ) -> tuple[
     wp.array[wp.vec3],
     wp.array[wp.int32],
@@ -5083,6 +5084,9 @@ def _subdivide_to_size(
     a mesh with nothing to split as the input buffers themselves rather than copies, for a caller
     that copies only before writing in place (``isotropic_remesh``). ``passes``, when a list,
     receives each pass's vertex provenance (with no faces: the face index rides through the split).
+    ``regroup=False`` is for a caller with no use for the returned grouping (``None`` then): each
+    pass's split tests the edges it makes (``_LengthCheck``), and the loop stops after a split that
+    left none too long instead of grouping the result to find nothing to split.
     """
     device = vertices.device
     sizing = max_edge if isinstance(max_edge, wp.array) else None
@@ -5186,6 +5190,7 @@ def _subdivide_to_size(
                 )
             )
         # ``index`` rides through the split rather than being gathered afterwards.
+        check = None if regroup else _LengthCheck(max_edge_f, next_sizing)
         new_vertices, new_faces, new_index = _split_ranked_edges(
             current_vertices,
             current_faces,
@@ -5199,6 +5204,7 @@ def _subdivide_to_size(
             None,
             True,
             split_bits=split_bits,
+            length_check=check,
         )
         current_vertices, current_faces, face_index, sizing = (
             new_vertices,
@@ -5206,6 +5212,8 @@ def _subdivide_to_size(
             new_index,
             next_sizing,
         )
+        if check is not None and not check.long_left:
+            break
 
     # Nothing ever split, so ``current_*`` are still the caller's own buffers. Every entry point in
     # this module returns independent ones -- ``subdivide`` says so in as many words -- and a caller
@@ -5215,6 +5223,22 @@ def _subdivide_to_size(
     if copy and current_vertices is vertices:
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
     return current_vertices, current_faces, face_index, grouping
+
+
+class _LengthCheck:
+    """
+    A refinement pass's request that its split test the edges it makes.
+
+    ``max_edge`` and ``sizing`` (the field extended to the new vertices, or ``None``) are the
+    targets the next pass would test against; ``_split_ranked_edges`` sets ``long_left`` to whether
+    any edge of its result exceeds its own (``kernels/remesh.emit_size_faces_checked``).
+    """
+
+    def __init__(self, max_edge: wp.float32, sizing: wp.array[wp.float32] | None) -> None:
+        """Hold the targets; ``long_left`` stays ``True`` until a split reports."""
+        self.max_edge = max_edge
+        self.sizing = sizing
+        self.long_left = True
 
 
 def _sorted_corner_edges(
@@ -6462,6 +6486,7 @@ def _split_ranked_edges(
     return_index: bool,
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
+    length_check: _LengthCheck | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
 @overload
 def _split_ranked_edges(
@@ -6478,6 +6503,7 @@ def _split_ranked_edges(
     return_index: bool,
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
+    length_check: _LengthCheck | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], None]: ...
 @overload
 def _split_ranked_edges(
@@ -6494,6 +6520,7 @@ def _split_ranked_edges(
     return_index: bool,
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
+    length_check: _LengthCheck | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]: ...
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
@@ -6509,6 +6536,7 @@ def _split_ranked_edges(
     return_index: bool,
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
+    length_check: _LengthCheck | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Split the ranked edges: the body of [`split_edges`][ordito.remesh.split_edges] past its scan.
@@ -6521,6 +6549,8 @@ def _split_ranked_edges(
     ``arange``); the no-split path copies it when it is the caller's ``index`` and
     ``return_index`` asks for it back. The provenance is always the third element;
     ``split_edges`` drops it when not asked. ``carried=None`` threads none and returns ``None``.
+    ``length_check``, when given, learns whether any edge of the result is still longer than its
+    target (``long_left``, one more readback).
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -6551,8 +6581,10 @@ def _split_ranked_edges(
     # the midpoints.
     words_and_ranks = (None, None) if split_bits is None else split_bits
     new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
-    # ``array.counts_to_offsets``' total-terminated form, the counts written straight into its tail.
-    face_offsets = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
+    # ``array.counts_to_offsets``' total-terminated form, the counts written straight into its tail,
+    # and a length check's flag one entry past it.
+    checked = 0 if length_check is None else 1
+    face_offsets = _launch.empty(n_faces + 1 + checked, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.split_child_counts_and_midpoints,
         dim=max(n_faces, n_edges, n_vertices),
@@ -6576,8 +6608,29 @@ def _split_ranked_edges(
     out_index = (
         None if carried is None else _launch.empty(n_out_faces, dtype=wp.int32, device=device)
     )
+    if length_check is None:
+        _launch.launch(
+            kernel_remesh.emit_size_faces,
+            dim=n_faces,
+            inputs=[
+                faces,
+                corner_edge,
+                split_mask,
+                offsets,
+                *words_and_ranks,
+                wp.int32(n_vertices),
+                new_vertices,
+                carried,
+                face_offsets,
+                out_faces,
+                out_index,
+            ],
+            device=device,
+        )
+        return new_vertices, out_faces.reshape(-1), out_index
+    sizing = length_check.sizing
     _launch.launch(
-        kernel_remesh.emit_size_faces,
+        kernel_remesh.emit_size_faces_checked,
         dim=n_faces,
         inputs=[
             faces,
@@ -6588,13 +6641,18 @@ def _split_ranked_edges(
             wp.int32(n_vertices),
             new_vertices,
             carried,
+            length_check.max_edge,
+            sizing,
+            wp.bool(sizing is not None),
             face_offsets,
             out_faces,
             out_index,
+            _launch.view(face_offsets, n_faces + 1, n_faces + 2),
         ],
         device=device,
     )
-
+    # Whether the caller's refinement loop has another pass to run.
+    length_check.long_left = bool(read_scalar(face_offsets, n_faces + 1))
     return new_vertices, out_faces.reshape(-1), out_index
 
 

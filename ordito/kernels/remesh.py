@@ -587,11 +587,17 @@ def split_child_counts_and_midpoints(
     #   split edge ``t``'s midpoint at its rank -- the rule ``split_corner_midpoints`` reads from
     #   the face side, naming the index the rank gives it -- and otherwise the caller's position
     #   ``t``, one per split edge in rank order.
+    #
+    # An ``out_offsets`` one entry longer carries ``emit_size_faces_checked``' flag in that entry,
+    # which thread 0 zeroes beside the leading zero.
     t = wp.int32(wp.tid())
     n_vertices = vertices.shape[0]
+    n_faces = corner_edge.shape[0] // 3
     if t == 0:
         out_offsets[0] = wp.int32(0)
-    if t < out_offsets.shape[0] - 1:
+        if out_offsets.shape[0] > n_faces + 1:
+            out_offsets[n_faces + 1] = wp.int32(0)
+    if t < n_faces:
         count = wp.int32(1)
         for k in range(3):
             if split_mask[corner_edge[t * 3 + k]]:
@@ -609,6 +615,12 @@ def split_child_counts_and_midpoints(
 
 
 @wp.func
+def endpoints_mean_sizing(sizing: wp.array[wp.float32], lo: wp.int32, hi: wp.int32) -> wp.float32:
+    # ``edge_mean_sizing`` of the edge whose sorted endpoints are ``lo < hi``.
+    return wp.float32(0.5) * (sizing[lo] + sizing[hi])
+
+
+@wp.func
 def edge_mean_sizing(
     sizing: wp.array[wp.float32], unique_edges: wp.array2d[wp.int32], e: wp.int32
 ) -> wp.float32:
@@ -616,7 +628,7 @@ def edge_mean_sizing(
     # reading of a vertex-sampled sizing function and symmetric in the edge's orientation. One
     # definition for the target ``mark_long_edges`` tests the edge against and the value
     # ``extend_edge_mean_sizing`` carries to the midpoint that splits it.
-    return wp.float32(0.5) * (sizing[unique_edges[e, 0]] + sizing[unique_edges[e, 1]])
+    return endpoints_mean_sizing(sizing, unique_edges[e, 0], unique_edges[e, 1])
 
 
 @wp.kernel
@@ -653,6 +665,25 @@ def unique_edge_length(
 
 
 @wp.func
+def edge_exceeds_target(
+    vertices: wp.array[wp.vec3],
+    lo: wp.int32,
+    hi: wp.int32,
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+) -> wp.bool:
+    # Whether the edge with sorted endpoints ``lo < hi`` is longer than its target: ``max_edge`` or,
+    # against a per-vertex sizing field, its endpoints' mean. The one rule of the refinement loop,
+    # in ``unique_edge_length``'s subtraction order, so a face-side test of an edge
+    # (``emit_size_faces_checked``) reads the verdict its unique row would get.
+    target = max_edge
+    if use_sizing:
+        target = endpoints_mean_sizing(sizing, lo, hi)
+    return wp.length(vertices[hi] - vertices[lo]) > target
+
+
+@wp.func
 def mark_long_edge(
     vertices: wp.array[wp.vec3],
     unique_edges: wp.array2d[wp.int32],
@@ -664,10 +695,9 @@ def mark_long_edge(
 ) -> wp.bool:
     # Unique edge ``e``'s verdict, written into the mask the split reads and returned for the
     # caller's ranked bit (``store_counted_bit``).
-    target = max_edge
-    if use_sizing:
-        target = edge_mean_sizing(sizing, unique_edges, e)
-    is_long = unique_edge_length(vertices, unique_edges, e) > target
+    is_long = edge_exceeds_target(
+        vertices, unique_edges[e, 0], unique_edges[e, 1], max_edge, sizing, use_sizing
+    )
     out_long[e] = is_long
     return is_long
 
@@ -843,6 +873,39 @@ def write_split_children(
             out_index[base + 3] = src
 
 
+@wp.func
+def emit_size_face(
+    faces: wp.array[wp.int32],
+    corner_edge: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    vertex_offset: wp.int32,
+    vertices: wp.array[wp.vec3],
+    index_in: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    f: wp.int32,
+    out_faces: wp.array2d[wp.int32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
+    # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
+    # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
+    # launch) carries no provenance.
+    src = wp.int32(-1)
+    if index_in.shape[0] > 0:
+        src = index_in[f]
+
+    c0, c1, c2 = corner_triple(faces, f)
+    fv = wp.vec3i(c0, c1, c2)
+    mv = split_corner_midpoints(
+        corner_edge, split_mask, offsets, words, word_ranks, vertex_offset, f
+    )
+
+    write_split_children(fv, mv, vertices, face_offsets[f], src, out_faces, out_index)
+
+
 @wp.kernel
 def emit_size_faces(
     faces: wp.array[wp.int32],
@@ -858,10 +921,8 @@ def emit_size_faces(
     out_faces: wp.array2d[wp.int32],
     out_index: wp.array[wp.int32],
 ) -> None:
-    # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
-    # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
-    # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
-    # launch) carries no provenance.
+    # One face's ``emit_size_face`` a thread. ``emit_size_faces_checked`` is this launch plus the
+    # length test of the children.
     #
     # **Declined: writing the children's corner keys for the next pass's sort here**, as a collapse
     # pass's compaction does (``compact_surviving_faces``), to drop that pass's key launch. The
@@ -869,17 +930,81 @@ def emit_size_faces(
     # against 0.20 ms for the key launch it removed, ``subdivide_to_size`` on a 1.3 M-face sphere
     # 1.06x slower.
     f = wp.int32(wp.tid())
-    src = wp.int32(-1)
-    if index_in.shape[0] > 0:
-        src = index_in[f]
-
-    c0, c1, c2 = corner_triple(faces, f)
-    fv = wp.vec3i(c0, c1, c2)
-    mv = split_corner_midpoints(
-        corner_edge, split_mask, offsets, words, word_ranks, vertex_offset, f
+    emit_size_face(
+        faces,
+        corner_edge,
+        split_mask,
+        offsets,
+        words,
+        word_ranks,
+        vertex_offset,
+        vertices,
+        index_in,
+        face_offsets,
+        f,
+        out_faces,
+        out_index,
     )
 
-    write_split_children(fv, mv, vertices, face_offsets[f], src, out_faces, out_index)
+
+@wp.kernel
+def emit_size_faces_checked(
+    faces: wp.array[wp.int32],
+    corner_edge: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    vertex_offset: wp.int32,
+    vertices: wp.array[wp.vec3],
+    index_in: wp.array[wp.int32],
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+    face_offsets: wp.array[wp.int32],
+    out_faces: wp.array2d[wp.int32],
+    out_index: wp.array[wp.int32],
+    out_long_left: wp.array[wp.int32],
+) -> None:
+    # ``emit_size_faces``, and whether any edge of the result is still longer than its target
+    # (``edge_exceeds_target`` against the extended ``sizing``), set in ``out_long_left``: the
+    # entry past the ``n_faces + 1`` offsets, which ``split_child_counts_and_midpoints`` zeroes.
+    # An unsplit face keeps edges its pass found short, between the same positions and sizing
+    # values, so only a split face's children are tested, each edge in sorted endpoint order: the
+    # flag is clear exactly when the next pass's grouping would find nothing to split, which a
+    # refinement loop with no use for that grouping then never builds. Every racing store writes
+    # the same value.
+    f = wp.int32(wp.tid())
+    emit_size_face(
+        faces,
+        corner_edge,
+        split_mask,
+        offsets,
+        words,
+        word_ranks,
+        vertex_offset,
+        vertices,
+        index_in,
+        face_offsets,
+        f,
+        out_faces,
+        out_index,
+    )
+    first = face_offsets[f]
+    stop = face_offsets[f + 1]
+    if stop - first == 1:
+        return
+    long_left = wp.bool(False)
+    for row in range(first, stop):
+        for k in range(3):
+            a = out_faces[row, k]
+            b = out_faces[row, (k + 1) % 3]
+            if edge_exceeds_target(
+                vertices, wp.min(a, b), wp.max(a, b), max_edge, sizing, use_sizing
+            ):
+                long_left = True
+    if long_left:
+        out_long_left[0] = wp.int32(1)
 
 
 # ---------------------------------------------------------------------------

@@ -6644,22 +6644,22 @@
  },
  "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cuda-0.35]": {
   "counts": {
-   "launch": 13,
-   "alloc": 15,
-   "memset": 3,
-   "d2h": 5,
-   "scan": 8,
-   "sort": 3
+   "launch": 10,
+   "alloc": 12,
+   "memset": 2,
+   "d2h": 6,
+   "scan": 6,
+   "sort": 2
   }
  },
  "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cuda-0.7]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
-   "memset": 2,
+   "launch": 5,
+   "alloc": 6,
+   "memset": 1,
    "d2h": 3,
-   "scan": 5,
-   "sort": 2
+   "scan": 3,
+   "sort": 1
   }
  },
  "benchmarks/test_repair.py::test_collapse_small_triangles[saddle-ordito-cuda]": {
