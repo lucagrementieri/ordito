@@ -849,9 +849,9 @@ def _dart_throw_blue_noise(
     _launch.radix_sort_pairs(
         keys, order, count=n_pool, end_bit=max(1, (grid_w**3 - 1).bit_length())
     )
-    sorted_keys = odt.as_dense(keys[:n_pool])
-    bucket = odt.as_dense(order[:n_pool])
-    cell_ranks = odt.as_dense(order[n_pool:])
+    sorted_keys = _launch.view(keys, 0, n_pool)
+    bucket = _launch.view(order, 0, n_pool)
+    cell_ranks = _launch.view(order, n_pool, 2 * n_pool)
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[wp.int64],
         dim=n_pool,
@@ -950,10 +950,10 @@ def _dart_throw_blue_noise(
         alive_count = 0
 
     while alive_count > 0:
-        view = alive[:alive_count]
+        view = _launch.view(alive, 0, alive_count)
         # The survivor flags are written by the covering sweep itself, as each thread's last word
         # on its point's state this round.
-        alive_flags = survivor_flag[:alive_count]
+        alive_flags = _launch.view(survivor_flag, 0, alive_count)
         _launch.launch(
             kernel_blue_noise.dart_select_minima,
             dim=alive_count,
@@ -997,11 +997,12 @@ def _dart_throw_blue_noise(
         # the whole call at the small end, where the rounds are cheapest and most numerous relative
         # to the work. This is the shape ``array.flatnonzero`` already uses.
         #
-        # The two windows are viewed once per round. ``alive_count`` shrinks every round so they
-        # are not loop-invariant, but taking each twice and three times inside one round was five
-        # ``wp.array.__getitem__`` calls where two do; and ``read_scalar`` takes its own one-element
-        # slice internally, so handing it the index rather than a pre-sliced view drops a sixth.
-        alive_positions = positions[:alive_count]
+        # The two windows are viewed once per round, by ``_launch.view`` (a quarter of a
+        # ``wp.array.__getitem__``'s host time). ``alive_count`` shrinks every round so they are
+        # not loop-invariant, but taking each twice and three times inside one round was five views
+        # where two do; and ``read_scalar`` takes its own one-element slice internally, so handing
+        # it the index rather than a pre-sliced view drops a sixth.
+        alive_positions = _launch.view(positions, 0, alive_count)
         _launch.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
         total = int(read_scalar(positions, alive_count - 1))
         if total > 0:
@@ -1014,7 +1015,7 @@ def _dart_throw_blue_noise(
                     alive_positions,
                     priority,
                     sorted_cell,
-                    next_alive[:total],
+                    _launch.view(next_alive, 0, total),
                     cell_min_priority,
                     cell_accepted,
                 ],
@@ -1220,7 +1221,7 @@ def sample_volume(
             outputs=[cdf],
             device=vertices.device,
         )
-        face_slots = odt.as_dense(cdf[:n_faces])
+        face_slots = _launch.view(cdf, 0, n_faces)
         _launch.array_scan(face_slots, out_array=face_slots)
         # Sizes nothing but decides two raises and scales the sampling kernel's draws.
         total_vol, negative = read_values(cdf, n_faces - 1, 2)
@@ -1241,7 +1242,7 @@ def sample_volume(
     # n_faces > 0 here, so the volume pass computed both.
     assert center is not None
     assert cdf is not None
-    cdf = odt.as_dense(cdf[:n_faces])
+    cdf = _launch.view(cdf, 0, n_faces)
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
