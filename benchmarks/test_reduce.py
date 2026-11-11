@@ -18,9 +18,9 @@ Three shapes are timed:
   the coalescing difference. The two are *not* the same kernel: ``max(axis=1)`` on an ``(n, 3)``
   table reduces a 3-wide extent and takes the one-thread-per-row serial path where ``sum(axis=0)``
   stays tiled. Timing both directions is what pins that dispatch.
-* **Sort-based** (``median``, ``quantile``) — the outlier: it radix-sorts a *copy* and reads the
-  order statistics around the requested rank, so it is O(n log n) and allocates where everything
-  else here is one O(n) pass.
+* **Order statistics** (``median``, ``quantile``) — the outlier: on CUDA from a few thousand
+  values a radix select (three or six digit passes), else a radix sort of a *copy*, read around
+  the requested rank, where everything else here is one O(n) pass.
 
 ``vec3`` overloads are timed alongside the scalar ones because they are what real callers hit
 (centroids, normal averages) and they exercise a different tile accumulator.
@@ -665,7 +665,7 @@ def _scalar_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 @pytest.mark.benchmark(group="median")
 @pytest.mark.benchlibs("ordito", "pymeshlab", "numpy")
 def test_median(bench_case: BenchCase) -> None:
-    """Radix-sorts a copy and reads the middle: O(n log n) where the rest are one pass."""
+    """Radix-selects (or, outside the select's sizes, sorts a copy) and reads the middle."""
     if bench_case.kind == "pymeshlab":  # one call: min, max, avg, med, stddev, variance
         meshset_pml = _scalar_meshset_pml(bench_case)
         statistics_pml = bench_case.run(meshset_pml.get_scalar_statistics_per_vertex)

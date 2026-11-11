@@ -14,13 +14,21 @@ import warp as wp
 # it in a ``@wp.func`` instead would erase the dtype and produce ambiguous C++ overloads.
 from warp._src.context import builtin_functions as _warp_builtins
 
-from ordito.constants import INT32_MAX_CONSTANT, TILE_1D, TILE_2D, TILES_PER_BLOCK_1D
+from ordito.constants import (
+    INT32_MAX_CONSTANT,
+    TILE_1D,
+    TILE_2D,
+    TILES_PER_BLOCK_1D,
+    UINT64_MAX_CONSTANT,
+)
 from ordito.kernels.array import (
     KernelTable,
     atomic_min_packed_box,
     csr_row_long,
     is_close_scalar,
     is_close_vec3,
+    ordered_double_bits,
+    ordered_float_bits,
     popcount32,
 )
 
@@ -882,6 +890,20 @@ def warp_lanes_sum_float(lanes: wp.int32, value: wp.float64) -> wp.float64: ...
 
 @wp.func_native(_WARP_LANE_LEADS)
 def warp_lane_leads(lanes: wp.int32) -> wp.int32: ...
+
+
+@wp.func
+def peer_counted_add(out_counts: wp.array[wp.int32], index: wp.int32) -> None:
+    # ``wp.atomic_add(out_counts, index, 1)`` with the lanes of a warp counting into one bin
+    # (``warp_peer_lanes``) committed once, by the lowest, as their number; a lane with no peer, and
+    # every lane on the CPU device, takes the plain atomic. A count is exact in any order. For a
+    # histogram whose keys crowd a few bins: the radix select's 2 048-bin digits over a 1 M pool
+    # cost the Poisson-disk round more than the sort they replaced unpooled.
+    lanes = warp_peer_lanes(index)
+    if lanes == 0:
+        wp.atomic_add(out_counts, index, 1)
+    elif warp_lane_leads(lanes) != 0:
+        wp.atomic_add(out_counts, index, popcount32(wp.uint32(lanes)))
 
 
 # A warp sharing one long walk (a CSR row ``array.csr_row_long`` names) among its active lanes,
@@ -2588,4 +2610,188 @@ ALLCLOSE_1D_TILED = KernelTable(
         for d in (wp.float16, wp.float32, wp.float64)
     }
     | {wp.vec3: _allclose_1d_tiled("allclose_1d_tiled_vec3", wp.vec3, is_close_vec3, wp.float32)},
+)
+
+
+# ---------------------------------------------------------------------------
+# Radix select: an order statistic without a sort.
+# ---------------------------------------------------------------------------
+
+# The ``rank``-th smallest (0-based) of an array's order-preserving ``uint64`` keys, found a digit
+# a pass from the top: every key carrying the digits selected so far counts into its digit's bin
+# of a ``RADIX_SELECT_BINS`` histogram, and the pass's last block finds the bin holding the rank
+# still sought. A 32-bit key takes three passes (``RADIX_SELECT_PASSES_32``), a 64-bit one six.
+# On CUDA it replaces a full radix sort read at one rank: three passes of ~5 us against the
+# ~50 us sort of a 10 k array (four onesweep passes), at par from 1 M keys. Two 16-bit passes
+# lose: the last block reading 65 536 bins is one SM's bandwidth (~33 us coalesced). The CPU's
+# radix sort beats the passes. Used by ``reduce.quantile`` / ``median`` and the Poisson-disk
+# elimination's weight floor (``kernels/sample.floor_digit``, with its own keys).
+RADIX_SELECT_BINS = 1 << 11
+RADIX_SELECT_PASSES_32 = ((21, 11), (10, 11), (0, 10))
+RADIX_SELECT_PASSES_64 = ((53, 11), (42, 11), (31, 11), (20, 11), (9, 11), (0, 9))
+# A block's share of the array, its lanes striding over it.
+RADIX_SELECT_ITEMS_PER_BLOCK = 256
+# The ``uint64`` state of one select: the digits selected so far (after the last pass the whole
+# key), the rank still sought below them (then the rank within the key's run of equals), the
+# length of that run, and the smallest key above it (``radix_select_successor``).
+SELECT_PREFIX = 0
+SELECT_RANK = 1
+SELECT_RUN = 2
+SELECT_SUCCESSOR = 3
+SELECT_STATE_SIZE = 4
+
+
+@wp.func
+def radix_select_digit(
+    lane: wp.int32, rank: wp.int32, hist: wp.array[wp.int32]
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # In a pass's last block, every lane: the digit whose bin of ``hist`` holds the ``rank``-th
+    # (0-based) counted key, the rank within that bin and the bin's count, block-uniform. Each lane
+    # sums its contiguous share of the bins, one scan of the shares finds the owning lane, and that
+    # lane walks its share (eight bins at 256 lanes, all of them on the CPU device's one lane).
+    # Every lane then re-zeroes its share, so the next pass needs no fill.
+    span = RADIX_SELECT_BINS // wp.block_dim()
+    first = lane * span
+    share = wp.int32(0)
+    for m in range(first, first + span):
+        share += hist[m]
+    through, _total = block_running_sum(share, wp.int32(0))
+    digit = wp.int32(-1)
+    within = wp.int32(0)
+    run = wp.int32(0)
+    if through - share <= rank and rank < through:
+        before = through - share
+        for m in range(first, first + span):
+            count_m = hist[m]
+            if digit < 0 and rank < before + count_m:
+                digit = m
+                within = rank - before
+                run = count_m
+            before += count_m
+    for m in range(first, first + span):
+        hist[m] = 0
+    return block_max(digit), block_max(within), block_max(run)
+
+
+@wp.func
+def radix_select_bin(
+    key: wp.uint64, prefix: wp.uint64, shift: wp.int32, width: wp.int32
+) -> wp.int32:
+    # The bin ``key`` counts into in the pass taking ``width`` bits at ``shift``, or ``-1`` when it
+    # lacks the digits selected so far. A 64-bit key's first pass has no prefix to match (a shift
+    # by the whole width is undefined).
+    if shift + width < 64 and (key >> wp.uint64(shift + width)) != prefix:
+        return -1
+    return wp.int32((key >> wp.uint64(shift)) & ((wp.uint64(1) << wp.uint64(width)) - wp.uint64(1)))
+
+
+@wp.func
+def radix_select_close(
+    lane: wp.int32, width: wp.int32, hist: wp.array[wp.int32], state: wp.array[wp.uint64]
+) -> None:
+    # A pass's last block: append the digit holding the rank still sought and keep the rank within
+    # it and its bin's count.
+    digit, within, run = radix_select_digit(lane, wp.int32(state[SELECT_RANK]), hist)
+    if lane == 0:
+        state[SELECT_PREFIX] = (state[SELECT_PREFIX] << wp.uint64(width)) | wp.uint64(digit)
+        state[SELECT_RANK] = wp.uint64(within)
+        state[SELECT_RUN] = wp.uint64(run)
+
+
+@wp.func
+def ordered_int32_key(x: wp.int32) -> wp.uint64:
+    return wp.uint64(wp.cast(x, wp.uint32) ^ wp.uint32(0x80000000))
+
+
+@wp.func
+def ordered_uint32_key(x: wp.uint32) -> wp.uint64:
+    return wp.uint64(x)
+
+
+@wp.func
+def ordered_float32_key(x: wp.float32) -> wp.uint64:
+    return wp.uint64(ordered_float_bits(x))
+
+
+@wp.func
+def ordered_int64_key(x: wp.int64) -> wp.uint64:
+    return wp.cast(x, wp.uint64) ^ (wp.uint64(1) << wp.uint64(63))
+
+
+@wp.func
+def ordered_uint64_key(x: wp.uint64) -> wp.uint64:
+    return x
+
+
+def _radix_select_pass(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
+    def radix_select_pass(
+        values: wp.array[Any],
+        shift: wp.int32,
+        width: wp.int32,
+        hist: wp.array[wp.int32],
+        ticket: wp.array[wp.int32],
+        state: wp.array[wp.uint64],
+    ) -> None:
+        # One digit pass of ``values``' select (launched tiled, ``RADIX_SELECT_ITEMS_PER_BLOCK``
+        # items a block): every key carrying the selected digits counts into its bin, peers pooled
+        # (the top digits crowd a few bins), and the last block, whose reads see every block's
+        # adds, appends the digit.
+        block, lane = wp.tid()
+        prefix = state[SELECT_PREFIX]
+        n = values.shape[0]
+        offset, items = block_chunk(n, block, RADIX_SELECT_ITEMS_PER_BLOCK)
+        for t in range(offset + lane, offset + items, wp.block_dim()):
+            b = radix_select_bin(key(values[t]), prefix, shift, width)
+            if b >= 0:
+                peer_counted_add(hist, b)
+        n_blocks = (n + RADIX_SELECT_ITEMS_PER_BLOCK - 1) // RADIX_SELECT_ITEMS_PER_BLOCK
+        if last_atomic_block(lane, ticket, n_blocks) != 0:
+            radix_select_close(lane, width, hist, state)
+
+    radix_select_pass.__annotations__["values"] = wp.array[dtype]
+    return wp.kernel(radix_select_pass, name=name)
+
+
+def _radix_select_successor(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
+    def radix_select_successor(values: wp.array[Any], state: wp.array[wp.uint64]) -> None:
+        # The smallest key above the selected one, into ``state[SELECT_SUCCESSOR]``
+        # (``UINT64_MAX`` seeded): a block minimum, then one atomic a block.
+        block, lane = wp.tid()
+        selected = state[SELECT_PREFIX]
+        n = values.shape[0]
+        offset, items = block_chunk(n, block, RADIX_SELECT_ITEMS_PER_BLOCK)
+        best = UINT64_MAX_CONSTANT
+        for t in range(offset + lane, offset + items, wp.block_dim()):
+            k = key(values[t])
+            if k > selected:
+                best = wp.min(best, k)
+        lowest = block_min(best)
+        if lane == 0 and lowest != UINT64_MAX_CONSTANT:
+            wp.atomic_min(state, SELECT_SUCCESSOR, lowest)
+
+    radix_select_successor.__annotations__["values"] = wp.array[dtype]
+    return wp.kernel(radix_select_successor, name=name)
+
+
+_RADIX_SELECT_KEYS = {
+    wp.int32: ordered_int32_key,
+    wp.uint32: ordered_uint32_key,
+    wp.float32: ordered_float32_key,
+    wp.int64: ordered_int64_key,
+    wp.uint64: ordered_uint64_key,
+    wp.float64: ordered_double_bits,
+}
+RADIX_SELECT_PASS = KernelTable(
+    "radix_select_pass",
+    {
+        d: _radix_select_pass(f"radix_select_pass_{d.__name__}", d, key)
+        for d, key in _RADIX_SELECT_KEYS.items()
+    },
+)
+RADIX_SELECT_SUCCESSOR = KernelTable(
+    "radix_select_successor",
+    {
+        d: _radix_select_successor(f"radix_select_successor_{d.__name__}", d, key)
+        for d, key in _RADIX_SELECT_KEYS.items()
+    },
 )

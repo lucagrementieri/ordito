@@ -14,7 +14,7 @@ from ordito import _launch
 from ordito._common import read_scalar, read_values, require_same_device
 from ordito.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
 from ordito.config import is_deterministic
-from ordito.constants import TILE_1D, TILE_2D
+from ordito.constants import TILE_1D, TILE_2D, UINT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
@@ -1319,9 +1319,9 @@ def median(array: odt.ArrayNdScalar) -> float:
     """
     Median of a 1D scalar array (``numpy.median``).
 
-    Sorts a copy of the values on-device with ``warp.utils.radix_sort_pairs`` and reads the
-    middle element (odd length) or averages the two middle elements (even length). The result
-    is always a Python ``float``, regardless of input dtype.
+    Finds the middle order statistic on the device, by a radix select or a radix sort of a copy,
+    and reads the middle element (odd length) or averages the two middle elements (even length).
+    The result is always a Python ``float``, regardless of input dtype.
 
     Parameters
     ----------
@@ -1364,9 +1364,9 @@ def quantile(array: odt.ArrayNdScalar, q: float) -> float:
     """
     Quantile ``q`` of a 1D scalar array (``numpy.quantile`` with ``method="linear"``).
 
-    Sorts a copy of the values on-device and interpolates linearly between the two order
-    statistics around the fractional rank ``q * (n - 1)``, as NumPy's default method does, so
-    ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the
+    Finds the two order statistics around the fractional rank ``q * (n - 1)`` on the device (a
+    radix select, or a radix sort of a copy) and interpolates linearly between them, as NumPy's
+    default method does, so ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the
     [`median`][ordito.reduce.median]. The result is always a Python ``float``.
 
     Parameters
@@ -1413,10 +1413,10 @@ def _sorted_quantile(array: odt.ArrayNdScalar, q: float, name: str) -> float:
     """
     [`quantile`][ordito.reduce.quantile]'s body, its error messages naming the public caller.
 
-    The two order statistics around the fractional rank are adjacent in the sorted copy, so they
-    come back in one readback. Interpolates as NumPy's ``_lerp`` does, from the nearer end, so the
-    answer is exact at both ends of the interval and ``q = 0.5`` of an even count is the mean of the
-    middle pair, as [`median`][ordito.reduce.median] promises.
+    The two order statistics around the fractional rank come back in one readback, adjacent in the
+    sorted copy or side by side in the select's state. Interpolates as NumPy's ``_lerp`` does, from
+    the nearer end, so the answer is exact at both ends of the interval and ``q = 0.5`` of an even
+    count is the mean of the middle pair, as [`median`][ordito.reduce.median] promises.
     """
     if array.ndim != 1:
         raise ValueError(f"{name} requires a 1D array.")
@@ -1426,22 +1426,118 @@ def _sorted_quantile(array: odt.ArrayNdScalar, q: float, name: str) -> float:
     if not 0.0 <= q <= 1.0:
         raise ValueError(f"quantile q must lie in [0, 1], got {q}.")
 
-    sorted_values = _sorted_copy(array)
     rank = q * (n - 1)
     # ``min`` is this module's reduction, hence the clamp spelled out: ``q = 1`` lands on ``n - 1``.
     lower = math.floor(rank)
     if lower >= n - 1:
         lower = n - 1
     fraction = rank - lower
+    if _selects_order_statistics(array):
+        low, high = _selected_order_statistics(array, lower, fraction != 0.0)
+    else:
+        sorted_values = _sorted_copy(array)
+        if fraction == 0.0:
+            # The rank is an order statistic: one value, and no interpolation to round.
+            return float(read_scalar(sorted_values, lower))
+        # The two order statistics around a fractional rank, read at once.
+        pair = read_values(sorted_values, lower, 2)
+        low, high = float(pair[0]), float(pair[1])
     if fraction == 0.0:
-        # The rank is an order statistic: one value, and no interpolation to round.
-        return float(read_scalar(sorted_values, lower))
-    # The two order statistics around a fractional rank, read at once.
-    pair = read_values(sorted_values, lower, 2)
-    low, high = float(pair[0]), float(pair[1])
+        return low
     if fraction < 0.5:
         return low + (high - low) * fraction
     return high - (high - low) * (1.0 - fraction)
+
+
+# The sizes at which ``quantile`` / ``median`` take ``kernels/reduce``'s radix select over a sort
+# on CUDA (2026-11-11, ``quantile(0.9)`` new/old): 32-bit keys 0.79-0.93x from 8 192 to 262 144
+# values, par at 524 288, 1.4-1.6x from 2 M (the top digits' few hot bins serialize even pooled)
+# and 1.35-1.6x at 4 096, where CUB sorts in one tile; ``int64`` 0.87-0.90x from 4 096 to 262 144
+# and 1.05-1.17x from 524 288; ``float64`` 0.52-0.83x at every size from 4 096 to 4 M, its sort
+# being twice the 32-bit one's. The CPU device sorts, cheaper there.
+_SELECT_FROM_32 = 8192
+_SELECT_FROM_64 = 4096
+_SELECT_UP_TO = 1 << 18
+
+
+def _selects_order_statistics(values: odt.ArrayNdScalar) -> bool:
+    """Whether ``quantile`` selects ``values``' order statistics rather than sorting them."""
+    if not wp.get_device(values.device).is_cuda:
+        return False
+    n = values.size
+    if values.dtype is wp.float64:
+        return n >= _SELECT_FROM_64
+    if wp.types.type_size_in_bytes(values.dtype) == 8:
+        return _SELECT_FROM_64 <= n <= _SELECT_UP_TO
+    return _SELECT_FROM_32 <= n <= _SELECT_UP_TO
+
+
+def _selected_order_statistics(
+    values: odt.ArrayNdScalar, rank: int, pair: bool
+) -> tuple[float, float]:
+    """
+    Return the ``rank``-th smallest of ``values`` and, when ``pair``, the next one, on CUDA.
+
+    A radix select (``kernels/reduce.RADIX_SELECT_PASS``) rather than a sort: three digit passes of
+    a 32-bit dtype's order-preserving keys, six of a 64-bit one. The next order statistic is the
+    selected key again while its run of equals continues past the rank, else the smallest key
+    above it (``RADIX_SELECT_SUCCESSOR``, one pass more). Taken where
+    [`_selects_order_statistics`][ordito.reduce._selects_order_statistics] says so. Without
+    ``pair`` the second value repeats the first.
+    """
+    device = values.device
+    dtype = values.dtype
+    n = values.size
+    passes = (
+        kernel_reduce.RADIX_SELECT_PASSES_32
+        if wp.types.type_size_in_bytes(dtype) == 4
+        else kernel_reduce.RADIX_SELECT_PASSES_64
+    )
+    state = _launch.pattern([0, rank, 0, UINT64_MAX], wp.uint64, device)
+    # The digit histogram and the passes' ticket, zeroed once: each pass's last block re-zeroes
+    # the bins it read and the ticket.
+    bins = kernel_reduce.RADIX_SELECT_BINS
+    scratch = _launch.zeros(bins + 1, dtype=wp.int32, device=device)
+    hist = _launch.view(scratch, 0, bins)
+    ticket = _launch.view(scratch, bins, bins + 1)
+    blocks = -(-n // kernel_reduce.RADIX_SELECT_ITEMS_PER_BLOCK)
+    select_pass = kernel_reduce.RADIX_SELECT_PASS[dtype]
+    for shift, width in passes:
+        _launch.launch_tiled(
+            select_pass,
+            dim=[blocks],
+            inputs=[values, shift, width, hist, ticket, state],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    if pair:
+        _launch.launch_tiled(
+            kernel_reduce.RADIX_SELECT_SUCCESSOR[dtype],
+            dim=[blocks],
+            inputs=[values, state],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    # Host readback: the selected key, its rank within its run of equals, the run's length and the
+    # smallest key above it -- the answer.
+    key, within, run, successor = (int(value) for value in read_values(state, 0, 4))
+    next_key = key if not pair or within + 1 < run else successor
+    return _ordered_key_value(key, dtype), _ordered_key_value(next_key, dtype)
+
+
+def _ordered_key_value(key: int, dtype: object) -> float:
+    """Return the value an order-preserving key of ``kernels/reduce``'s radix select stands for."""
+    if dtype is wp.uint32 or dtype is wp.uint64:
+        return float(key)
+    if dtype is wp.int32:
+        return float(key - (1 << 31))
+    if dtype is wp.int64:
+        return float(key - (1 << 63))
+    width = 32 if dtype is wp.float32 else 64
+    sign = 1 << (width - 1)
+    bits = key ^ sign if key & sign else ~key & ((1 << width) - 1)
+    host = np.array([bits], dtype=np.uint32 if width == 32 else np.uint64)
+    return float(host.view(np.float32 if width == 32 else np.float64)[0])
 
 
 # Every kernel slot below is a ``{dtype: wp.Kernel}`` table rather than one kernel, because

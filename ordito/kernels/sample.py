@@ -13,16 +13,16 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.reduce import (
     block_chunk,
-    block_max,
-    block_running_sum,
     fold_block_totals,
     last_atomic_block,
     last_ticket_vector,
     minmax_vec3_chunk,
+    peer_counted_add,
+    radix_select_bin,
+    radix_select_digit,
     stage_block_total,
     write_block_value,
 )
-from ordito.kernels.scatter import peer_counted_add
 from ordito.kernels.triangles import (
     block_area_weighted_centroid_sum,
     face_area,
@@ -300,15 +300,10 @@ POISSON_RANK = wp.int32(6)
 POISSON_STATE_SIZE = 7
 
 # The floor is the ``excess``-th smallest of the alive points' ordered keys, selected a digit a
-# pass (``floor_digit``: 11, 11 and 10 bits from the top), each a histogram whose last block finds
-# the digit. A block owns ``FLOOR_ITEMS_PER_BLOCK`` points and launches at the default width, so
-# the module is built once. A full radix sort of every key a round found the same key in four
-# onesweep passes and their scans, ~50 of a round's ~60 us on a 10 k pool; two 16-bit passes cost
-# as much, their last block reading 65 536 bins alone (~7 us a pass at one SM's bandwidth).
-FLOOR_DIGIT_BINS = 1 << 11
+# pass (``floor_digit``) by ``reduce``'s radix select (``RADIX_SELECT_PASSES_32``, see there for
+# its price against the sort). A block owns ``FLOOR_ITEMS_PER_BLOCK`` points and launches at the
+# default width, so the module is built once.
 FLOOR_ITEMS_PER_BLOCK = 256
-# The ``(shift, width)`` of each pass's digit, from the top.
-FLOOR_PASSES = ((21, 11), (10, 11), (0, 10))
 
 
 @wp.func
@@ -334,36 +329,6 @@ def alive_negated_weight_keys(
 
 
 @wp.func
-def select_digit(
-    lane: wp.int32, rank: wp.int32, hist: wp.array[wp.int32]
-) -> tuple[wp.int32, wp.int32]:
-    # In a pass's last block, every lane: the digit whose bin of ``hist`` holds the ``rank``-th
-    # (0-based) counted key, and the rank within that bin, block-uniform. Each lane sums its
-    # contiguous share of the bins, one scan of the shares finds the owning lane, and that lane
-    # walks its share (eight bins at 256 lanes, all of them on the CPU device's one lane). Every
-    # lane then re-zeroes its share, so the next pass needs no fill.
-    span = FLOOR_DIGIT_BINS // wp.block_dim()
-    first = lane * span
-    share = wp.int32(0)
-    for m in range(first, first + span):
-        share += hist[m]
-    through, _total = block_running_sum(share, wp.int32(0))
-    digit = wp.int32(-1)
-    within = wp.int32(0)
-    if through - share <= rank and rank < through:
-        before = through - share
-        for m in range(first, first + span):
-            count_m = hist[m]
-            if digit < 0 and rank < before + count_m:
-                digit = m
-                within = rank - before
-            before += count_m
-    for m in range(first, first + span):
-        hist[m] = 0
-    return block_max(digit), block_max(within)
-
-
-@wp.func
 def close_poisson_books(state: wp.array[wp.int32]) -> None:
     # The previous round's maxima, all deleted if it ran this far, leave the alive count, and the
     # maxima count is re-armed for this round's ``find_local_maxima``.
@@ -376,15 +341,14 @@ def floor_digit_bin(
     weight: wp.float32, alive: wp.int32, prefix: wp.uint32, shift: wp.int32, width: wp.int32
 ) -> wp.int32:
     # The bin a point counts into in the floor pass taking ``width`` bits at ``shift`` of its
-    # ordered key, or ``-1``: a dead point (keyed past every alive one, and the rank sought is below
-    # the alive count), or one whose key lacks the digits selected so far (``prefix``; the first
-    # pass, ``shift + width == 32``, has none to match).
+    # ordered key (``reduce.radix_select_bin``), or ``-1``: a dead point (keyed past every alive
+    # one, and the rank sought is below the alive count), or one whose key lacks the digits
+    # selected so far. The first pass (``shift + width == 32``) matches no prefix: ``state`` still
+    # holds the previous round's floor there.
     if alive == 0:
         return -1
-    key = ordered_float_bits(-weight)
-    if shift + width != 32 and (key >> wp.uint32(shift + width)) != prefix:
-        return -1
-    return wp.int32((key >> wp.uint32(shift)) & ((wp.uint32(1) << wp.uint32(width)) - wp.uint32(1)))
+    selected = wp.where(shift + width == 32, wp.uint64(0), wp.uint64(prefix))
+    return radix_select_bin(wp.uint64(ordered_float_bits(-weight)), selected, shift, width)
 
 
 @wp.func
@@ -401,7 +365,7 @@ def append_floor_digit(
     # count), appended to the selected prefix, and the rank left within it.
     first_pass = shift + width == 32
     rank = wp.where(first_pass, state[POISSON_ALIVE] - count - 1, state[POISSON_RANK])
-    digit, within = select_digit(lane, rank, hist)
+    digit, within, _run = radix_select_digit(lane, rank, hist)
     if lane == 0:
         prefix = wp.uint32(state[POISSON_PREFIX])
         above = wp.where(first_pass, wp.uint32(0), prefix << wp.uint32(width))

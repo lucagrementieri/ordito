@@ -1525,7 +1525,9 @@ def test_float_sum_of_a_strided_view_is_reproducible(device: str) -> None:
     assert np.isclose(sums.pop(), table_np[:, 1:3].astype(np.float64).sum(), rtol=1e-5)
 
 
-@pytest.mark.parametrize("n", [36, 37])
+# 9 002 values take the CUDA radix select at every dtype (``reduce._selects_order_statistics``),
+# the shorter arrays the sort.
+@pytest.mark.parametrize("n", [36, 37, 9002])
 @pytest.mark.parametrize("q", [0.0, 0.1, 0.25, 0.5, 0.7, 0.999, 1.0])
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"),
@@ -1538,9 +1540,10 @@ def test_float_sum_of_a_strided_view_is_reproducible(device: str) -> None:
         (wp.uint64, np.uint64),
     ],
 )
+@pytest.mark.parametrize("values", ["spread", "ties", "wide"])
 @pytest.mark.parity("quantile", "numpy")
 def test_reduce_quantile_matches_numpy(
-    device: str, q: float, dtype_wp: type, dtype_np: type, n: int
+    device: str, q: float, dtype_wp: type, dtype_np: type, n: int, values: str
 ) -> None:
     """
     Class A: ``reduce.quantile`` and ``reduce.median`` equal NumPy's at every key dtype.
@@ -1549,10 +1552,27 @@ def test_reduce_quantile_matches_numpy(
     order statistics) and fractional ranks on either side of one half, where NumPy interpolates
     from the nearer order statistic. At ``q = 0.5`` ``median`` is also held to ``np.median``, at
     both parities (an even length averages the two middle values). The values are spread
-    (``np.ptp`` well above the tolerance) and not constant, so a rank off by one fails.
+    (``np.ptp`` well above the tolerance) and not constant, so a rank off by one fails. ``ties``
+    draws five values (negatives and both zeros where the dtype has them), so the two order
+    statistics of a fractional rank often fall in one run of equals and sometimes straddle two;
+    ``wide`` spans the dtype's high bits, which the CUDA radix select's first digits read.
     """
     rng = np.random.default_rng(91)
-    if np.issubdtype(dtype_np, np.floating):
+    floating = np.issubdtype(dtype_np, np.floating)
+    signed = floating or np.issubdtype(dtype_np, np.signedinteger)
+    if values == "ties":
+        values_np = rng.integers(-2 if signed else 0, 3 if signed else 5, size=n).astype(dtype_np)
+        if floating:
+            values_np[values_np == 0] = np.where(rng.random(n) < 0.5, -0.0, 0.0)[values_np == 0]
+    elif values == "wide":
+        bits = 8 * np.dtype(dtype_np).itemsize
+        if floating:
+            values_np = (rng.standard_normal(n) * 10.0 ** rng.integers(-20, 20, n)).astype(dtype_np)
+        else:
+            low = -(2 ** (bits - 1)) if signed else 0
+            high = 2 ** (bits - 1) if signed else 2**bits
+            values_np = rng.integers(low, high, size=n, dtype=dtype_np, endpoint=False)
+    elif floating:
         values_np = rng.standard_normal(n).astype(dtype_np)
     else:
         values_np = rng.integers(0, 1000, size=n).astype(dtype_np)

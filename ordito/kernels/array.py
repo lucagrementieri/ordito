@@ -504,6 +504,22 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
 
 
 @wp.func
+def ordered_double_bits(x: wp.float64) -> wp.uint64:
+    # ``ordered_float_bits`` for a ``float64``: ``-0.0`` onto ``+0.0``, every ``NaN`` onto the quiet
+    # one above ``+inf``.
+    value = x
+    if value == wp.float64(0.0):
+        value = wp.float64(0.0)
+    if wp.isnan(value):
+        value = wp.float64(wp.nan)
+    bits = wp.cast(value, wp.uint64)
+    sign = wp.uint64(1) << wp.uint64(63)
+    if (bits & sign) != wp.uint64(0):
+        return ~bits
+    return bits | sign
+
+
+@wp.func
 def float_from_ordered_bits(key: wp.uint32) -> wp.float32:
     # The float ``ordered_float_bits`` maps onto ``key`` (``+0.0`` for a zero, the quiet ``NaN``).
     bits = ~key

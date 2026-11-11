@@ -878,6 +878,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # advanced across launches. Neither is an input and neither is the answer
     # -- that is ``out_keep``.
     ("polyline", "rdp_split_spans"): frozenset({"state"}),
+    # A radix select's ``uint64`` state (prefix, rank, run, successor), read and rewritten in
+    # place by every pass; the successor pass lowers its last slot.
+    ("reduce", "radix_select_successor"): frozenset({"state"}),
     # The Poisson-disk elimination round's carried state: the deletions clear ``alive`` and take
     # their contributions off ``weights`` in the same pass, both rewritten in place every round;
     # ``gather_deletions`` is the same pass gathered, under the deterministic setting. ``state`` is
