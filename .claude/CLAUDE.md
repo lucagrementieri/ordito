@@ -1250,6 +1250,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **`visibility`'s along-normal casts in a Hilbert order of origins** (2026-11-11): rays leaving
   the surface are the shape that order pays for (§14, 0.46-0.87x from 2**18 rays on CUDA); those
   kernels know their origins sit on the surface, so they need no syncing shape test. Not priced.
+- **`winding_number`'s hierarchy build on `lucy`** (2026-11-11): the build, not the walk, is
+  the call (quiet device time: cap fill 3.3 ms, cap count 1.6 ms, halfedge mates 4.1 ms in four
+  launches, sorted-face gather 2.3 ms, nodes 1.9 ms; the walk 3.5 ms at 10 k queries; wall
+  30.6 ms). Sorted-order cap kernels are refuted (`reference/component-status.md`, winding
+  section). Open: a cap count and fill that do not recompute each halfedge's levels twice, and
+  where the remaining ~13 ms between device kernels and wall goes (the 30-bit radix sort is not
+  in `wp.timing`).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
