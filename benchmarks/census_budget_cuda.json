@@ -7289,8 +7289,9 @@
  "benchmarks/test_seams.py::test_uv_seam_edges[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 6,
-   "alloc": 7,
+   "alloc": 5,
    "memset": 2,
+   "d2d": 2,
    "d2h": 2,
    "scan": 2
   }
