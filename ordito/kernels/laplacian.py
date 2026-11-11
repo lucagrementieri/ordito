@@ -10,6 +10,7 @@ from ordito.kernels.array import (
     csr_run_start,
     device_is_cpu,
     popcount32,
+    row_chunk_slots,
     sorted_run_end,
     store_coo_key,
 )
@@ -618,6 +619,14 @@ def operator_row_warp(
     )
 
 
+# Operators of more rows than this walk ``operator_row`` four entries a step on CUDA. A mesh row
+# is about six entries, so the chunk's clamped duplicate loads cost an L2-resident operator more
+# than its overlap buys: ungated, the explicit pass's device time read 1.08-1.11x on
+# ``sphere_small`` and 1.04-1.19x on ``sphere_med`` (bunny par, dragon 0.97x), which the implicit
+# filter's replayed steps exposed as 1.07-1.12x calls (2026-11-11).
+OPERATOR_ROW_CHUNK_FROM = 1 << 18
+
+
 @wp.func
 def operator_row(
     offsets: wp.array[wp.int32],
@@ -635,7 +644,33 @@ def operator_row(
         # Isolated vertex (empty row): the averaging operator acts as the identity so the
         # vertex does not drift toward the origin.
         return wp.vec3d(field[i])
-    return operator_row_entries(columns, values, field, start, end, 1)
+    if device_is_cpu() != 0 or offsets.shape[0] <= OPERATOR_ROW_CHUNK_FROM:
+        return operator_row_entries(columns, values, field, start, end, 1)
+    # Four entries a step on CUDA past ``OPERATOR_ROW_CHUNK_FROM`` rows (``array.row_chunk_slots``,
+    # as ``linalg.csr_row_dot``): the column, value and gathered position loads of a step are in
+    # flight together, where an entry a step waited on each gather before the next column's load.
+    # The terms still add in row order, so the sum is ``operator_row_entries``' bit for bit; the
+    # CPU keeps that loop. Calls new/old (2026-11-11): lucy explicit filters 0.93-0.96x, implicit
+    # 0.91x; dragon 0.95-0.98x; smaller meshes at par.
+    acc = wp.vec3d(0.0, 0.0, 0.0)
+    for k in range(start, end, 4):
+        slots = row_chunk_slots(k, end)
+        p0 = wp.vec3d(field[columns[slots[0]]])
+        p1 = wp.vec3d(field[columns[slots[1]]])
+        p2 = wp.vec3d(field[columns[slots[2]]])
+        p3 = wp.vec3d(field[columns[slots[3]]])
+        w0 = wp.float64(values[slots[0]])
+        w1 = wp.float64(values[slots[1]])
+        w2 = wp.float64(values[slots[2]])
+        w3 = wp.float64(values[slots[3]])
+        acc += w0 * p0
+        if k + 1 < end:
+            acc += w1 * p1
+        if k + 2 < end:
+            acc += w2 * p2
+        if k + 3 < end:
+            acc += w3 * p3
+    return acc
 
 
 @wp.func

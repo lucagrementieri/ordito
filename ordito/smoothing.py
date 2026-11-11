@@ -138,6 +138,11 @@ _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
 # icosphere, bunny, dragon), CUDA, Chebyshev/Jacobi wall: 1.31-1.61x at 300-600 free vertices,
 # 0.82-0.90x at 1 000, 0.47-0.62x at 1 500 and 0.38-0.50x from 5 000. The hole fills' refined
 # patches (1 000 free vertices) lost 1.03-1.11x under it, so the gate sits above them.
+# Declined (2026-11-11): the smoothed-aggregation V-cycle (``preconditioner="multigrid"``) on the
+# same cap regions, against this polynomial: 14 iterations against 22-31 on ``sphere_med`` and
+# bunny, but its setup made the call 2.2-2.8x; ``"auto"`` 1.9-2.9x (it probed and escalated on
+# every one). On dragon the V-cycle did not converge at all (the ``10 * n_free`` cap, a wrong
+# answer returned silently), so the gate has no multigrid arm.
 _FIXED_RIM_CHEBYSHEV_FROM = 1_500
 
 # Fraction of the way to the level set each ``smooth_region_boundary`` pass moves. A full step

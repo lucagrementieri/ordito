@@ -1055,6 +1055,10 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   0.89-0.90x); small meshes at par, the CPU an entry a step (chunked 1.01-1.06x there). It loses
   where the chunk adds unconditional gathers to a wide bandwidth-bound launch (the multigrid MIS
   walk: 0.80x bunny, 1.07x dragon's fine level, calls par; declined at `mis_ball_max`).
+  On a mesh operator's ~6-entry rows it pays only past L2 (2026-11-11,
+  `kernels/laplacian.operator_row`, every explicit and implicit smoothing pass, from `2**18`
+  rows): lucy 0.91-0.96x, dragon 0.95-0.98x; ungated, `sphere_small` / `sphere_med` passes
+  1.04-1.19x device time.
 - **An order statistic is a radix select, not a sort, on CUDA** (2026-11-11,
   `kernels/sample.floor_digit`): digit passes of 11, 11 and 10 bits of the ordered keys, each a
   histogram (`scatter.peer_counted_add`: the coarse first digit crowds a few bins) whose last
@@ -1306,10 +1310,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
   component-status.md`, `ball_pivoting`).
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
-  in §14): row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
-  `smoothing.relax_approx`'s neighbourhood frame (ball rows 10-50), `cholesky.breadth_first_level`,
-  `smoothing.ring_push` / `pushed_keeping_volume`, `umbrella_diffuse_pass`,
-  `neighbors.query_geodesic_ball_collect`. Counts: `reconstruction.count_live_margin` (a few margin
+  in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
+  row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
+  `cholesky.breadth_first_level`, `smoothing.ring_push` / `pushed_keeping_volume`,
+  `umbrella_diffuse_pass`, `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s
+  device time). Counts: `reconstruction.count_live_margin` (a few margin
   bins in a one-block loop; its class-list slot needs a multi-bin peer allocator, not
   `peer_counted_add`), `cholesky.emit_structure_rows` (sorted keys: the count is the run length,
   no atomic needed), `cholesky.dissection_crossings` (1-16 bins at shallow depths),

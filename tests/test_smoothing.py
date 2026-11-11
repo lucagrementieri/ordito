@@ -27,6 +27,7 @@ import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import array as kernel_array
+from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import smoothing as kernel_smoothing
 from tests.comparisons import assert_provenance_describes, meshlab_umbrella
 from tests.conftest import (
@@ -136,6 +137,30 @@ def test_filter_laplacian_matches_trimesh(
         volume_constraint=volume_constraint,
         laplacian_operator=operator_tm,
     )
+
+    assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
+
+
+def test_filter_laplacian_matches_trimesh_above_the_row_chunk_gate(device: str) -> None:
+    """
+    Class A: explicit Laplacian smoothing against trimesh above the row-chunk gate.
+
+    ``kernels/laplacian.operator_row`` walks a row four entries a step on CUDA only above
+    ``OPERATOR_ROW_CHUNK_FROM`` rows, which every fixture is under, so a noisy ``icosphere(8)``
+    (655 362 vertices) stands in; the count is asserted so the test cannot fall below the gate
+    unnoticed. Every explicit and implicit pass shares that row; the implicit one is not compared
+    here because trimesh's direct solve takes minutes at this size. A masked slot added moves
+    every row.
+    """
+    mesh_tm = _noisy_icosphere(8, 0.002)
+    assert mesh_tm.vertices.shape[0] > kernel_laplacian.OPERATOR_ROW_CHUNK_FROM
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    mesh_ref = mesh_tm.copy()
+
+    smoothed_wp = od.smoothing.filter_laplacian(
+        mesh_wp.points, mesh_wp.indices, iterations=3, volume_constraint=False
+    )
+    tms.filter_laplacian(mesh_ref, iterations=3, volume_constraint=False)
 
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
 
