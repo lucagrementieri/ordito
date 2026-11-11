@@ -2008,6 +2008,12 @@ def count_cap_edges(
 ) -> None:
     # dim == 3 * n_faces: each halfedge adds itself to the perimeter of every internal node (levels
     # below ``depth``) on whose boundary it lies. ``out_perimeter`` is zeroed by the caller.
+    #
+    # Declined (2026-11-11): this kernel and ``fill_cap_edges`` taking their halfedges in the
+    # faces' sorted order (``order[t // 3]``, the leaf from the position, no ``rank`` read) put a
+    # warp's per-node atomics on the same few nodes: lucy count 1.63 -> 3.44 ms, fill 3.28 -> 4.91
+    # ms, dragon count 1.4x; warp peer pre-sums of the count (``warp_peer_lanes``) took dragon
+    # 0.88x but lucy still 1.44x.
     h = wp.int32(wp.tid())
     leaf, first_level = halfedge_cap_levels(h, faces, mates, rank, leaf_faces, depth)
     for level in range(first_level, depth):
