@@ -310,13 +310,17 @@ def dart_select_minima(
     bucket: wp.array[wp.int32],
     cell_offsets: wp.array[wp.int32],
     alive: wp.array[wp.int32],
+    count: wp.array[wp.int32],
     cell_min_priority: wp.array[wp.uint32],
     rr: wp.float32,
     out_state: wp.array[wp.int32],
     out_cell_accepted: wp.array[wp.bool],
 ) -> None:
-    # ``dart_select_minimum_at`` at this thread.
+    # ``dart_select_minimum_at`` at this thread, for the ``count[0]`` points of the work list (the
+    # launch may be wider: see ``sample._dart_throw_blue_noise``).
     t = wp.int32(wp.tid())
+    if t >= count[0]:
+        return
     dart_select_minimum_at(
         t,
         pool_points,
@@ -401,14 +405,19 @@ def dart_cover_neighbors(
     cell_neighbors: wp.array2d[wp.int32],
     cell_offsets: wp.array[wp.int32],
     alive: wp.array[wp.int32],
+    count: wp.array[wp.int32],
     cell_accepted: wp.array[wp.bool],
     rr: wp.float32,
     out_state: wp.array[wp.int32],
     out_flag: wp.array[wp.int32],
     out_cell_min_priority: wp.array[wp.uint32],
 ) -> None:
-    # ``dart_cover_neighbors_at`` at this thread.
+    # ``dart_cover_neighbors_at`` at this thread, for the ``count[0]`` points of the work list; a
+    # thread past them flags no survivor, so the scan over the launch's width counts the list's.
     t = wp.int32(wp.tid())
+    if t >= count[0]:
+        out_flag[t] = 0
+        return
     dart_cover_neighbors_at(
         t,
         pool_points,
@@ -460,16 +469,25 @@ def dart_compact_alive_at(
 @wp.kernel
 def dart_compact_alive(
     alive: wp.array[wp.int32],
+    count: wp.array[wp.int32],
     state: wp.array[wp.int32],
     positions: wp.array[wp.int32],
     priority: wp.array[wp.uint32],
     point_cell: wp.array[wp.int32],
     out_next: wp.array[wp.int32],
+    out_next_count: wp.array[wp.int32],
     out_cell_min_priority: wp.array[wp.uint32],
     out_cell_accepted: wp.array[wp.bool],
 ) -> None:
-    # ``dart_compact_alive_at`` at this thread.
+    # ``dart_compact_alive_at`` at this thread, for the ``count[0]`` points of the work list.
+    # Thread 0 stores the survivor count, the scan's last entry over the launch's width, as the
+    # next list's ``count``: the next round reads it on the device, so the host reads it only every
+    # few rounds. No thread of this launch reads that slot.
     t = wp.int32(wp.tid())
+    if t == 0:
+        out_next_count[0] = positions[positions.shape[0] - 1]
+    if t >= count[0]:
+        return
     dart_compact_alive_at(
         t,
         alive,

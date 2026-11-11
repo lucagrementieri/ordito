@@ -57,6 +57,10 @@ from ordito.kernels.algorithms import blue_noise as kernel_blue_noise
 from ordito.neighbors import query_ball_with_offsets
 from ordito.triangles import face_normals_and_areas
 
+# Dart-throwing rounds ``sample_surface_blue_noise`` issues on CUDA between reads of its work
+# list's length, after the first round's read.
+_DART_ROUNDS_PER_READ = 2
+
 
 def sample_fibonacci_sphere(count: int, device: wp.DeviceLike = None) -> wp.array[wp.vec3]:
     """
@@ -801,7 +805,8 @@ def _dart_throw_blue_noise(
 
     See ``kernels/algorithms/blue_noise.py`` for why the result has the same distribution as one
     pass of the serial algorithm. The loop is a handful of rounds over a shrinking work list;
-    the one host readback per round is the survivor count, which is also the termination test.
+    the host reads the survivor count, which is also the termination test, after the first round
+    and then every ``_DART_ROUNDS_PER_READ`` rounds.
 
     **The round count is stable, and it is not where the cost is.** Measured over five mesh shapes
     and a fifty-fold range of pool sizes it is always a handful of rounds, growing logarithmically
@@ -949,80 +954,87 @@ def _dart_throw_blue_noise(
         )
         alive_count = 0
 
-    while alive_count > 0:
-        view = _launch.view(alive, 0, alive_count)
-        # The survivor flags are written by the covering sweep itself, as each thread's last word
-        # on its point's state this round.
-        alive_flags = _launch.view(survivor_flag, 0, alive_count)
-        _launch.launch(
-            kernel_blue_noise.dart_select_minima,
-            dim=alive_count,
-            inputs=[
-                sorted_points,
-                priority,
-                sorted_cell,
-                cell_neighbors,
-                bucket,
-                cell_offsets,
-                view,
-                cell_min_priority,
-                rr,
-                state,
-                cell_accepted,
-            ],
-            device=device,
-        )
-        _launch.launch(
-            kernel_blue_noise.dart_cover_neighbors,
-            dim=alive_count,
-            inputs=[
-                sorted_points,
-                sorted_cell,
-                cell_neighbors,
-                cell_offsets,
-                view,
-                cell_accepted,
-                rr,
-                state,
-                alive_flags,
-                cell_min_priority,
-            ],
-            device=device,
-        )
-        # Survivors of this round, compacted in place. The scan is **inclusive**, so its last
-        # entry is the survivor count outright and one 4-byte read serves both the next launch
-        # dimension and the loop's exit test; ``dart_compact_alive`` writes at ``positions[t] - 1``
-        # to match. The exclusive form needed a second read for the last element's own flag, and a
-        # readback is the most expensive thing in a round -- two of them are a substantial share of
-        # the whole call at the small end, where the rounds are cheapest and most numerous relative
-        # to the work. This is the shape ``array.flatnonzero`` already uses.
-        #
-        # The two windows are viewed once per round, by ``_launch.view`` (a quarter of a
-        # ``wp.array.__getitem__``'s host time). ``alive_count`` shrinks every round so they are
-        # not loop-invariant, but taking each twice and three times inside one round was five views
-        # where two do; and ``read_scalar`` takes its own one-element slice internally, so handing
-        # it the index rather than a pre-sliced view drops a sixth.
-        alive_positions = _launch.view(positions, 0, alive_count)
-        _launch.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
-        total = int(read_scalar(positions, alive_count - 1))
-        if total > 0:
+    # The CUDA rounds are issued against ``bound``, the work list's length as last read: each
+    # kernel reads the list's true length from a device slot of ``counts`` (``dart_compact_alive``
+    # stores the next one), so the host reads it back only every few rounds. The list shrinks
+    # severalfold a round, so the first read comes after one round; a round issued past the last
+    # survivor finds an empty list and does nothing.
+    rounds = 1
+    counts = _launch.pattern([alive_count, 0], wp.int32, device) if alive_count > 0 else None
+    slot = 0
+    bound = alive_count
+    while bound > 0:
+        assert counts is not None
+        for _ in range(rounds):
+            view = _launch.view(alive, 0, bound)
+            count = _launch.view(counts, slot, slot + 1)
+            # The survivor flags are written by the covering sweep itself, as each thread's last
+            # word on its point's state this round.
+            alive_flags = _launch.view(survivor_flag, 0, bound)
+            _launch.launch(
+                kernel_blue_noise.dart_select_minima,
+                dim=bound,
+                inputs=[
+                    sorted_points,
+                    priority,
+                    sorted_cell,
+                    cell_neighbors,
+                    bucket,
+                    cell_offsets,
+                    view,
+                    count,
+                    cell_min_priority,
+                    rr,
+                    state,
+                    cell_accepted,
+                ],
+                device=device,
+            )
+            _launch.launch(
+                kernel_blue_noise.dart_cover_neighbors,
+                dim=bound,
+                inputs=[
+                    sorted_points,
+                    sorted_cell,
+                    cell_neighbors,
+                    cell_offsets,
+                    view,
+                    count,
+                    cell_accepted,
+                    rr,
+                    state,
+                    alive_flags,
+                    cell_min_priority,
+                ],
+                device=device,
+            )
+            # Survivors of this round, compacted in place. The scan is **inclusive**, so its last
+            # entry is the survivor count outright; ``dart_compact_alive`` writes at
+            # ``positions[t] - 1`` to match and stores that count for the next round.
+            alive_positions = _launch.view(positions, 0, bound)
+            _launch.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
             _launch.launch(
                 kernel_blue_noise.dart_compact_alive,
-                dim=alive_count,
+                dim=bound,
                 inputs=[
                     view,
+                    count,
                     state,
                     alive_positions,
                     priority,
                     sorted_cell,
-                    _launch.view(next_alive, 0, total),
+                    next_alive,
+                    _launch.view(counts, 1 - slot, 2 - slot),
                     cell_min_priority,
                     cell_accepted,
                 ],
                 device=device,
             )
             alive, next_alive = next_alive, alive
-        alive_count = total
+            slot = 1 - slot
+        # Host readback: the work list's length bounds the next rounds' launches and ends the loop.
+        bound = int(read_scalar(counts, slot))
+        rounds = _DART_ROUNDS_PER_READ
 
     # ``state`` is indexed by sorted position; scattering the accepted flags through ``bucket``
     # permutes them back to pool order, which is what keeps the returned points in the pool's own

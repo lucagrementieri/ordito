@@ -1289,13 +1289,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   the metric comparison (narrowing the predicate itself is refuted: it changes flips), or testing
   only the edges a split touched (the rows renumber at each pass's build, so an untouched edge's
   verdict would have to ride through the split).
-- **`sample_surface_blue_noise`'s per-round readback** (2026-11-11): host-bound at the small
-  end (`sphere_small`: ~0.2 ms device in a 0.85 ms call, ~5 rounds, each select, cover, scan,
-  read, compact). A captured loop cannot hold the compaction's scan (Warp's CUDA scan allocates
-  its scratch), so it would need an `append_slot` work list and full-pool dims a round. Unbuilt
-  and cheaper: rounds issued against the last read count as an upper bound (kernels reading the
-  true count from a device slot), read every two rounds; est. ~20 us a round saved where host issue
-  then overlaps the device (~10 % small, nothing large).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

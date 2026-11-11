@@ -7203,21 +7203,21 @@
  },
  "benchmarks/test_sample.py::test_sample_surface_blue_noise[sphere_small-ordito-cuda-r1]": {
   "counts": {
-   "launch": 23,
-   "alloc": 19,
-   "memset": 3,
-   "d2h": 8,
+   "launch": 24,
+   "alloc": 20,
+   "memset": 4,
+   "d2h": 6,
    "scan": 8,
    "sort": 1
   }
  },
  "benchmarks/test_sample.py::test_sample_surface_blue_noise[sphere_small-ordito-cuda-rhalf]": {
   "counts": {
-   "launch": 26,
-   "alloc": 19,
-   "memset": 3,
-   "d2h": 9,
-   "scan": 9,
+   "launch": 30,
+   "alloc": 20,
+   "memset": 4,
+   "d2h": 7,
+   "scan": 10,
    "sort": 1
   }
  },
