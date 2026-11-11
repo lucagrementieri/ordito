@@ -1309,6 +1309,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   cheap tests first, then run their empty-ball walks a lane each. Declined on the way: runs of
   ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
   component-status.md`, `ball_pivoting`).
+- **A hole fill's hub patch holds the one-block solve** (2026-11-11): `refine_and_smooth_region`'s
+  smooth solve (`cg_one_block`) costs 162 us a round on `saddle_small` against 71 on bunny at the
+  same step count, tracking the patch's hub valence (82 against 11); 5.3 of the call's ~13 ms.
+  Neither the hub's factor rows nor the long `M^T M` rows set it (warp-walked: 1.02-1.22x, declined
+  at `cg_one_block`); find what does before tuning. `normal_equations_rows` (1.5 ms there) sorts a
+  hub's 2-ring by insertion in one thread; an order-keeping rewrite is priced at ~0.5 ms
+  (`reference/component-status.md`, 16.8).
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
@@ -1329,11 +1336,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`multigrid_preconditioner` diverges on `smooth_region_fixed_rim`'s dragon system**
-  (2026-11-11): `solve_spd_columns(preconditioner="multigrid")` on the Dirichlet umbrella system of
-  dragon's top quarter by z (the benchmark's region) ran to its `10 * n_free` cap (535 970 rounds)
-  and returned positions 2 474 off with no error; the same call converges in 14 rounds on
-  `sphere_med` and bunny caps, and Chebyshev takes 100 on dragon. Nothing in-repo routes this
-  system through multigrid (declined at `smoothing._FIXED_RIM_CHEBYSHEV_FROM`), but `"auto"` and
-  `min_quad_with_fixed` callers could reach it: find what the setup does with this region
-  (unreferenced rows, disconnected free fragments) before trusting the V-cycle on a cut region.
