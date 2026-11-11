@@ -1329,8 +1329,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`smoothing`'s single-use edge vertices** (2026-11-11, unpriced): `_boundary_verts_mask` counts
-  each unique edge's uses over the `edges_unique` inverse (`count_occurrences`) and then marks the
-  single-use edges' vertices a slot a thread; the counts are each sorted run's length, so the mark
-  could ride in the grouping's emit (the `selection` sweep's emit off run ranks,
-  `reference/component-status.md`). Not tried: that module was being edited at the time.
+- **`multigrid_preconditioner` diverges on `smooth_region_fixed_rim`'s dragon system**
+  (2026-11-11): `solve_spd_columns(preconditioner="multigrid")` on the Dirichlet umbrella system of
+  dragon's top quarter by z (the benchmark's region) ran to its `10 * n_free` cap (535 970 rounds)
+  and returned positions 2 474 off with no error; the same call converges in 14 rounds on
+  `sphere_med` and bunny caps, and Chebyshev takes 100 on dragon. Nothing in-repo routes this
+  system through multigrid (declined at `smoothing._FIXED_RIM_CHEBYSHEV_FROM`), but `"auto"` and
+  `min_quad_with_fixed` callers could reach it: find what the setup does with this region
+  (unreferenced rows, disconnected free fragments) before trusting the V-cycle on a cut region.
