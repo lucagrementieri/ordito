@@ -86,12 +86,12 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import TWO_PI, UINT64_MAX_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TWO_PI, UINT64_MAX_CONSTANT
 from ordito.kernels.array import pack_edge_key
 from ordito.kernels.grouping import decode_key, hash_find, hash_find_or_insert
 from ordito.kernels.predicates import dihedral_angle, float_inf, triangle_normal
 from ordito.kernels.proximity import flag_overfull_leaf, meets_overfull_leaf, straggler_slab
-from ordito.kernels.reduce import block_argmin
+from ordito.kernels.reduce import block_argmin, block_min
 
 wp.set_module_options({"enable_backward": False})
 
@@ -141,6 +141,8 @@ BPA_COUNTERS = 13
 # hands one candidate per lane per step, and 32 covers the ~88 candidates an edge enumerates in
 # three steps while keeping the tile reductions on Warp's single-warp fast path.
 BPA_PIVOT_BLOCK = 32
+# Lanes a block of ``seed_triangles``: a warp, as for the pivot search.
+BPA_SEED_BLOCK = 32
 
 EDGE_LIVE = wp.int32(0)
 EDGE_RETIRED = wp.int32(1)
@@ -562,8 +564,103 @@ def seed_failed_before(
 
 
 @wp.func
-def seed_triangle(
+def seed_neighbours(
     p: wp.int32,
+    points: wp.array[wp.vec3],
+    point_used: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    wave: wp.int32,
+    nbr: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # Point ``p``'s seed walk: the orphans within ``2 * radius`` it stores into ``nbr`` in the
+    # grid's order, how many, and whether ``MAX_SEED_NEIGHBORS`` cut the walk short; or, as the
+    # second value, the lower-index still-viable orphan ``p`` yields to (``SEED_UNKNOWN`` when it
+    # yields to none). The walk reads only state no thread of a seeding wave writes (``point_used``
+    # moves in ``commit_triangles``, and a same-wave failure is invisible to
+    # ``seed_failed_before``), so a point's walk stores the same list whichever lane walks it.
+    #
+    # A point yields to any lower-index orphan it *sees* that has not already given up
+    # (``seed_failed_wave``, below), so seed fronts start well separated and do not collide into
+    # overlapping sheets before they can glue.
+    #
+    # **The ``break`` bounds the walk and not just the candidate list, so the "lowest-index orphan
+    # seeds" rule holds only while the neighbourhood fits in ``MAX_SEED_NEIGHBORS``. That is
+    # deliberate and tightening it is a regression.** Past that many stored neighbours the scan
+    # stops before it can see a lower-indexed orphan, so adjacent points both seed — and real
+    # neighbourhoods are past it routinely at the radii a run uses. The exact form (bound the store,
+    # let the walk run to completion) was built and measured: it collapses the wave-0 seed count to
+    # one or zero, and zero seeds makes ``end_wave`` raise ``CNT_DONE`` on an empty mesh.
+    count = wp.int32(0)
+    truncated = wp.bool(False)
+    query = wp.hash_grid_query(grid_id, points[p], 2.0 * radius)
+    j = wp.int32(-1)
+    while wp.hash_grid_query_next(query, j):
+        if count >= MAX_SEED_NEIGHBORS:
+            truncated = wp.bool(True)
+            break
+        if j != p and not point_used[j]:
+            if j < p and not seed_failed_before(seed_failed_wave, j, wave):
+                return count, j, truncated
+            nbr[count] = j
+            count += 1
+    return count, SEED_UNKNOWN, truncated
+
+
+@wp.func
+def seed_pair_ball(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    min_cluster_sq: wp.float32,
+    p: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+) -> wp.vec3:
+    # The centre of the ball resting on ``(p, a, b)`` when the pair passes the seed walk's pair
+    # test, an ``inf`` centre when it does not: the clustering floor between ``a`` and ``b``, a
+    # resting ball, compatible normals and no point inside by distance alone (``ball_holds_point``;
+    # the tie rule, ``ball_band_blocks``, runs once a pair passes). Squared, matching the same
+    # vcglib clustering rule as tested in ``candidate_is_viable``; see ``ball_is_empty`` for why one
+    # module must not spell one predicate two ways.
+    inf = float_inf(radius)
+    if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
+        return wp.vec3(inf)
+    center = compute_ball_center(
+        points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
+    )
+    if center[0] == wp.inf:
+        return center
+    if not is_compatible(points[p], points[a], points[b], normals[p], normals[a], normals[b]):
+        return wp.vec3(inf)
+    if ball_holds_point(grid_id, points, center, radius, p, a, b):
+        return wp.vec3(inf)
+    return center
+
+
+@wp.func
+def seed_pair_at(rank: wp.int32, count: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # The pair of rank ``rank < count * (count - 1) / 2`` among ``count`` stored neighbours,
+    # ``(i0, i1)`` with ``i0 < i1`` in lexicographic order: row ``i0`` starts at rank
+    # ``i0 * count - i0 * (i0 + 1) / 2``. The row is read off the quadratic's root in ``float32``
+    # and then corrected to the exact integer bound.
+    span = wp.float32(2 * count - 1)
+    i0 = wp.int32((span - wp.sqrt(wp.max(span * span - 8.0 * wp.float32(rank), 0.0))) * 0.5)
+    i0 = wp.max(i0, 0)
+    while i0 > 0 and i0 * count - i0 * (i0 + 1) // 2 > rank:
+        i0 -= 1
+    while (i0 + 1) * count - (i0 + 1) * (i0 + 2) // 2 <= rank:
+        i0 += 1
+    return i0, rank - (i0 * count - i0 * (i0 + 1) // 2) + i0 + 1
+
+
+@wp.func
+def seed_triangles_block(
+    block: wp.int32,
+    lane: wp.int32,
+    n: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
@@ -579,11 +676,30 @@ def seed_triangle(
     out_b: wp.array[wp.int32],
     out_c: wp.array[wp.int32],
 ) -> None:
-    # Point ``p`` of ``seed_triangles``.
+    # Block ``block`` of ``seed_triangles``: its ``wp.block_dim()`` points, one a lane, decide
+    # whether they walk their pairs, and then the block walks each such point's pairs together.
+    #
+    # **A lane a pair, not a thread a point.** A point that walks tests its stored pairs in order
+    # until one holds an empty ball, typically 1 300-2 000 of the 2 016 (most are too far apart to
+    # rest a ball on a near-empty neighbourhood), and about a tenth of them try every pair and fail.
+    # One thread doing that set the whole first seeding wave, the same on a sphere of 2 562 points
+    # as of 41 k, and on ``bunny`` 2 000x a wave that seeds nothing. The pair test reads only the
+    # walk's list and fixed geometry, so the lanes test consecutive pairs at once and the lowest
+    # passing one (``block_min``) is the serial loop's first: the same seed. The first wave
+    # 0.11x on that sphere, 0.07x on ``bunny`` (CUDA). On the cpu device (one lane a block) it is
+    # the serial loop.
     if counters[CNT_CONTINUE] == 0 or counters[CNT_SEEDING] == 0:
         return
-    if point_used[p]:
-        return
+    wave = counters[CNT_WAVE]
+    width = wp.block_dim()
+    # ``wp.zeros``, not the ``wp.types.vector(length=K)`` register row ``neighbors.py`` uses:
+    # measured, the register row gives nothing here. It wins only when every access is an unrolled
+    # compile-time slot, and every access here is a runtime index, which spills the vector to local
+    # memory — where ``wp.zeros`` already puts it. ``wp.fixedarray`` is not a third option: its own
+    # docstring says it is "only used during codegen, and for type hints", and it *is* the codegen
+    # type of a kernel-scope ``wp.zeros``.
+    nbr = wp.zeros(shape=MAX_SEED_NEIGHBORS, dtype=wp.int32)
+
     # The deferral below, remembered: ``seed_blocker[p]`` is the neighbour this point last yielded
     # to, and while it is still an orphan that has not given up, the walk would yield to it again
     # and the answer is unchanged, so two loads replace a hash-grid walk. Exact, not approximate:
@@ -596,138 +712,151 @@ def seed_triangle(
     # whole neighbourhood*. Whether an attempt succeeds depends on the stored neighbours alone --
     # ``ball_is_empty`` and ``is_compatible`` are geometry, and never read ``point_used`` -- and a
     # later walk stores the same neighbours minus the ones used since, so every later attempt
-    # tries a subset of the pairs that already failed and fails again. Such a point returns here
+    # tries a subset of the pairs that already failed and fails again. Such a point skips its walk
     # for the rest of the run. A walk cut short by the ``MAX_SEED_NEIGHBORS`` break is not
     # remembered: once stored neighbours are used, the next walk reaches past the break and can
     # store a neighbour the failed one never tried.
-    blocker = seed_blocker[p]
-    if blocker == SEED_EXHAUSTED:
-        return
-    wave = counters[CNT_WAVE]
-    if blocker >= 0:
-        if not point_used[blocker] and not seed_failed_before(seed_failed_wave, blocker, wave):
-            return
-
-    # Gather the local orphan neighbourhood into scratch so it can be scanned as a double loop.
-    # A point yields to any lower-index orphan it *sees* that has not already given up
-    # (``seed_failed_wave``, below), so seed fronts start well separated and do not collide into
-    # overlapping sheets before they can glue.
     #
-    # ``wp.zeros``, not the ``wp.types.vector(length=K)`` register row ``neighbors.py`` uses:
-    # measured, the register row gives nothing here. It wins only when every access is an unrolled
-    # compile-time slot, and every access here is a runtime index, which spills the vector to local
-    # memory — where ``wp.zeros`` already puts it. ``wp.fixedarray`` is not a third option: its own
-    # docstring says it is "only used during codegen, and for type hints", and it *is* the codegen
-    # type of a kernel-scope ``wp.zeros``.
-    #
-    # **The ``break`` bounds the walk and not just the candidate list, so the "lowest-index orphan
-    # seeds" rule holds only while the neighbourhood fits in ``MAX_SEED_NEIGHBORS``. That is
-    # deliberate and tightening it is a regression.** Past that many stored neighbours the scan
-    # stops before it can see a lower-indexed orphan, so adjacent points both seed — and real
-    # neighbourhoods are past it routinely at the radii a run uses. The exact form (bound the store,
-    # let the walk run to completion) was built and measured: it collapses the wave-0 seed count to
-    # one or zero, and zero seeds makes ``end_wave`` raise ``CNT_DONE`` on an empty mesh.
-    #
-    # ``seed_failed_wave`` is what keeps the rule from deadlocking: it elects **one** seeder per
-    # neighbourhood, so a neighbourhood whose lowest-indexed orphan cannot form a valid seed
-    # triangle would otherwise be dead for good — the next wave sees identical state and fails
-    # identically. Marking a failed elected point releases its neighbourhood to the next-lowest
-    # deferring orphan (``end_wave`` keeps seeding while new failures are still being discovered).
-    # Sound because a point's candidate set only ever *shrinks* across waves (``point_used`` only
-    # goes false -> true), so a point that exhausted its candidates cannot succeed with a subset.
-    nbr = wp.zeros(shape=MAX_SEED_NEIGHBORS, dtype=wp.int32)
-    count = wp.int32(0)
-    truncated = wp.bool(False)
-    query = wp.hash_grid_query(grid_id, points[p], 2.0 * radius)
-    j = wp.int32(-1)
-    while wp.hash_grid_query_next(query, j):
-        if count >= MAX_SEED_NEIGHBORS:
-            truncated = wp.bool(True)
-            break
-        if j != p and not point_used[j]:
-            if j < p and not seed_failed_before(seed_failed_wave, j, wave):
-                seed_blocker[p] = j
-                return  # a lower-index, still-viable orphan neighbour will seed this instead
-            nbr[count] = j
-            count += 1
-
-    # Squared, matching the same vcglib clustering rule as tested in ``candidate_is_viable``; see
-    # ``ball_is_empty`` for why one module must not spell one predicate two ways.
-    min_cluster_sq = clustering * radius * clustering * radius
-    # The pair loop tests occupancy by distance alone (``ball_holds_point``) and the tie rule
-    # (``ball_band_blocks``) runs outside it, once per pair that passes, resuming the loop after a
-    # pair a tie rejects: the same predicate as ``ball_is_empty``, but with the tie walk out of the
-    # loop nest, which keeps it as fast as the plain test was. ``resume`` is the flat index
-    # ``i0 * MAX_SEED_NEIGHBORS + i1`` of the first pair still to try.
-    resume = wp.int32(0)
-    while resume >= 0:
-        found_a = wp.int32(-1)
-        found_b = wp.int32(-1)
-        found_pair = wp.int32(-1)
-        found_center = wp.vec3(0.0)
-        for i0 in range(count):
-            if found_a >= 0:
-                break
-            a = nbr[i0]
-            for i1 in range(i0 + 1, count):
-                if i0 * MAX_SEED_NEIGHBORS + i1 < resume:
-                    continue
-                b = nbr[i1]
-                if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
-                    continue
-                center = compute_ball_center(
-                    points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
+    # A block takes every ``blocks``-th point rather than a run of them: the points that walk in a
+    # wave are local minima of the index, which cluster at low indices (the first wave of an
+    # icosphere walks its twelve original corners, all in one run of 32), and a block walks its
+    # points one after another.
+    blocks = (n + width - 1) // width
+    p = block + lane * blocks
+    pending = wp.bool(False)
+    own_count = wp.int32(0)
+    own_truncated = wp.bool(False)
+    if p < n and not point_used[p]:
+        blocker = seed_blocker[p]
+        if blocker != SEED_EXHAUSTED:
+            if (
+                blocker < 0
+                or point_used[blocker]
+                or seed_failed_before(seed_failed_wave, blocker, wave)
+            ):
+                own_count, yields_to, own_truncated = seed_neighbours(
+                    p, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
                 )
-                if center[0] == wp.inf:
-                    continue
-                if not is_compatible(
-                    points[p], points[a], points[b], normals[p], normals[a], normals[b]
-                ):
-                    continue
-                if not ball_holds_point(grid_id, points, center, radius, p, a, b):
-                    found_a = a
-                    found_b = b
-                    found_pair = i0 * MAX_SEED_NEIGHBORS + i1
-                    found_center = center
-                    break
-        resume = wp.int32(-1)
-        if found_a >= 0:
-            a = found_a
-            b = found_b
-            if ball_band_blocks(grid_id, points, found_center, radius, p, a, b):
-                resume = found_pair + 1
-            else:
-                # Wound so its normal agrees with the point normals (Open3D's ``CreateTriangle``
-                # rule). Every later triangle inherits this winding across the edge it pivots over
-                # (``pivot_front_edges``), whose rotation sense is read off it. Reversed as
-                # ``(p, b, a)``, keeping the seeder first: ``proposal_key`` orders the first two
-                # corners, and the seeder in front is what makes that pair unique in the wave.
-                outward = wp.dot(
-                    triangle_normal(points[p], points[a], points[b]),
-                    normals[p] + normals[a] + normals[b],
-                )
-                if outward < 0.0:
-                    propose_triangle(
-                        p, b, a, front_capacity, counters, out_owner, out_a, out_b, out_c
-                    )
+                if yields_to >= 0:
+                    # A lower-index, still-viable orphan neighbour will seed this instead.
+                    seed_blocker[p] = yields_to
                 else:
-                    propose_triangle(
-                        p, a, b, front_capacity, counters, out_owner, out_a, out_b, out_c
-                    )
-                return
+                    pending = wp.bool(True)
 
-    # No candidate pair among those seen produced a valid seed: release this neighbourhood so a
-    # deferring orphan can try on a later wave, and count it so ``end_wave`` knows the seed-failure
-    # state is still changing and keeps seeding rather than declaring the run done.
-    if seed_failed_wave[p] == 0:
-        seed_failed_wave[p] = wave + 1
-        wp.atomic_add(counters, CNT_SEED_FAILED, 1)
-    if not truncated:
-        seed_blocker[p] = SEED_EXHAUSTED
+    min_cluster_sq = clustering * radius * clustering * radius
+    # The block's walking points, lowest lane first: every lane walks the point again (the same
+    # list, ``seed_neighbours``) and takes a share of its pairs.
+    walker = block_min(wp.where(pending, lane, INT32_MAX_CONSTANT))
+    while walker != INT32_MAX_CONSTANT:
+        if lane == walker:
+            pending = wp.bool(False)
+        q = block + walker * blocks
+        # A one-lane block (the cpu device) already holds its walker's list.
+        count = own_count
+        truncated = own_truncated
+        if width > 1:
+            count, _yields_to, truncated = seed_neighbours(
+                q, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
+            )
+        # Pairs are ranked in the serial loop's order, ``(i0, i1)`` with ``i0 < i1``
+        # lexicographic, and searched a rank a lane a step: the block's lowest pass is the serial
+        # loop's first. Ranked rather than a row's partners a step, which left up to half the lanes
+        # idle on a row's tail. Declined: a run of consecutive ranks a lane a window, each lane
+        # stopping at its first pass, so that a window waits on about one hash-grid walk rather
+        # than a step on one (about one pair in twenty reaches ``ball_holds_point``): the first
+        # seeding wave 1.1x at 2 ranks a lane, 1.2x at 4, 1.2-1.4x at 8 and 1.9x at 32 (CUDA, a
+        # sphere of 2 562 points and the two bunnies).
+        #
+        # The tie rule (``ball_band_blocks``) runs outside the pair search, once per pair that
+        # passes it, resuming the search after a pair a tie rejects: the same predicate as
+        # ``ball_is_empty``, with the tie walk out of the loop nest, which keeps it as fast as the
+        # plain test was. ``resume`` is the rank of the first pair still to try.
+        pairs = count * (count - 1) // 2
+        proposed = wp.bool(False)
+        resume = wp.int32(0)
+        while resume >= 0:
+            found = INT32_MAX_CONSTANT
+            rank = resume + lane
+            i0 = wp.int32(0)
+            i1 = wp.int32(0)
+            if rank < pairs:
+                i0, i1 = seed_pair_at(rank, count)
+            while rank - lane < pairs and found == INT32_MAX_CONSTANT:
+                passed = INT32_MAX_CONSTANT
+                if rank < pairs:
+                    center = seed_pair_ball(
+                        points, normals, grid_id, radius, min_cluster_sq, q, nbr[i0], nbr[i1]
+                    )
+                    if center[0] != wp.inf:
+                        passed = rank
+                # A one-lane block's pass is the block's: the reduction a pair cost the cpu
+                # device's batch 1.03-1.04x.
+                found = passed
+                if width > 1:
+                    found = block_min(passed)
+                # The lane's next rank, ``width`` on, carried across rows as they end.
+                rank += width
+                i1 += width
+                while i1 >= count and i0 + 2 < count:
+                    i1 -= count - i0 - 2
+                    i0 += 1
+            resume = wp.int32(-1)
+            if found != INT32_MAX_CONSTANT:
+                i0, i1 = seed_pair_at(found, count)
+                a = nbr[i0]
+                b = nbr[i1]
+                found_center = compute_ball_center(
+                    points[q], points[a], points[b], normals[q] + normals[a] + normals[b], radius
+                )
+                if ball_band_blocks(grid_id, points, found_center, radius, q, a, b):
+                    resume = found + 1
+                else:
+                    proposed = wp.bool(True)
+                    if lane == 0:
+                        # Wound so its normal agrees with the point normals (Open3D's
+                        # ``CreateTriangle`` rule). Every later triangle inherits this winding
+                        # across the edge it pivots over (``pivot_front_edges``), whose rotation
+                        # sense is read off it. Reversed as ``(q, b, a)``, keeping the seeder first:
+                        # ``proposal_key`` orders the first two corners, and the seeder in front is
+                        # what makes that pair unique in the wave.
+                        outward = wp.dot(
+                            triangle_normal(points[q], points[a], points[b]),
+                            normals[q] + normals[a] + normals[b],
+                        )
+                        if outward < 0.0:
+                            propose_triangle(
+                                q, b, a, front_capacity, counters, out_owner, out_a, out_b, out_c
+                            )
+                        else:
+                            propose_triangle(
+                                q, a, b, front_capacity, counters, out_owner, out_a, out_b, out_c
+                            )
+
+        # No candidate pair among those seen produced a valid seed: release this neighbourhood so
+        # a deferring orphan can try on a later wave, and count it so ``end_wave`` knows the
+        # seed-failure state is still changing and keeps seeding rather than declaring the run
+        # done.
+        #
+        # ``seed_failed_wave`` is what keeps the rule from deadlocking: it elects **one** seeder
+        # per neighbourhood, so a neighbourhood whose lowest-indexed orphan cannot form a valid
+        # seed triangle would otherwise be dead for good — the next wave sees identical state and
+        # fails identically. Marking a failed elected point releases its neighbourhood to the
+        # next-lowest deferring orphan (``end_wave`` keeps seeding while new failures are still
+        # being discovered). Sound because a point's candidate set only ever *shrinks* across
+        # waves (``point_used`` only goes false -> true), so a point that exhausted its candidates
+        # cannot succeed with a subset.
+        if not proposed and lane == 0:
+            if seed_failed_wave[q] == 0:
+                seed_failed_wave[q] = wave + 1
+                wp.atomic_add(counters, CNT_SEED_FAILED, 1)
+            if not truncated:
+                seed_blocker[q] = SEED_EXHAUSTED
+        walker = block_min(wp.where(pending, lane, INT32_MAX_CONSTANT))
 
 
 @wp.kernel(enable_backward=False)
 def seed_triangles(
+    n: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
@@ -743,9 +872,12 @@ def seed_triangles(
     out_b: wp.array[wp.int32],
     out_c: wp.array[wp.int32],
 ) -> None:
-    # One thread a point: ``seed_triangle``.
-    seed_triangle(
-        wp.int32(wp.tid()),
+    # A block of ``BPA_SEED_BLOCK`` points: ``seed_triangles_block``.
+    block, lane = wp.tid()
+    seed_triangles_block(
+        block,
+        lane,
+        n,
         points,
         normals,
         point_used,
@@ -1463,10 +1595,10 @@ def wave_serial(
     # One wave as ``reconstruction._bpa_wave`` launches it -- ``seed_triangles``,
     # ``pivot_front_edges``, ``claim_triangle_vertices``, ``commit_triangles``, ``end_wave`` --
     # every thread and block of each in launch order, on one lane.
-    for p in range(n):
-        seed_triangle(
-            p, points, normals, point_used, seed_failed_wave, seed_blocker, grid_id, radius,
-            clustering, front_capacity, counters, owner, tri_a, tri_b, tri_c,
+    for block in range(n):
+        seed_triangles_block(
+            block, 0, n, points, normals, point_used, seed_failed_wave, seed_blocker, grid_id,
+            radius, clustering, front_capacity, counters, owner, tri_a, tri_b, tri_c,
         )  # fmt: skip
     for block in range(front_grid):
         pivot_front_edges_block(

@@ -5301,10 +5301,12 @@ def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
     device = state.device
     if begin:
         _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_bpa.seed_triangles,
-        dim=state.n,
+        dim=[(state.n + kernel_bpa.BPA_SEED_BLOCK - 1) // kernel_bpa.BPA_SEED_BLOCK],
+        block_dim=kernel_bpa.BPA_SEED_BLOCK,
         inputs=[
+            state.n,
             state.points,
             state.normals,
             state.point_used,
