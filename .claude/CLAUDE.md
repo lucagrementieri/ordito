@@ -1044,7 +1044,17 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   0.65-0.86x wave device time (`kernels/algorithms/poisson_octree.octree_row`). Price a
   latency-bound launch against a do-nothing kernel at the same dims first: the octree waves cost
   5-9 us against a 0.6 us floor, yet the call was launch-bound (no-op waves 0.96x), so the
-  shorter row paid only with the waves replayed from a device counter.
+  shorter row paid only with the waves replayed from a device counter. A thread walking a
+  neighbour row (2026-11-11, `kernels/sample.neighbour_chunk`: four entries at clamped
+  addresses a step) took the Poisson-disk elimination's maxima pass 0.29-0.94x and its deletions
+  0.50-0.73x from 10 k to 1 M rows of ~19; eight a step no faster. A walk that stops at its first
+  hit keeps the entry-a-step form on the CPU (chunked 1.18x there).
+- **An order statistic is a radix select, not a sort, on CUDA** (2026-11-11,
+  `kernels/sample.floor_digit`): digit passes of 11, 11 and 10 bits of the ordered keys, each a
+  histogram (`scatter.peer_counted_add`: the coarse first digit crowds a few bins) whose last
+  block finds the digit, 3 x 5.4 us against the ~50 us radix sort of a 10 k pool (four onesweep
+  passes); at par from 1 M keys. Two 16-bit passes lose: the last block reading 65 536 bins is one
+  SM's bandwidth (~33 us coalesced). The CPU's radix sort beats the passes (1.05-1.08x a call).
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
 - **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
@@ -1279,6 +1289,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   the metric comparison (narrowing the predicate itself is refuted: it changes flips), or testing
   only the edges a split touched (the rows renumber at each pass's build, so an untouched edge's
   verdict would have to ride through the split).
+- **`sample_surface_blue_noise`'s per-round readback** (2026-11-11): host-bound at the small
+  end (`sphere_small`: ~0.2 ms device in a 0.85 ms call, ~5 rounds, each select, cover, scan,
+  read, compact). A captured loop cannot hold the compaction's scan (Warp's CUDA scan allocates
+  its scratch), so it would need an `append_slot` work list and full-pool dims a round. Unbuilt
+  and cheaper: rounds issued against the last read count as an upper bound (kernels reading the
+  true count from a device slot), read every two rounds; est. ~20 us a round saved where host issue
+  then overlaps the device (~10 % small, nothing large).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
