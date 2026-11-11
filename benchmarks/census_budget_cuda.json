@@ -7394,9 +7394,9 @@
  },
  "benchmarks/test_selection.py::test_fill_face_mask_holes[sphere_small-ordito-cuda-True]": {
   "counts": {
-   "launch": 14,
-   "alloc": 12,
-   "memset": 6,
+   "launch": 13,
+   "alloc": 10,
+   "memset": 5,
    "sort": 1
   }
  },

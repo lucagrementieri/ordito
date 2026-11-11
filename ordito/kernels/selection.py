@@ -836,6 +836,30 @@ def fill_enclosed_regions(
 
 
 @wp.kernel
+def hook_filled_regions(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    filled: wp.array[wp.bool],
+    region_parents: wp.array[wp.int32],
+) -> None:
+    # The regions of the filled selection, hooked onto the first pass's: ``region_parents`` holds
+    # that pass's flattened region labels. A region is filled or not as a whole, so each of its
+    # faces stays joined to its label under ``filled``, and the labels are a valid forest of the
+    # new graph; only an edge between two of the old regions that ``filled`` joins is left to
+    # hook, each pair once (``hook_mesh_regions``). The roots stay each component's smallest
+    # face, so the labels are those of a forest built from scratch.
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate >= 0 and mate < h:
+        return
+    f = h // 3
+    g = region_partner(faces, mates, h)
+    # Equal parents share a tree whatever the concurrent hooks did; unequal ones are hooked.
+    if regions_joined(filled, f, g) and region_parents[f] != region_parents[g]:
+        ecl_hook_pair(region_parents, f, g)
+
+
+@wp.kernel
 def rank_selected_regions(
     mask: wp.array[wp.bool],
     region_labels: wp.array[wp.int32],

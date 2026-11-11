@@ -563,8 +563,23 @@ def fill_face_mask_holes(
     if not keep_largest:
         return filled
     # The filled selection's own regions: its holes are gone, so its selected regions are the
-    # patches to choose from.
-    _, region_labels, _, _ = _mesh_regions(faces, mates, filled)
+    # patches to choose from. They are unions of the first pass's regions, hooked onto its labels
+    # in place and flattened into the mesh labels, which nothing reads after the fill (not in
+    # place: ``ecl_flatten``).
+    _launch.launch(
+        kernel_selection.hook_filled_regions,
+        dim=3 * n_faces,
+        inputs=[faces, mates, filled, region_labels],
+        device=device,
+    )
+    _launch.launch(
+        kernel_connected_components.ecl_flatten,
+        dim=n_faces,
+        inputs=[region_labels],
+        outputs=[mesh_labels],
+        device=device,
+    )
+    region_labels = mesh_labels
     areas, sums = _region_areas(vertices, faces, region_labels)
     best = _launch.full(1, -1, dtype=wp.int64, device=device)
     _launch.launch(
