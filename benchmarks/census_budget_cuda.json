@@ -7263,7 +7263,7 @@
  "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cuda-0.25]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
+   "alloc": 8,
    "memset": 1,
    "d2h": 2,
    "scan": 2,
@@ -7273,7 +7273,7 @@
  "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cuda-1.0]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
+   "alloc": 8,
    "memset": 1,
    "d2h": 2,
    "scan": 2,

@@ -6607,7 +6607,7 @@
  "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cpu-0.25]": {
   "counts": {
    "launch": 7,
-   "alloc": 9,
+   "alloc": 8,
    "readback": 2,
    "scan": 1,
    "sort": 2
@@ -6616,7 +6616,7 @@
  "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cpu-1.0]": {
   "counts": {
    "launch": 7,
-   "alloc": 9,
+   "alloc": 8,
    "readback": 2,
    "scan": 1,
    "sort": 2
