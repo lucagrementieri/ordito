@@ -149,9 +149,6 @@ _FIXED_RIM_CHEBYSHEV_FROM = 1_500
 # overshoots, because the field is rebuilt from the moved positions and the level set moves too.
 _ISOLINE_DAMPING = wp.float32(0.75)
 
-# The common apex of the tetrahedra whose signed volumes sum to the enclosed volume.
-_ORIGIN_D = wp.vec3d()
-
 # The fixed-point path's step cap, above which a pass solves the assembled system instead: a large
 # ``lamb`` pulls the contraction factor towards 1, and the step count grows as ``1 / (1 - q)``.
 _IMPLICIT_FIXED_POINT_MAX_STEPS = 400
@@ -2361,20 +2358,25 @@ def filter_mut_dif_laplacian(
     derive_normals = face_normals is None or face_areas is None
     deterministic = is_deterministic()
     # The call's ``float64`` tables, in one zeroed allocation: the normal sums (when derived), the
-    # sensitivity, the constraint's three volumes and, with determinism off, the per-pass
-    # coefficient slots.
+    # sensitivity, the constraint's three volumes (each a fixed-order block commit's buffer,
+    # ``_signed_volume_into``) and slope and, with determinism off, the per-pass coefficient
+    # slots.
+    volume_size = _signed_volume_size(faces.size // 3) if volume_constraint else 0
     zeroed = _launch.carve(
         wp.float64,
         (
             3 * n if derive_normals else 0,
             1,
-            *((1, 1, 1) if volume_constraint else (0, 0, 0)),
+            volume_size,
+            volume_size,
+            volume_size,
+            1 if volume_constraint else 0,
             0 if deterministic else 2 * iterations,
         ),
         device,
         zeroed=True,
     )
-    normal_sums_flat, sensitivity, vol_ini, vol_probe, slope, adil_slots = zeroed
+    normal_sums_flat, sensitivity, vol_ini, vol_probe, vol_cur, slope, adil_slots = zeroed
     # The ``float64`` iterates, in one allocation: ``L.v``, then under the constraint the widened
     # input, the eps probe and the ping-pong's other buffer; without it the (at most two) buffers
     # the passes between the first and the last ping-pong.
@@ -2433,10 +2435,9 @@ def filter_mut_dif_laplacian(
     # of them back cost a full pipeline drain per smoothing pass -- and the pass count is the whole
     # point of this loop -- for arithmetic the two kernels below do themselves.
     #
-    # All three are summed by ``wp.utils.array_sum``, deliberately the *same* reduction rather than
-    # ``measures.volume``'s tiled one: the correction is ``slope * (vol_ini - vol)``, a difference
-    # of two nearly equal volumes, so mixing two summation orders would show up there magnified
-    # rather than in the last bits.
+    # All three are summed by ``_signed_volume_into``, deliberately the *same* reduction: the
+    # correction is ``slope * (vol_ini - vol)``, a difference of two nearly equal volumes, so mixing
+    # two summation orders would show up there magnified rather than in the last bits.
     constraint = None
     area_max = None
     if volume_constraint:
@@ -2453,9 +2454,8 @@ def filter_mut_dif_laplacian(
                 device=device,
             )
         probe = iterates[2]
-        scratch = _VolumeScratch.for_faces(faces, device)
-        scratch.accumulate(cast("wp.array[wp.vec3d]", positions), faces, vol_ini)
-        constraint = (probe, scratch, vol_ini, vol_probe, slope)
+        _signed_volume_into(cast("wp.array[wp.vec3d]", positions), faces, vol_ini)
+        constraint = (probe, vol_ini, vol_probe, vol_cur, slope)
     inv_n = wp.float64(1.0 / n)
     rows_per_block = kernel_smoothing.MUT_DIF_ROWS_PER_BLOCK
     n_blocks = (n + rows_per_block - 1) // rows_per_block
@@ -2499,11 +2499,10 @@ def filter_mut_dif_laplacian(
         if constraint is not None:
             # Under the constraint every pass writes the ``float64`` ping-pong buffer.
             iterate = cast("wp.array[wp.vec3d]", dst)
-            probe, scratch, vol_ini, vol_probe, slope = constraint
-            vol_cur = scratch.volume
-            scratch.accumulate(iterate, faces)
+            probe, vol_ini, vol_probe, vol_cur, slope = constraint
+            _signed_volume_into(iterate, faces, vol_cur)
             if index == 0:
-                scratch.accumulate(probe, faces, vol_probe)
+                _signed_volume_into(probe, faces, vol_probe)
             _launch.launch(
                 kernel_smoothing.mut_dif_volume_correct,
                 dim=n,
@@ -2533,50 +2532,43 @@ def filter_mut_dif_laplacian(
     return out
 
 
-class _VolumeScratch(NamedTuple):
+def _signed_volume_size(n_faces: int) -> int:
     """
-    Device buffers for a signed-volume sum repeated over one fixed face buffer.
+    Return the length of a [`_signed_volume_into`][ordito.smoothing._signed_volume_into] buffer.
 
-    Shared by the two volume constraints in this module so that neither reads a volume back to do
-    arithmetic on it, and neither allocates per smoothing pass: ``face_volumes`` holds one signed
-    tetrahedron volume per face and ``volume`` their length-1 sum, both rewritten by every call.
+    The fixed-order block commit's whatever the deterministic setting: the result slot, its ticket
+    and a row a block (``_launch.block_partials_size`` with the setting on).
     """
+    return kernel_reduce.blocks_1d(n_faces) + 2
 
-    face_volumes: wp.array[wp.float64]
-    volume: wp.array[wp.float64]
 
-    @classmethod
-    def for_faces(cls, faces: wp.array[wp.int32], device: wp.DeviceLike) -> _VolumeScratch:
-        """Allocate the scratch for ``faces``' face count."""
-        face_volumes, volume = _launch.carve(wp.float64, (faces.size // 3, 1), device)
-        return cls(face_volumes, volume)
+def _signed_volume_into(
+    positions: wp.array[wp.vec3d], faces: wp.array[wp.int32], out_volume: wp.array[wp.float64]
+) -> None:
+    """
+    Sum the mesh's signed volume into ``out_volume[0]``, on the device.
 
-    def accumulate(
-        self,
-        positions: wp.array[wp.vec3d],
-        faces: wp.array[wp.int32],
-        out_volume: wp.array[wp.float64] | None = None,
-    ) -> None:
-        """
-        Sum the mesh's signed tetrahedron volumes into ``out_volume`` (``self.volume`` if omitted).
-
-        The device-resident half of [`measures.volume`][ordito.measures.volume], summed by
-        ``wp.utils.array_sum``, which overwrites its output. An empty face buffer launches nothing
-        and zeroes the output instead: zero is the honest volume of a mesh with no faces, and it is
-        what both consumers read as "no correction".
-        """
-        out = self.volume if out_volume is None else out_volume
-        n_faces = self.face_volumes.size
-        if n_faces == 0:
-            _launch.zero_(out)
-            return
-        _launch.launch(
-            kernel_triangles.FACE_SIGNED_VOLUMES[wp.vec3d],
-            dim=n_faces,
-            inputs=[positions, faces, _ORIGIN_D, self.face_volumes],
-            device=positions.device,
-        )
-        wp.utils.array_sum(self.face_volumes, out=out)
+    The two volume constraints' reduction, so that neither reads a volume back to do arithmetic on
+    it: ``measures.volume``'s tiled kernel folding each block's faces as it forms them, its rows
+    added in a fixed order by the last block, which resets its own ticket. ``out_volume`` is a
+    zeroed buffer of [`_signed_volume_size`][ordito.smoothing._signed_volume_size] that a call
+    overwrites, so it is reused with no clear; at that size the commit takes its fixed order
+    whatever the deterministic setting, the same order every call (the per-face table and
+    ``wp.utils.array_sum`` it replaced repeated too). An empty face buffer launches nothing and
+    zeroes the buffer instead: zero is the honest volume of a mesh with no faces, and it is what
+    both consumers read as "no correction".
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        _launch.zero_(out_volume)
+        return
+    _launch.launch_tiled(
+        kernel_measures.MESH_SIGNED_VOLUME[wp.vec3d],
+        dim=[kernel_reduce.blocks_1d(n_faces)],
+        inputs=[positions, faces, 1, out_volume],
+        block_dim=TILE_1D,
+        device=positions.device,
+    )
 
 
 class _VolumeConstraint:
@@ -2586,7 +2578,7 @@ class _VolumeConstraint:
     ``anchor`` captures the input's signed volume (``measures.volume``'s kernel on the ``float64``
     positions) and the first four of ``measures.moments``' integrals (of the ``float32`` copy, the
     centre's source), each into the first slots of its own block-commit buffer, where they stay;
-    ``apply`` sums the current volume with the reduction ``_VolumeScratch`` uses, forms the scale
+    ``apply`` sums the current volume with ``_signed_volume_into``, forms the scale
     and the fixed initial centre once into ``state``
     (``kernel_smoothing.volume_rescale_parameters``) and rescales. The arithmetic is the host
     version's -- the same reductions and the same centre rounding -- so the answer is too.
@@ -2604,26 +2596,29 @@ class _VolumeConstraint:
         self._chunk_faces = kernel_measures.moment_chunk_faces(self._n_faces)
         self._volume_blocks = kernel_reduce.blocks_1d(self._n_faces)
         self._moment_blocks = -(-self._n_faces // self._chunk_faces)
-        # Zeroed at allocation, so a constraint over no faces reads a zero anchor: no rescale.
+        # One zeroed allocation: the anchor's two commit buffers (zeroed, so a constraint over no
+        # faces reads a zero anchor: no rescale), the rescale state and the current volume's
+        # fixed-order buffer (``_signed_volume_into``, whose ticket starts at zero).
         self._pools = None
+        current_size = _signed_volume_size(self._n_faces)
         if is_deterministic():
-            self._volume, self._volume_stride = _launch.block_partials(
-                self._volume_blocks, 1, wp.float64, device
+            volume_size = _launch.block_partials_size(self._volume_blocks, 1)
+            moment_size = _launch.block_partials_size(self._moment_blocks, 4)
+            volume, moments, state, current = _launch.carve(
+                wp.float64, (volume_size, moment_size, 4, current_size), device, zeroed=True
             )
-            self._moments, self._moment_stride = _launch.block_partials(
-                self._moment_blocks, 4, wp.float64, device
-            )
+            self._volume, self._moments = volume, moments
+            self._volume_stride, self._moment_stride = 1, 4
         else:
-            volumes, moments = _launch.carve(
-                wp.float64, (anchors, 4 * anchors), device, zeroed=True
+            volumes, moments, state, current = _launch.carve(
+                wp.float64, (anchors, 4 * anchors, 4, current_size), device, zeroed=True
             )
             self._pools = (volumes, moments)
             self._volume = _launch.view(self._pools[0], 0, 1)
             self._moments = _launch.view(self._pools[1], 0, 4)
             self._volume_stride, self._moment_stride = 1, 4
-        state, face_volumes, volume = _launch.carve(wp.float64, (4, self._n_faces, 1), device)
         self.state = state
-        self._scratch = _VolumeScratch(face_volumes, volume)
+        self._current = current
         self._anchors = 0
 
     @classmethod
@@ -2670,11 +2665,11 @@ class _VolumeConstraint:
 
     def apply(self, positions: wp.array[wp.vec3d], *, out: wp.array[wp.vec3] | None = None) -> None:
         """Rescale ``positions`` back to the anchored volume, in place or narrowed into ``out``."""
-        self._scratch.accumulate(positions, self._faces)
+        _signed_volume_into(positions, self._faces, self._current)
         _launch.launch(
             kernel_smoothing.volume_rescale_parameters,
             dim=1,
-            inputs=[self._scratch.volume, self._volume, self._moments, self.state],
+            inputs=[self._current, self._volume, self._moments, self.state],
             device=self._device,
         )
         if out is None:

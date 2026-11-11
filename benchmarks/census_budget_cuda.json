@@ -7584,7 +7584,7 @@
  "benchmarks/test_smoothing.py::test_filter_mut_dif_laplacian[sphere_small-ordito-cuda-vol]": {
   "counts": {
    "launch": 47,
-   "alloc": 7,
+   "alloc": 6,
    "memset": 2,
    "d2h": 1
   }
@@ -7742,7 +7742,7 @@
  "benchmarks/test_smoothing.py::test_inflate[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 34,
-   "alloc": 10,
+   "alloc": 9,
    "memset": 2,
    "scan": 2,
    "sort": 1

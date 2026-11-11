@@ -6901,7 +6901,7 @@
  "benchmarks/test_smoothing.py::test_filter_mut_dif_laplacian[sphere_small-ordito-cpu-vol]": {
   "counts": {
    "launch": 47,
-   "alloc": 7,
+   "alloc": 6,
    "readback": 1
   }
  },
@@ -7043,7 +7043,7 @@
  "benchmarks/test_smoothing.py::test_inflate[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 33,
-   "alloc": 10,
+   "alloc": 9,
    "scan": 1,
    "sort": 1
   }
