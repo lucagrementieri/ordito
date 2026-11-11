@@ -422,10 +422,11 @@ def contains_points(
     """
     Test whether query points lie inside a closed mesh (ray parity sign).
 
-    Uses ``wp.mesh_query_point_sign_parity`` on the mesh BVH, sharing the same
-    parity path as
-    [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]. Points
-    outside the mesh axis-aligned bounding box are rejected without a parity test.
+    Casts the perturbed rays of ``wp.mesh_query_point_sign_parity``'s parity vote on the mesh
+    BVH, the same vote that signs
+    [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh], and stops casting once
+    the majority is decided. Points outside the mesh axis-aligned bounding box are rejected
+    without a parity test.
 
     Ordito mesh queries use **Warp's SDF sign convention** (outside positive,
     inside negative). A point is classified as inside when its signed distance
