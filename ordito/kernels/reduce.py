@@ -2432,6 +2432,25 @@ def minmax_vec3_chunked(points: wp.array[wp.vec3], out_corners: wp.array[wp.floa
 
 
 @wp.kernel
+def minmax_vec3_gathered_chunked(
+    points: wp.array[wp.vec3], indices: wp.array[wp.int32], out_corners: wp.array[wp.float32]
+) -> None:
+    # ``minmax_vec3_chunked`` over ``points[indices[i]]``: the bounding box of the indexed points
+    # (a mesh's referenced vertices, through its face buffer) without the gathered copy, chunk for
+    # chunk the same fold as over that copy. Launch with ``chunks_1d(indices.shape[0])``.
+    offset, count = block_chunk(indices.shape[0], wp.int32(wp.tid()), TILE_1D)
+    if count <= 0:
+        return
+    lower = points[indices[offset]]
+    upper = lower
+    for k in range(1, count):
+        p = points[indices[offset + k]]
+        lower = wp.min(lower, p)
+        upper = wp.max(upper, p)
+    atomic_min_packed_box(out_corners, wp.int32(0), lower, upper)
+
+
+@wp.kernel
 def minmax_vec3_pair_chunked(
     points_a: wp.array[wp.vec3],
     points_b: wp.array[wp.vec3],

@@ -6428,7 +6428,7 @@
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlib[sphere_small-ordito-cuda-2.0]": {
   "counts": {
    "launch": 6,
-   "alloc": 9,
+   "alloc": 8,
    "memset": 4,
    "d2h": 2,
    "sort": 2
@@ -6437,7 +6437,7 @@
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlib[sphere_small-ordito-cuda-6.0]": {
   "counts": {
    "launch": 6,
-   "alloc": 9,
+   "alloc": 8,
    "memset": 4,
    "d2h": 2,
    "sort": 2

@@ -48,6 +48,7 @@ from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
 from ordito.kernels import edges as kernel_edges
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import mollify_intrinsic
@@ -2713,11 +2714,24 @@ def _box_fitted_grid(
     of width zero, its inverse zero, so every vertex sits at that cell's centre along it.
     """
     # Only the vertices on a face span the box: an unreferenced vertex is binned (clamped into a
-    # border cell) but never a candidate.
-    corners = cast("wp.array[wp.vec3]", od.array.gather(vertices, faces))
-    lower, upper = od.bounds.aabb(corners)
+    # border cell) but never a candidate. The box is folded over the face corners in place, not
+    # over a gathered copy of their positions (a ``vec3`` a corner).
+    device = vertices.device
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_gathered_chunked,
+        dim=kernel_reduce.chunks_1d(faces.size),
+        inputs=[vertices, faces, corners],
+        device=device,
+    )
+    # The box sizes the grid; slots 3..5 hold the negated upper corner.
+    lower_and_negated_upper = read_values(corners, 0, 6)
+    lower = wp.vec3(*lower_and_negated_upper[:3])
+    upper = wp.vec3(*(-value for value in lower_and_negated_upper[3:]))
+    # ``vertices`` stands in for the corners: with a box given, only the cloud's emptiness is read,
+    # and neither is empty here.
     voxel_size, _origin = od.voxels.resolve_voxel_grid(
-        corners, voxel_size, bounds=(lower, upper), caller="cluster_decimate"
+        vertices, voxel_size, bounds=(lower, upper), caller="cluster_decimate"
     )
     # Host arithmetic over three axes, in the kernels' own float32.
     low = np.array([float(lower[axis]) for axis in range(3)], dtype=np.float32)
