@@ -489,16 +489,20 @@ def remap_discrete_attribute_from_uv(
 
     device = uv.device
     n_vertices = uv.size
-    out_labels = odt.empty_1d(n_vertices, wp.int32, device=device)
-    if n_vertices > 0:
-        flag = _launch.zeros(1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_texture.sample_class_image,
-            dim=n_vertices,
-            inputs=[uv, class_image, out_labels, flag],
-            device=device,
-        )
-        _raise_on_uv_flag(flag)
+    if n_vertices == 0:
+        return odt.empty_1d(0, wp.int32, device=device)
+    # The labels and, behind them, the range flag: one allocation, the flag's slot zeroed.
+    labels_and_flag = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    out_labels = _launch.view(labels_and_flag, 0, n_vertices)
+    flag = _launch.view(labels_and_flag, n_vertices, n_vertices + 1)
+    _launch.zero_(flag)
+    _launch.launch(
+        kernel_texture.sample_class_image,
+        dim=n_vertices,
+        inputs=[uv, class_image, out_labels, flag],
+        device=device,
+    )
+    _raise_on_uv_flag(flag)
     return out_labels
 
 
