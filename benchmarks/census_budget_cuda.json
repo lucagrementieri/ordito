@@ -7145,7 +7145,7 @@
    "launch": 6,
    "alloc": 7,
    "memset": 3,
-   "d2h": 2,
+   "d2h": 1,
    "scan": 1
   }
  },

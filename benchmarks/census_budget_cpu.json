@@ -6494,8 +6494,8 @@
  "benchmarks/test_repair.py::test_straighten_boundary[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 7,
-   "readback": 2,
+   "alloc": 6,
+   "readback": 1,
    "sort": 1
   }
  },

@@ -70,6 +70,7 @@ from ordito import _launch
 from ordito._common import (
     checked_index_bound,
     index_extrema,
+    raise_twin_defects,
     read_array,
     read_scalar,
     read_values,
@@ -2937,14 +2938,19 @@ def straighten_boundary(
 
     added = 0
     # One emit cursor for the whole loop, allocated zeroed and re-zeroed before each later pass
-    # rather than reallocated: a four-byte buffer per pass is an allocation where a memset does.
-    cursor = _launch.zeros(1, dtype=wp.int32, device=device)
+    # rather than reallocated: a small buffer per pass is an allocation where a memset does. Two
+    # slots behind it take the pass's twin rejections, read back with the cursor rather than in a
+    # synchronization of their own.
+    cursor_and_defects = _launch.zeros(3, dtype=wp.int32, device=device)
+    cursor = _launch.view(cursor_and_defects, 0, 1)
     for iteration in range(iterations):
         if iteration > 0:
-            _launch.zero_(cursor)
+            _launch.zero_(cursor_and_defects)
         n_faces = faces.size // 3
         n_halfedges = 3 * n_faces
-        twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+        twins = od.halfedge.halfedge_twins(
+            faces, n_vertices=n_vertices, defect_counts=_launch.view(cursor_and_defects, 1, 3)
+        )
         # Keyed by halfedge, not by vertex: a bowtie rim vertex carries two rim loops and has no
         # single successor, and edge-manifoldness -- all `halfedge_twins` checks -- does not
         # exclude one. One slot per halfedge gives each loop its own links and one writer each.
@@ -2990,7 +2996,8 @@ def straighten_boundary(
         )
         # One readback per pass, and it is the loop's own stopping test: how many notches the pass
         # actually closed is a device-side fact and a Python loop cannot branch on it otherwise.
-        n_added = int(read_scalar(cursor))
+        n_added, *defects = read_values(cursor_and_defects, 0, 3)
+        raise_twin_defects(defects)
         if n_added == 0:
             break
         # The emitted prefix goes straight behind the current faces in one exact-size buffer: one

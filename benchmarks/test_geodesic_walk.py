@@ -146,6 +146,11 @@ def test_trace_from_face(bench_case: BenchCase) -> None:
     the suite's convention for reference setup (see the module docstring) and it is the honest
     number for a caller who has no tracer in hand -- but read it as "what geometry-central charges
     to be ready", and read the ``trace_rays`` ray-count sweep for the per-ray cost.
+
+    Declined (2026-11-11): taking the twins' validation counts with the walk's total read
+    (``halfedge_twins(defect_counts=)`` in two zeroed slots behind the offsets, one readback a call
+    fewer) measured at par on CUDA, 0.97-1.01x on ``sphere_small``, ``sphere_med`` and ``dragon``:
+    the walks keep the device busy past the twins either way.
     """
     n_rays = 1024
     rng = np.random.default_rng(1)
@@ -198,6 +203,11 @@ def test_descend_field(bench_case: BenchCase, n_paths: int) -> None:
 
     The same targets and path counts as ``geodesic_path`` below, so the two read side by side: the
     gap is the heat solve the walks share.
+
+    Declined (2026-11-11): taking the twins' validation counts with the walk's total read
+    (``halfedge_twins(defect_counts=)`` in two zeroed slots behind the offsets, one readback a call
+    fewer) measured at par on CUDA, 0.97-1.01x on ``sphere_small``, ``sphere_med`` and ``dragon``:
+    the walks keep the device busy past the twins either way.
     """
     device = bench_case.device
     rng = np.random.default_rng(4)

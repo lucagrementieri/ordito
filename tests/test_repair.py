@@ -3833,6 +3833,33 @@ def test_straighten_boundary_closes_both_loops_at_a_bowtie(device: str) -> None:
     assert sum(1 for row in added_rows.tolist() if pinch in row) == 2
 
 
+@pytest.mark.parametrize(
+    ("faces_np", "message"),
+    [
+        pytest.param(
+            np.array([0, 1, 2, 0, 1, 3, 0, 1, 4]), "three or more faces", id="nonmanifold"
+        ),
+        pytest.param(np.array([0, 1, 2, 0, 1, 3]), "consistently wound", id="misoriented"),
+    ],
+)
+def test_straighten_boundary_rejects_what_the_twins_reject(
+    device: str, faces_np: np.ndarray, message: str
+) -> None:
+    """
+    Not a library comparison: the pass's twin rejections, read back with its emit count.
+
+    The twins defer their check to the loop's one readback (``halfedge_twins(defect_counts=)``),
+    so the rejection has to survive the merge: three faces on one edge, and two faces running one
+    edge the same way.
+    """
+    vertices_wp = wp.array(
+        np.random.default_rng(5).normal(size=(5, 3)), dtype=wp.vec3, device=device
+    )
+    faces_wp = wp.array(faces_np.astype(np.int32), dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match=message):
+        od.repair.straighten_boundary(vertices_wp, faces_wp)
+
+
 @pytest.mark.parity("flatten_degree3_vertices", "meshlib")
 def test_flatten_degree3_vertices_moves_an_independent_set(device: str) -> None:
     """
