@@ -693,13 +693,18 @@ def emit_pinch_cycles(
     records: wp.array[wp.vec3i],
     values: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
+    lanes: wp.int32,
     out_flat: wp.array[wp.int32],
 ) -> None:
-    # One thread per sorted cycle: its vertices from the smallest on, at its scanned offset.
-    g = wp.int32(wp.tid())
+    # ``lanes`` threads per sorted cycle (``_launch.walk_lanes``: a warp for a few cycles, one on
+    # the CPU), striding its vertices from the smallest on to its scanned offset. A thread a cycle
+    # copied a long rim alone: 0.08-0.15x this kernel's device time on dragon's and bunny's
+    # deletion rims; a warp a cycle cost 2x on ``holes_pinched``'s 10 k short ones.
+    t = wp.int32(wp.tid())
+    g = t // lanes
     record = records[slots[g]]
     base = offsets[g]
-    for j in range(record[1]):
+    for j in range(t - g * lanes, record[1], lanes):
         out_flat[base + j] = values[record[0] + (record[2] + j) % record[1]]
 
 

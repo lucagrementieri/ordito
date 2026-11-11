@@ -499,10 +499,12 @@ def _split_at_pinches(
     scanned = _launch.view(new_offsets, 1, n_cycles + 1)
     _launch.array_scan(scanned, out_array=scanned, inclusive=True)
     new_flat = _launch.empty(n_values, dtype=wp.int32, device=device)
+    lanes = _launch.walk_lanes(n_cycles, device)
     _launch.launch(
         kernel_boundary.emit_pinch_cycles,
-        dim=n_cycles,
-        inputs=[cycle_slots, records, _launch.view(positions, 0, total), new_offsets, new_flat],
+        dim=n_cycles * lanes,
+        inputs=[cycle_slots, records, _launch.view(positions, 0, total), new_offsets, lanes],
+        outputs=[new_flat],
         device=device,
     )
     return new_flat, new_offsets
