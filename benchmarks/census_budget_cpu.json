@@ -5380,7 +5380,7 @@
  },
  "benchmarks/test_proximity.py::test_winding_number[sphere_small-ordito-cpu-100000]": {
   "counts": {
-   "launch": 11,
+   "launch": 9,
    "alloc": 7,
    "readback": 1,
    "scan": 1,
@@ -5389,7 +5389,7 @@
  },
  "benchmarks/test_proximity.py::test_winding_number[sphere_small-ordito-cpu-10000]": {
   "counts": {
-   "launch": 11,
+   "launch": 9,
    "alloc": 7,
    "readback": 1,
    "scan": 1,

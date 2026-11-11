@@ -39,7 +39,12 @@ from ordito.kernels.reduce import (
     block_chunk,
     block_max,
     block_sum,
+    load_coherent_int,
+    load_coherent_vec3,
+    load_coherent_vec3d,
+    load_coherent_vec4,
     minmax_vec3_chunk,
+    thread_fence,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -1778,44 +1783,13 @@ def winding_face_keys(
     out_order[f] = f
 
 
-@wp.kernel
-def winding_sorted_faces(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    order: wp.array[wp.int32],
-    out_corners: wp.array[wp.vec3],
-    out_rank: wp.array[wp.int32],
-) -> None:
-    # dim == n_faces: the corners of the ``i``-th face in Morton order, three to a face, so a node's
-    # faces are one contiguous run of positions, and each face's position in that order.
-    i = wp.int32(wp.tid())
-    f = order[i]
-    a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
-    out_corners[3 * i] = a
-    out_corners[3 * i + 1] = b
-    out_corners[3 * i + 2] = c
-    out_rank[f] = i
-
-
-@wp.kernel
-def winding_leaves(
-    corners: wp.array[wp.vec3],
-    leaf_faces: wp.int32,
-    n_leaves: wp.int32,
-    out_lower: wp.array[wp.vec3],
-    out_upper: wp.array[wp.vec3],
-    out_slab_lower: wp.array[wp.vec4],
-    out_slab_upper: wp.array[wp.vec4],
-    out_corner_sum: wp.array[wp.vec3d],
-    out_count: wp.array[wp.int32],
-    out_first: wp.array[wp.int32],
-) -> None:
-    # dim == n_leaves: leaf ``j`` (node ``n_leaves + j``) over its sorted faces. A padding leaf past
-    # the last face gets count 0 and an empty region; the walk never enters one.
-    j = wp.int32(wp.tid())
-    n_faces = corners.shape[0] // 3
-    start = wp.min(j * leaf_faces, n_faces)
-    end = wp.min(start + leaf_faces, n_faces)
+@wp.func
+def winding_leaf(
+    corners: wp.array[wp.vec3], start: wp.int32, end: wp.int32
+) -> tuple[wp.vec3, wp.vec3, wp.vec4, wp.vec4, wp.vec3d]:
+    # The box, the 14-DOP's diagonal slabs and the ``float64`` corner sum of the sorted faces
+    # ``start`` to ``end``, corner by corner in that order. A padding leaf past the last face gets
+    # an empty region.
     lower = wp.vec3(FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT)
     upper = -lower
     slab_lower = wp.vec4(
@@ -1831,44 +1805,18 @@ def winding_leaves(
         slab_lower = wp.min(slab_lower, d)
         slab_upper = wp.max(slab_upper, d)
         corner_sum = corner_sum + to_vec3d(p)
-    k = n_leaves + j
-    out_lower[k] = lower
-    out_upper[k] = upper
-    out_slab_lower[k] = slab_lower
-    out_slab_upper[k] = slab_upper
-    out_corner_sum[k] = corner_sum
-    out_count[k] = end - start
-    out_first[k] = start
-
-
-@wp.func
-def merge_winding_node(
-    k: wp.int32,
-    out_lower: wp.array[wp.vec3],
-    out_upper: wp.array[wp.vec3],
-    out_slab_lower: wp.array[wp.vec4],
-    out_slab_upper: wp.array[wp.vec4],
-    out_corner_sum: wp.array[wp.vec3d],
-    out_count: wp.array[wp.int32],
-    out_first: wp.array[wp.int32],
-) -> None:
-    # Node ``k`` from its two children ``2k`` and ``2k + 1``, already written into the same
-    # arrays. The one merge both ``winding_merge_level`` (a level a launch) and
-    # ``winding_merge_top_levels`` (the narrow top levels in one block) run.
-    left = 2 * k
-    right = left + 1
-    out_lower[k] = wp.min(out_lower[left], out_lower[right])
-    out_upper[k] = wp.max(out_upper[left], out_upper[right])
-    out_slab_lower[k] = wp.min(out_slab_lower[left], out_slab_lower[right])
-    out_slab_upper[k] = wp.max(out_slab_upper[left], out_slab_upper[right])
-    out_corner_sum[k] = out_corner_sum[left] + out_corner_sum[right]
-    out_count[k] = out_count[left] + out_count[right]
-    out_first[k] = out_first[left]
+    return lower, upper, slab_lower, slab_upper, corner_sum
 
 
 @wp.kernel
-def winding_merge_level(
-    level_start: wp.int32,
+def winding_tree_nodes(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    leaf_faces: wp.int32,
+    n_leaves: wp.int32,
+    out_corners: wp.array[wp.vec3],
+    out_rank: wp.array[wp.int32],
     out_lower: wp.array[wp.vec3],
     out_upper: wp.array[wp.vec3],
     out_slab_lower: wp.array[wp.vec4],
@@ -1876,59 +1824,79 @@ def winding_merge_level(
     out_corner_sum: wp.array[wp.vec3d],
     out_count: wp.array[wp.int32],
     out_first: wp.array[wp.int32],
+    tickets: wp.array[wp.int32],
 ) -> None:
-    # dim == level width: node ``level_start + tid`` from its two children, which the previous
-    # launch (one level deeper) wrote into the same arrays.
-    k = level_start + wp.int32(wp.tid())
-    merge_winding_node(
-        k,
-        out_lower,
-        out_upper,
-        out_slab_lower,
-        out_slab_upper,
-        out_corner_sum,
-        out_count,
-        out_first,
-    )
-
-
-# Lanes of the one block ``winding_merge_top_levels`` runs; every level at most this wide is
-# merged inside it, so the per-level launches stop where a level no longer fills the block.
-WINDING_TOP_LEVELS_BLOCK_DIM = 256
-
-
-@wp.kernel
-def winding_merge_top_levels(
-    top_level: wp.int32,
-    out_lower: wp.array[wp.vec3],
-    out_upper: wp.array[wp.vec3],
-    out_slab_lower: wp.array[wp.vec4],
-    out_slab_upper: wp.array[wp.vec4],
-    out_corner_sum: wp.array[wp.vec3d],
-    out_count: wp.array[wp.int32],
-    out_first: wp.array[wp.int32],
-) -> None:
-    # ``winding_merge_level`` for every level from ``top_level`` up to the root, in one block of a
-    # ``launch_tiled`` of width one: the lanes stride each level by ``wp.block_dim()`` and a block
-    # barrier separates the levels, so a level reads children the previous one wrote. On the CPU
-    # device the one lane walks every level in order. The merge is order-free (min, max, an exact
-    # integer count and a two-term ``float64`` sum per node), so the nodes are the same bits as
-    # the level-a-launch schedule's.
-    _block, lane = wp.tid()
-    for step in range(top_level + 1):
-        width = wp.int32(1) << (top_level - step)
-        for t in range(lane, width, wp.block_dim()):
-            merge_winding_node(
-                width + t,
-                out_lower,
-                out_upper,
-                out_slab_lower,
-                out_slab_upper,
-                out_corner_sum,
-                out_count,
-                out_first,
-            )
-        block_barrier()
+    # The whole tree over the Hilbert-sorted faces in one ``launch_tiled`` of a block a leaf
+    # (dim == n_leaves). The lanes write the leaf's faces' corners in sorted order, three to a
+    # face, so a node's faces are one contiguous run of positions, and each face's position in that
+    # order; after a block barrier lane 0 forms leaf ``j`` (node ``n_leaves + j``) from those
+    # corners and climbs: past each node it takes a ticket on the parent, and the second of the two
+    # children to arrive merges the parent from its own node and its sibling's (read from L2, past
+    # this SM's L1) and climbs on. ``tickets`` arrives zeroed and leaves zeroed (the second arrival
+    # clears the slot), so the caller lends it the fill cursors ``fill_cap_edges`` zeroes on.
+    #
+    # The merge is order-free -- min, max, an exact integer count and a two-term ``float64`` sum
+    # per node, each taken left child first -- so the nodes are the bits a launch a level gave,
+    # which this replaced along with a gather launch and a leaf launch: a level a launch was ten of
+    # dragon's nineteen launches and a leaf a thread re-read every corner the gather had written
+    # (lucy: 1.9 ms of a 4.3 ms build of the nodes).
+    leaf, lane = wp.tid()
+    n_faces = out_rank.shape[0]
+    start = wp.min(leaf * leaf_faces, n_faces)
+    end = wp.min(start + leaf_faces, n_faces)
+    for i in range(start + lane, end, wp.block_dim()):
+        f = order[i]
+        a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
+        out_corners[3 * i] = a
+        out_corners[3 * i + 1] = b
+        out_corners[3 * i + 2] = c
+        out_rank[f] = i
+    block_barrier()
+    if lane != 0:
+        return
+    lower, upper, slab_lower, slab_upper, corner_sum = winding_leaf(out_corners, start, end)
+    count = end - start
+    first = start
+    k = n_leaves + leaf
+    while True:
+        out_lower[k] = lower
+        out_upper[k] = upper
+        out_slab_lower[k] = slab_lower
+        out_slab_upper[k] = slab_upper
+        out_corner_sum[k] = corner_sum
+        out_count[k] = count
+        out_first[k] = first
+        if k == 1:
+            return
+        parent = k >> 1
+        thread_fence()
+        if wp.atomic_add(tickets, parent, 1) == 0:
+            return
+        thread_fence()
+        tickets[parent] = 0
+        sibling = k ^ 1
+        sibling_lower = load_coherent_vec3(out_lower, sibling)
+        sibling_upper = load_coherent_vec3(out_upper, sibling)
+        sibling_slab_lower = load_coherent_vec4(out_slab_lower, sibling)
+        sibling_slab_upper = load_coherent_vec4(out_slab_upper, sibling)
+        sibling_corner_sum = load_coherent_vec3d(out_corner_sum, sibling)
+        sibling_count = load_coherent_int(out_count, sibling)
+        if (k & 1) == 0:
+            lower = wp.min(lower, sibling_lower)
+            upper = wp.max(upper, sibling_upper)
+            slab_lower = wp.min(slab_lower, sibling_slab_lower)
+            slab_upper = wp.max(slab_upper, sibling_slab_upper)
+            corner_sum = corner_sum + sibling_corner_sum
+            count = count + sibling_count
+        else:
+            lower = wp.min(sibling_lower, lower)
+            upper = wp.max(sibling_upper, upper)
+            slab_lower = wp.min(sibling_slab_lower, slab_lower)
+            slab_upper = wp.max(sibling_slab_upper, slab_upper)
+            corner_sum = sibling_corner_sum + corner_sum
+            count = sibling_count + count
+            first = load_coherent_int(out_first, sibling)
+        k = parent
 
 
 @wp.func

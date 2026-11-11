@@ -830,6 +830,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # the extraction wins and the parameter goes on being scratch, unenforced. Do not re-add the
     # entry -- if the write ever comes back into a kernel body, add it again then.
     ("proximity", "face_to_mesh_distance"): frozenset({"counter", "overflow"}),
+    # The winding tree's merge tickets: each parent's arrival count, cleared by its second arrival,
+    # so the zeroed cursors ``fill_cap_edges`` takes next can be lent for them.
+    ("proximity", "winding_tree_nodes"): frozenset({"tickets"}),
     ("grouping", "hash_insert"): frozenset({"slot_counts"}),
     # ``ecl_compress`` lowers each node of the union-find forest to its root in place, between the
     # pre-hook and the hook: ``parents`` is the forest itself, read and written by every launch on

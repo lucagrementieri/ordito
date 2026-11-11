@@ -1432,36 +1432,24 @@ def _winding_number_tree(
         device=device,
     )
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=30)
-    _launch.launch(
-        kernel_proximity.winding_sorted_faces,
-        dim=n_faces,
-        inputs=[vertices, faces, order, corners, rank],
-        device=device,
-    )
-
     nodes = [lower, upper, slab_lower, slab_upper, corner_sum, count, first]
-    _launch.launch(
-        kernel_proximity.winding_leaves,
-        dim=n_leaves,
-        inputs=[corners, wp.int32(leaf_faces), wp.int32(n_leaves), *nodes],
-        device=device,
-    )
-    # The wide levels a launch each; every level that fits one block (the top
-    # ``log2(WINDING_TOP_LEVELS_BLOCK_DIM) + 1``) in a single block with a barrier between levels.
-    top_block = kernel_proximity.WINDING_TOP_LEVELS_BLOCK_DIM
-    top_level = min(depth - 1, top_block.bit_length() - 1)
-    for level in range(depth - 1, top_level, -1):
-        _launch.launch(
-            kernel_proximity.winding_merge_level,
-            dim=1 << level,
-            inputs=[wp.int32(1 << level), *nodes],
-            device=device,
-        )
+    # The sorted corners, the ranks and every node in one launch, a block a leaf with a lane a
+    # face; ``fill`` lends its zeroed slots as the merge tickets and gets them back zeroed.
     _launch.launch_tiled(
-        kernel_proximity.winding_merge_top_levels,
-        dim=[1],
-        inputs=[top_level, *nodes],
-        block_dim=top_block,
+        kernel_proximity.winding_tree_nodes,
+        dim=[n_leaves],
+        inputs=[
+            vertices,
+            faces,
+            order,
+            wp.int32(leaf_faces),
+            wp.int32(n_leaves),
+            corners,
+            rank,
+            *nodes,
+            fill,
+        ],
+        block_dim=leaf_faces,
         device=device,
     )
 

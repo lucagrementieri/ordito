@@ -1063,6 +1063,42 @@ def load_coherent_int_2d(values: wp.array2d[wp.int32], i: wp.int32, j: wp.int32)
 def load_volatile_int(values: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
 
 
+def _load_coherent_1d(value_type: str, length: int) -> str:
+    # ``load_coherent_*_2d``'s read of one element of a rank-1 array: an ``int`` / ``float`` scalar
+    # (``length`` 0) or a vector of ``length`` components of ``value_type``, each read from L2.
+    cuda = "return __ldcg(p);"
+    if length > 0:
+        cuda = (
+            f"wp::vec_t<{length}, {value_type}> result;\n"
+            f"for (int c = 0; c < {length}; ++c) result.c[c] = __ldcg(&p->c[c]);\n"
+            "return result;"
+        )
+    return f"""
+const auto* p = wp::data_at_byte_offset(values, wp::byte_offset(values, index));
+#if defined(__CUDA_ARCH__)
+{cuda}
+#else
+return *p;
+#endif
+"""
+
+
+@wp.func_native(_load_coherent_1d("int", 0))
+def load_coherent_int(values: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_load_coherent_1d("float", 3))
+def load_coherent_vec3(values: wp.array[wp.vec3], index: wp.int32) -> wp.vec3: ...
+
+
+@wp.func_native(_load_coherent_1d("float", 4))
+def load_coherent_vec4(values: wp.array[wp.vec4], index: wp.int32) -> wp.vec4: ...
+
+
+@wp.func_native(_load_coherent_1d("double", 3))
+def load_coherent_vec3d(values: wp.array[wp.vec3d], index: wp.int32) -> wp.vec3d: ...
+
+
 @wp.func
 def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
     # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the
