@@ -275,7 +275,7 @@ def halfedge_tangent_angles(
 
 # Lanes of a ``park_corner_angles`` block: a thread a face of ``float64`` arithmetic, so a small
 # mesh's faces spread over more SMs' ``float64`` units (2026-11-11, device time against 256:
-# ``sphere_small`` 0.47x, 11.1 -> 5.2 us; ``sphere_med`` 1.00x; dragon 0.97x; 32 the same as 64).
+# ``sphere_small`` 0.47x, ``sphere_med`` 1.00x, dragon 0.97x; 32 the same as 64).
 # Its own width, so the kernel is in a module of its own (``module="unique"``).
 PARK_LANES = 64
 
@@ -291,8 +291,9 @@ def park_corner_angles(
     # ``halfedge_tangent_angles_parked``. Formed in the ring walk instead, each halfedge formed its
     # face's three (the degeneracy guard reads all three) to keep one, three times the ``float64``
     # arithmetic on the lanes of 256-vertex blocks, few enough SMs that a small mesh's walk was
-    # bound by their ``float64`` issue (``sphere_small`` and ``sphere_med`` alike ~60 us, dragon
-    # 0.88 ms; a hub's on one SM). A thread a face.
+    # bound by their ``float64`` issue (``sphere_med``, 16 times ``sphere_small``'s vertices, took
+    # the same time; a hub's on one SM). A thread a face: the call 0.43x on dragon, 0.65-0.80x on
+    # the small spheres.
     f = wp.int32(wp.tid())
     a0, a1, a2 = face_corner_angles_d(vertices, faces, f)
     out_angles[3 * f] = a0
@@ -527,6 +528,13 @@ def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
     # meshes 1.11-1.23x, wherever the block's decision was taken (a reduction after or before the
     # walks, a barrier-free warp vote) and under a 56-register cap; packing its sums into vectors
     # cost 1.2-1.7x.
+    #
+    # Declined 2026-11-11 (``float32`` work, unlike ``park_corner_angles``' ``float64``): a face
+    # pass parking each face's normal and corner angles for the walk to read
+    # (``triangles.face_normals_and_corner_angles``, byte-identical frames) took this kernel and
+    # the pass together to 0.87x on dragon and 0.82x on happy_buddha (4-7 % of a call), but cost
+    # ``sphere_small`` / ``sphere_med`` about 1.1x their calls (a launch, before two allocations).
+    # Narrower blocks: 64 lanes 0.86x on ``sphere_small``'s kernel, 1.05x on dragon's.
     def _kernel(
         vertices: wp.array[wp.vec3],
         faces: wp.array[wp.int32],
