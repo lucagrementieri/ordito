@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.array import LOOP_CONDITION, append_slot, scanned_count
+from ordito.kernels.array import LOOP_CONDITION, append_slot, device_is_cpu, scanned_count
 from ordito.kernels.reduce import (
     fold_block_totals,
     last_ticket_vector,
@@ -213,6 +213,37 @@ def _poisson_edge_weight(
     return wp.pow(wp.float32(1.0) - d_eff / r_max, alpha)
 
 
+@wp.func
+def neighbour_chunk(nbr_indices: wp.array[wp.int32], k: wp.int32, end: wp.int32) -> wp.vec4i:
+    # Entries ``k`` to ``k + 3`` of a neighbour row ending at ``end``, every address clamped to the
+    # row's last entry, so the four loads (and the four the caller issues through them) are in
+    # flight together; the caller masks the slots past ``end``. Every pass of the elimination walks
+    # a row of ~19 neighbours in one thread, a chain of dependent loads that set its CUDA device
+    # time (``find_local_maxima`` 18 us a round on a 10 k pool, an entry at a time); taken four at
+    # a time the walks ran 0.29-0.94x (maxima) and 0.50-0.73x (deletions) from 10 k to 1 M pool
+    # points, and eight at a time no faster. The CPU's deletions took 0.83x too. Each sum still
+    # adds in row order.
+    last = end - 1
+    return wp.vec4i(
+        nbr_indices[wp.min(k, last)],
+        nbr_indices[wp.min(k + 1, last)],
+        nbr_indices[wp.min(k + 2, last)],
+        nbr_indices[wp.min(k + 3, last)],
+    )
+
+
+@wp.func
+def neighbour_chunk_dists(nbr_dists: wp.array[wp.float32], k: wp.int32, end: wp.int32) -> wp.vec4:
+    # The distances of the four entries ``neighbour_chunk`` names, at the same clamped addresses.
+    last = end - 1
+    return wp.vec4(
+        nbr_dists[wp.min(k, last)],
+        nbr_dists[wp.min(k + 1, last)],
+        nbr_dists[wp.min(k + 2, last)],
+        nbr_dists[wp.min(k + 3, last)],
+    )
+
+
 @wp.kernel
 def compute_poisson_weights(
     nbr_indices: wp.array[wp.int32],
@@ -231,11 +262,14 @@ def compute_poisson_weights(
     start = offsets[i]
     end = offsets[i + 1]
     w = wp.float32(0.0)
-    for k in range(start, end):
-        j = nbr_indices[k]
-        if j == i or alive[j] == 0:
-            continue
-        w += _poisson_edge_weight(nbr_dists[k], r_max, r_min, alpha)
+    for k in range(start, end, 4):
+        js = neighbour_chunk(nbr_indices, k, end)
+        dists = neighbour_chunk_dists(nbr_dists, k, end)
+        alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
+        for s in range(4):
+            j = js[s]
+            if k + s < end and j != i and alive_j[s] != 0:
+                w += _poisson_edge_weight(dists[s], r_max, r_min, alpha)
     out_weights[i] = w
 
 
@@ -276,6 +310,23 @@ def alive_negated_weight_keys(
     out_order[i] = i
 
 
+@wp.func
+def outweighs(weight_j: wp.float32, j: wp.int32, wi: wp.float32, i: wp.int32) -> wp.int32:
+    # 1 when neighbour ``j`` of weight ``weight_j`` (clamped at 0) is heavier than point ``i`` of
+    # clamped weight ``wi`` on ``(weight, -index)``, so a tie is broken by the smaller index. The
+    # tie-break is what makes the flagged set an *independent* set in the neighbour graph -- two
+    # flagged points can never be neighbours -- which is the property the round-based elimination
+    # assumes when it deletes every flagged point at once. A strict ``>`` alone does not give it,
+    # and the ties are systematic rather than rare: ``_poisson_edge_weight`` clamps any distance
+    # below ``r_min`` up to it, so every neighbour inside ``r_min`` contributes the identical term
+    # and a point's weight is exactly its close-neighbour count times one constant. A clique of
+    # equally crowded points was therefore flagged entire and deleted in a single round, taking a
+    # whole dense cluster out at once. It costs at most one extra round -- 26 against 26 and 27 on
+    # an icosphere(4) at 200 and 2 000 samples -- because only a tie is decided differently.
+    wj = wp.max(weight_j, wp.float32(0.0))
+    return wp.where(wj > wi or (wj == wi and j < i), wp.int32(1), wp.int32(0))
+
+
 @wp.kernel
 def find_local_maxima(
     weights: wp.array[wp.float32],
@@ -309,31 +360,39 @@ def find_local_maxima(
     wi = wp.max(weights[i], wp.float32(0.0))
     start = offsets[i]
     end = offsets[i + 1]
-    # Starts at 0, not 1, and only rises once an alive neighbour has been seen: a point with no
+    # ``seen`` starts at 0 and only rises once an alive neighbour has been seen: a point with no
     # alive neighbour inside ``r_max`` carries weight 0, the least crowded state there is, so it is
     # the *last* point elimination should reach -- not a vacuous maximum. Flagging it deleted the
     # sole survivor of every isolated patch, wiping small far components off the result entirely.
-    is_max = wp.int32(0)
-    for k in range(start, end):
-        j = nbr_indices[k]
-        if j == i or alive[j] == 0:
-            continue
-        wj = wp.max(weights[j], wp.float32(0.0))
-        # Ordered on ``(weight, -index)``, so a tie is broken by the smaller index. The tie-break
-        # is what makes the flagged set an *independent* set in the neighbour graph -- two flagged
-        # points can never be neighbours -- which is the property the round-based elimination
-        # assumes when it deletes every flagged point at once. A strict ``>`` alone does not give
-        # it, and the ties are systematic rather than rare: ``_poisson_edge_weight`` clamps any
-        # distance below ``r_min`` up to it, so every neighbour inside ``r_min`` contributes the
-        # identical term and a point's weight is exactly its close-neighbour count times one
-        # constant. A clique of equally crowded points was therefore flagged entire and deleted in
-        # a single round, taking a whole dense cluster out at once. It costs at most one extra
-        # round -- 26 against 26 and 27 on an icosphere(4) at 200 and 2 000 samples -- because
-        # only a tie is decided differently.
-        if wj > wi or (wj == wi and j < i):
-            is_max = 0
-            break
-        is_max = 1
+    #
+    # On CUDA the row is walked a ``neighbour_chunk`` at a time, so the decision cannot depend on
+    # the order within one: ``seen`` rises at any alive neighbour and ``beaten`` at any heavier
+    # one, and the walk stops after the chunk that beats it. The CPU device walks an entry at a
+    # time: it has no load latency to hide, and a chunk's later entries cost it 1.18x the kernel
+    # (a 100 k pool) where the first already beats the point.
+    seen = wp.int32(0)
+    beaten = wp.int32(0)
+    if device_is_cpu() != 0:
+        for k in range(start, end):
+            j = nbr_indices[k]
+            if j != i and alive[j] != 0:
+                seen = 1
+                if outweighs(weights[j], j, wi, i) != 0:
+                    beaten = 1
+                    break
+    else:
+        for k in range(start, end, 4):
+            js = neighbour_chunk(nbr_indices, k, end)
+            weights_j = wp.vec4(weights[js[0]], weights[js[1]], weights[js[2]], weights[js[3]])
+            alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
+            for s in range(4):
+                j = js[s]
+                if k + s < end and j != i and alive_j[s] != 0:
+                    seen = 1
+                    beaten = wp.max(beaten, outweighs(weights_j[s], j, wi, i))
+            if beaten != 0:
+                break
+    is_max = wp.where(seen != 0 and beaten == 0, wp.int32(1), wp.int32(0))
     out_is_max[i] = is_max
     if is_max != 0:
         append_slot(state, POISSON_MAXIMA)
@@ -426,12 +485,17 @@ def apply_deletions(
     alive[i] = 0
     start = offsets[i]
     end = offsets[i + 1]
-    for k in range(start, end):
-        j = nbr_indices[k]
-        if j == i or alive[j] == 0 or deleted_mask[j] != 0:
-            continue
-        contribution = _poisson_edge_weight(nbr_dists[k], r_max, r_min, alpha)
-        wp.atomic_add(weights, j, -contribution)
+    for k in range(start, end, 4):
+        js = neighbour_chunk(nbr_indices, k, end)
+        dists = neighbour_chunk_dists(nbr_dists, k, end)
+        alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
+        deleted_j = wp.vec4i(
+            deleted_mask[js[0]], deleted_mask[js[1]], deleted_mask[js[2]], deleted_mask[js[3]]
+        )
+        for s in range(4):
+            j = js[s]
+            if k + s < end and j != i and alive_j[s] != 0 and deleted_j[s] == 0:
+                wp.atomic_add(weights, j, -_poisson_edge_weight(dists[s], r_max, r_min, alpha))
 
 
 @wp.kernel
@@ -472,11 +536,16 @@ def gather_deletions(
     if alive[i] == 0:
         return
     w = weights[i]
-    for k in range(offsets[i], offsets[i + 1]):
-        j = nbr_indices[k]
-        if j == i or deleted_mask[j] == 0:
-            continue
-        w -= _poisson_edge_weight(nbr_dists[k], r_max, r_min, alpha)
+    end = offsets[i + 1]
+    for k in range(offsets[i], end, 4):
+        js = neighbour_chunk(nbr_indices, k, end)
+        dists = neighbour_chunk_dists(nbr_dists, k, end)
+        deleted_j = wp.vec4i(
+            deleted_mask[js[0]], deleted_mask[js[1]], deleted_mask[js[2]], deleted_mask[js[3]]
+        )
+        for s in range(4):
+            if k + s < end and js[s] != i and deleted_j[s] != 0:
+                w -= _poisson_edge_weight(dists[s], r_max, r_min, alpha)
     weights[i] = w
 
 
