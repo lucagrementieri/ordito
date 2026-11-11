@@ -287,11 +287,12 @@ def faces_left_of_contour(
     # hook, and a flatten that also flags each seeded root.
     n_halfedges = 3 * n_faces
     seeds = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    # Each face's open halfedges ride in ``labels`` until the flatten writes it.
     _launch.launch(
         kernel_selection.seed_and_prehook_dual,
         dim=n_faces,
         inputs=[faces, twins, contour_keys, base],
-        outputs=[parents, seeds],
+        outputs=[parents, seeds, labels],
         device=device,
     )
     if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
@@ -299,10 +300,7 @@ def faces_left_of_contour(
             kernel_connected_components.ecl_compress, dim=n_faces, inputs=[parents], device=device
         )
     _launch.launch(
-        kernel_selection.hook_dual,
-        dim=n_halfedges,
-        inputs=[faces, twins, contour_keys, base, parents],
-        device=device,
+        kernel_selection.hook_dual, dim=n_halfedges, inputs=[twins, labels, parents], device=device
     )
     # The root flags overwrite ``seeds``: only a seeded component's root is ever written, and to
     # ``True``, so a thread reading a written entry is that root reading its own component's

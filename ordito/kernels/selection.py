@@ -927,9 +927,12 @@ def seed_and_prehook_dual(
     base: wp.uint64,
     out_parents: wp.array[wp.int32],
     out_seeds: wp.array[wp.bool],
+    out_open_halfedges: wp.array[wp.int32],
 ) -> None:
     # The flood fill's first pass, one thread per face: seed the face when one of its halfedges runs
-    # along the contour, and pre-hook it to the smallest face across its open dual edges. The
+    # along the contour, pre-hook it to the smallest face across its open dual edges, and store
+    # bit ``k`` of ``out_open_halfedges[f]`` for each halfedge ``3 f + k`` opening one, so
+    # ``hook_dual`` hooks the same edges without searching the contour again. The
     # union-find is per edge and order-free, so the dual edges are formed in the thread and never
     # listed -- no cursor, no buffer, no readback to trim one. Both outputs are written at the
     # face's own index, so neither needs an initial value: the parent is the ``atomic_min`` of
@@ -941,6 +944,7 @@ def seed_and_prehook_dual(
     f = wp.int32(wp.tid())
     parent = f
     seeded = wp.bool(False)
+    open_halfedges = wp.int32(0)
     for k in range(3):
         h = wp.int32(3) * f + k
         along_contour, twin = open_dual_twin(faces, twins, contour_keys_sorted, base, h)
@@ -948,6 +952,7 @@ def seed_and_prehook_dual(
             seeded = True
         if twin >= 0:
             parent = wp.min(parent, twin // 3)
+            open_halfedges = open_halfedges | (wp.int32(1) << k)
         lower = twins[h]
         if lower >= 0 and lower < h:
             _along, back = open_dual_twin(faces, twins, contour_keys_sorted, base, lower)
@@ -955,21 +960,20 @@ def seed_and_prehook_dual(
                 parent = wp.min(parent, lower // 3)
     out_parents[f] = parent
     out_seeds[f] = seeded
+    out_open_halfedges[f] = open_halfedges
 
 
 @wp.kernel
 def hook_dual(
-    faces: wp.array[wp.int32],
-    twins: wp.array[wp.int32],
-    contour_keys_sorted: wp.array[wp.uint64],
-    base: wp.uint64,
-    parents: wp.array[wp.int32],
+    twins: wp.array[wp.int32], open_halfedges: wp.array[wp.int32], parents: wp.array[wp.int32]
 ) -> None:
-    # The hook over the same open dual edges, after ``seed_and_prehook_dual`` has finished.
+    # The hook over the same open dual edges, after ``seed_and_prehook_dual`` has finished, read
+    # off its bits. Forming them again here (one or two contour searches a halfedge) was 101 us of
+    # dragon's call.
     h = wp.int32(wp.tid())
-    _along_contour, twin = open_dual_twin(faces, twins, contour_keys_sorted, base, h)
-    if twin >= 0:
-        ecl_hook_pair(parents, h // 3, twin // 3)
+    f = h // 3
+    if (open_halfedges[f] >> (h - wp.int32(3) * f)) & wp.int32(1) != 0:
+        ecl_hook_pair(parents, f, twins[h] // 3)
 
 
 @wp.kernel
