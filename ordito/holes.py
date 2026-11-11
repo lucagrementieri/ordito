@@ -2048,7 +2048,9 @@ def _cone_packed_loops(
     _launch.copy(new_faces, faces, count=faces.size)
     centroids = odt.as_dense(new_vertices[n_vertices:])
     # A long loop's centroid is summed a block a loop on CUDA; the CPU runs the threads in turn.
-    blocked = device.is_cuda and packed.max_size > kernel_holes.CONE_THREAD_CENTROID_MAX
+    blocked = (
+        wp.get_device(device).is_cuda and packed.max_size > kernel_holes.CONE_THREAD_CENTROID_MAX
+    )
     if blocked:
         _launch.launch_tiled(
             kernel_holes.cone_centroids,
