@@ -35,7 +35,6 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import (
     block_argmin,
-    block_barrier,
     block_chunk,
     block_max,
     block_sum,
@@ -1809,14 +1808,29 @@ def winding_leaf(
 
 
 @wp.kernel
-def winding_tree_nodes(
+def winding_sorted_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     order: wp.array[wp.int32],
-    leaf_faces: wp.int32,
-    n_leaves: wp.int32,
     out_corners: wp.array[wp.vec3],
     out_rank: wp.array[wp.int32],
+) -> None:
+    # dim == n_faces: the corners of the ``i``-th face in Hilbert order, three to a face, so a
+    # node's faces are one contiguous run of positions, and each face's position in that order.
+    i = wp.int32(wp.tid())
+    f = order[i]
+    a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
+    out_corners[3 * i] = a
+    out_corners[3 * i + 1] = b
+    out_corners[3 * i + 2] = c
+    out_rank[f] = i
+
+
+@wp.kernel
+def winding_tree_nodes(
+    corners: wp.array[wp.vec3],
+    leaf_faces: wp.int32,
+    n_leaves: wp.int32,
     out_lower: wp.array[wp.vec3],
     out_upper: wp.array[wp.vec3],
     out_slab_lower: wp.array[wp.vec4],
@@ -1826,38 +1840,27 @@ def winding_tree_nodes(
     out_first: wp.array[wp.int32],
     tickets: wp.array[wp.int32],
 ) -> None:
-    # The whole tree over the Hilbert-sorted faces in one ``launch_tiled`` of a block a leaf
-    # (dim == n_leaves). The lanes write the leaf's faces' corners in sorted order, three to a
-    # face, so a node's faces are one contiguous run of positions, and each face's position in that
-    # order; after a block barrier lane 0 forms leaf ``j`` (node ``n_leaves + j``) from those
-    # corners and climbs: past each node it takes a ticket on the parent, and the second of the two
+    # dim == n_leaves: leaf ``j`` (node ``n_leaves + j``) over its sorted faces, then every node
+    # above it. Past each node the thread takes a ticket on the parent, and the second of the two
     # children to arrive merges the parent from its own node and its sibling's (read from L2, past
-    # this SM's L1) and climbs on. ``tickets`` arrives zeroed and leaves zeroed (the second arrival
-    # clears the slot), so the caller lends it the fill cursors ``fill_cap_edges`` zeroes on.
+    # this SM's L1) and climbs on; the first stops. ``tickets`` arrives zeroed and leaves zeroed
+    # (the second arrival clears the slot), so the caller lends it the cursors ``fill_cap_edges``
+    # needs zeroed.
     #
     # The merge is order-free -- min, max, an exact integer count and a two-term ``float64`` sum
-    # per node, each taken left child first -- so the nodes are the bits a launch a level gave,
-    # which this replaced along with a gather launch and a leaf launch: a level a launch was ten of
-    # dragon's nineteen launches and a leaf a thread re-read every corner the gather had written
-    # (lucy: 1.9 ms of a 4.3 ms build of the nodes).
-    leaf, lane = wp.tid()
-    n_faces = out_rank.shape[0]
-    start = wp.min(leaf * leaf_faces, n_faces)
+    # per node, each taken left child first -- so the nodes are the bits a launch a level gave;
+    # those launches were ten of dragon's nineteen. A thread a leaf, not a block: a block a leaf
+    # with lane 0 forming it from corners its lanes had just gathered ran lucy's 875 k leaves
+    # 5.3x slower than the gather and leaf launches it fused (22.9 against 4.3 ms), its few
+    # resident blocks walking few leaves at once.
+    j = wp.int32(wp.tid())
+    n_faces = corners.shape[0] // 3
+    start = wp.min(j * leaf_faces, n_faces)
     end = wp.min(start + leaf_faces, n_faces)
-    for i in range(start + lane, end, wp.block_dim()):
-        f = order[i]
-        a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
-        out_corners[3 * i] = a
-        out_corners[3 * i + 1] = b
-        out_corners[3 * i + 2] = c
-        out_rank[f] = i
-    block_barrier()
-    if lane != 0:
-        return
-    lower, upper, slab_lower, slab_upper, corner_sum = winding_leaf(out_corners, start, end)
+    lower, upper, slab_lower, slab_upper, corner_sum = winding_leaf(corners, start, end)
     count = end - start
     first = start
-    k = n_leaves + leaf
+    k = n_leaves + j
     while True:
         out_lower[k] = lower
         out_upper[k] = upper

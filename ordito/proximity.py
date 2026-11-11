@@ -1432,24 +1432,19 @@ def _winding_number_tree(
         device=device,
     )
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=30)
+    _launch.launch(
+        kernel_proximity.winding_sorted_faces,
+        dim=n_faces,
+        inputs=[vertices, faces, order, corners, rank],
+        device=device,
+    )
+    # Every node in one launch, a thread a leaf climbing by tickets; ``fill`` lends its zeroed
+    # slots as the tickets and gets them back zeroed.
     nodes = [lower, upper, slab_lower, slab_upper, corner_sum, count, first]
-    # The sorted corners, the ranks and every node in one launch, a block a leaf with a lane a
-    # face; ``fill`` lends its zeroed slots as the merge tickets and gets them back zeroed.
-    _launch.launch_tiled(
+    _launch.launch(
         kernel_proximity.winding_tree_nodes,
-        dim=[n_leaves],
-        inputs=[
-            vertices,
-            faces,
-            order,
-            wp.int32(leaf_faces),
-            wp.int32(n_leaves),
-            corners,
-            rank,
-            *nodes,
-            fill,
-        ],
-        block_dim=leaf_faces,
+        dim=n_leaves,
+        inputs=[corners, wp.int32(leaf_faces), wp.int32(n_leaves), *nodes, fill],
         device=device,
     )
 
