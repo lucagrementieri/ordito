@@ -1134,6 +1134,11 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   every size (1.04-1.18x at 2**20; the ordered cast at par, the 0.11-0.2 ms sort the loss), and
   below 2**18 every shape loses (1.15-1.65x). CPU likewise: shell rays 1.12-1.29x, normals
   0.57-0.96x. Declined in `ray`, whose callers' ray shape is unknown (`kernels/ray.first_hit`).
+  Taken where the queries sit on the surface by construction, through `_common.search_order`'s
+  own gates (`visibility.thickness(method="ray")` and the tangent spheres' seed and shrink,
+  2026-11-11, answers identical): where the gate orders, CUDA ray 0.54-0.80x, inward spheres
+  0.59-0.98x, reach spheres 0.95-0.99x on dragon and lucy; CPU dragon 2**18 0.76x / 0.79x; below
+  it 0.98-1.03x. The bundle kernels (a block a point) were not tried.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
@@ -1247,15 +1252,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
   start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
   another subtree), so what is open is a shorter chain for the same walk.
-- **`visibility`'s along-normal casts in a Hilbert order of origins** (2026-11-11): rays leaving
-  the surface are the shape that order pays for (§14, 0.46-0.87x from 2**18 rays on CUDA); those
-  kernels know their origins sit on the surface, so they need no syncing shape test. Not priced.
-- **`winding_number`'s cap edges on `lucy`** (2026-11-11): 59 B a face of cap endpoints, sized by
-  a readback, so with Warp's default pool release threshold the pool trims at that read and grows
-  again for them (the trim-and-regrow was ~11 of the call's 30 ms before `0843a422` moved the
-  pairing's scratch and the sort keys into reuse). Open: a cap form that is smaller, or sized
-  without the readback, without slowing the walk (indices lost 0.30x; the sorted-order and
-  stored-level count and fill are refuted, `reference/component-status.md`, winding section).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
