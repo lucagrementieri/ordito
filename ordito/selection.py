@@ -611,13 +611,12 @@ def _mesh_regions(
         device=device,
     )
     if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
-        for parents in (mesh_parents, region_parents):
-            _launch.launch(
-                kernel_connected_components.ecl_compress,
-                dim=n_faces,
-                inputs=[parents],
-                device=device,
-            )
+        _launch.launch(
+            kernel_selection.compress_mesh_regions,
+            dim=n_faces,
+            inputs=[mesh_parents, region_parents],
+            device=device,
+        )
     _launch.launch(
         kernel_selection.hook_mesh_regions,
         dim=3 * n_faces,

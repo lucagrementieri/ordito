@@ -834,10 +834,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # so the zeroed cursors ``fill_cap_edges`` takes next can be lent for them.
     ("proximity", "winding_tree_nodes"): frozenset({"tickets"}),
     ("grouping", "hash_insert"): frozenset({"slot_counts"}),
-    # ``ecl_compress`` lowers each node of the union-find forest to its root in place, between the
-    # pre-hook and the hook: ``parents`` is the forest itself, read and written by every launch on
-    # it, and ``out_`` would read as write-only.
-    ("algorithms.connected_components", "ecl_compress"): frozenset({"parents"}),
     # The deterministic orientation's Boruvka rounds (``face_flip_mask``, ``face_orientation_bits``)
     # carry their forest across launches: ``parents`` is the component forest each round hooks and
     # every flatten compresses in place (``ecl_compress``'s case), ``best`` each component's

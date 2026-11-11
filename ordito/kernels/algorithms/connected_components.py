@@ -128,6 +128,13 @@ def ecl_init_parent_edges(edges: wp.array2d[wp.int32], parents: wp.array[wp.int3
 ECL_COMPRESS_FROM = 1 << 21
 
 
+@wp.func
+def ecl_compress_node(parents: wp.array[wp.int32], v: wp.int32) -> None:
+    # ``ecl_compress`` of one node, shared with the kernels compressing two forests in one launch
+    # (``kernels/selection.compress_mesh_regions``).
+    wp.atomic_min(parents, v, find_representative(parents, v))
+
+
 @wp.kernel
 def ecl_compress(parents: wp.array[wp.int32]) -> None:
     # Between the pre-hook and the hook: point every node at its current root. The pre-hook leaves
@@ -137,8 +144,7 @@ def ecl_compress(parents: wp.array[wp.int32]) -> None:
     # ancestor, so lowering a parent to it with ``atomic_min`` keeps the forest valid for the
     # concurrent path halving the finds do, and changes no root: the labels are the same. Below
     # ``ECL_COMPRESS_FROM`` nodes the chains stay short and the extra launch is all it costs.
-    v = wp.int32(wp.tid())
-    wp.atomic_min(parents, v, find_representative(parents, v))
+    ecl_compress_node(parents, wp.int32(wp.tid()))
 
 
 @wp.kernel

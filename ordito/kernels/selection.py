@@ -3,6 +3,7 @@ import warp as wp
 from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.adjacency import write_edge_row, write_face_edge_keys
 from ordito.kernels.algorithms.connected_components import (
+    ecl_compress_node,
     ecl_hook_pair,
     ecl_prehook_pair,
     find_representative,
@@ -699,6 +700,17 @@ def prehook_mesh_regions(
             region_parent = wp.min(region_parent, g)
     out_mesh_parents[f] = mesh_parent
     out_region_parents[f] = region_parent
+
+
+@wp.kernel
+def compress_mesh_regions(
+    mesh_parents: wp.array[wp.int32], region_parents: wp.array[wp.int32]
+) -> None:
+    # Both forests' ``ecl_compress``, one launch over the faces rather than one a forest: on
+    # lucy's 28 M faces the two launches cost 1.6-1.7 ms each.
+    f = wp.int32(wp.tid())
+    ecl_compress_node(mesh_parents, f)
+    ecl_compress_node(region_parents, f)
 
 
 @wp.kernel
