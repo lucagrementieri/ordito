@@ -2527,6 +2527,38 @@ def test_smooth_region_matches_meshlib(
 
 
 @pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
+@pytest.mark.parity("smooth_region", "meshlib")
+def test_smooth_region_on_a_hub_matches_meshlib(device: str, edge_weights: str) -> None:
+    """
+    Class A: ``positionVertsSmoothly`` on a region whose pole has 40 neighbours.
+
+    The sphere region of the test above has valences of about six; a hole fill's refined patch
+    keeps fan hubs like this pole, whose normal-equation row spans its 2-ring and whose
+    preconditioner row is ten times a typical one. Every vertex but the cap's outer two rings is
+    free, and the answer must move them, so the comparison is not of the input.
+    """
+    spokes = 40
+    vertices_np, faces_np = _hub_cap(spokes=spokes, rings=8, theta=1.0)
+    vertices_np = vertices_np * np.random.default_rng(3).uniform(0.97, 1.03, (len(vertices_np), 1))
+    vertices_np = vertices_np.astype(np.float32).astype(np.float64)
+    free_np = np.arange(len(vertices_np)) < 1 + 6 * spokes
+    v_wp, f_wp = numpy_to_warp(vertices_np, faces_np, device)
+    free_wp = wp.array(free_np, dtype=wp.bool, device=device)
+
+    result_wp = od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights=edge_weights)
+
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    ew_ml = mm.EdgeWeights.Cotan if edge_weights == "cotan" else mm.EdgeWeights.Unit
+    mm.positionVertsSmoothly(
+        mesh_ml, mn.vertBitSetFromBools(cast("Buffer", free_np)), ew_ml, mm.VertexMass.Unit
+    )
+    verts_ml = mn.getNumpyVerts(mesh_ml)
+
+    assert np.abs(verts_ml[free_np] - vertices_np[free_np]).max() > 1e-3
+    assert np.allclose(result_wp.numpy(), verts_ml, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
 @pytest.mark.parametrize("multigrid_from", [None, 0], ids=["polynomial", "multigrid"])
 def test_smooth_region_leaves_an_unanchored_fragment_in_place(
     device: str, multigrid_from: int | None, edge_weights: str, monkeypatch: pytest.MonkeyPatch

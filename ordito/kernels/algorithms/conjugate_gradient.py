@@ -1209,6 +1209,15 @@ def cg_one_block(
     # ``_BatchedCg`` returns -- and ``out_steps`` each column's own round count, so a host caller
     # reads all three from one buffer and needs no integer one. On the CPU device a block is
     # one lane, which walks every row: the lane-free form that backend wants anyway.
+    #
+    # Declined (2026-11-11): handing a long row to its warp (a ballot a row, the warp's lanes
+    # striding the row, a shuffle sum), on ``smoothing.refine_and_smooth_region``'s fills, whose
+    # fan hubs make a round of the smooth solve cost 152 us on ``saddle_small`` against 71 on
+    # bunny at the same step count. In the polynomial's passes, factor rows of 32 entries or more
+    # (5 of 1 000, the longest 78): the solve 1.07-1.15x, bunny with no such row 1.07x (the ballot
+    # in every pass). In the round's mat-vec, ``M^T M`` rows from 64 / 96 / 128 entries (to 223):
+    # 1.22x / 1.02x / 1.02x on ``saddle_small``, par elsewhere. Neither the hub's lane nor the long
+    # system rows set the round's time.
     c, lane = wp.tid()
     total = n_columns * n
     column_base = c * n
