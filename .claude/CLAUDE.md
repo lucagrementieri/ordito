@@ -1247,8 +1247,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   outside the merge band), byte-identical by construction, saving up to two of five vote rays a
   point; not priced (another session was sweeping `proximity`). Unmeasured: `ray`'s casts in the
   Hilbert order of their origins (`_common.search_order`) from `2**18` rays, where §14's tree
-  searches start to pay; the benchmark casts 10 000. The GPU was shared for the rest of the
-  sweep, so `intersects_location`'s whole-call clock is unmeasured (its allocations: -4.3 us).
+  searches start to pay; the benchmark casts 10 000.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
