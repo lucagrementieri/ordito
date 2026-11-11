@@ -273,7 +273,14 @@ def halfedge_tangent_angles(
     )  # fmt: skip
 
 
-@wp.kernel
+# Lanes of a ``park_corner_angles`` block: a thread a face of ``float64`` arithmetic, so a small
+# mesh's faces spread over more SMs' ``float64`` units (2026-11-11, device time against 256:
+# ``sphere_small`` 0.47x, 11.1 -> 5.2 us; ``sphere_med`` 1.00x; dragon 0.97x; 32 the same as 64).
+# Its own width, so the kernel is in a module of its own (``module="unique"``).
+PARK_LANES = 64
+
+
+@wp.kernel(enable_backward=False, module="unique")
 def park_corner_angles(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angles: wp.array[wp.float64]
 ) -> None:

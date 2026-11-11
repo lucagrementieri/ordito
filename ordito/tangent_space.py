@@ -340,6 +340,7 @@ def halfedge_tangent_angles(
             inputs=[vertices, faces],
             outputs=[angles],
             device=device,
+            block_dim=kernel_tangent_space.PARK_LANES,
         )
         _launch.launch_tiled(
             kernel_tangent_space.halfedge_tangent_angles_parked,
