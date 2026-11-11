@@ -36,7 +36,7 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
-from ordito.kernels.reduce import GroupSumPass, read_group_sum
+from ordito.kernels.reduce import GroupSumPass, peer_counted_add, read_group_sum
 from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, scatter_add
 from ordito.kernels.selection import face_touches_front, mark_submesh_face
 from ordito.kernels.triangles import (
@@ -450,7 +450,7 @@ def flatten_and_count_labels(
     f = wp.int32(wp.tid())
     label = find_representative(parents, f)
     out_labels[f] = label
-    wp.atomic_add(out_counts, label, 1)
+    peer_counted_add(out_counts, label)
 
 
 @wp.kernel

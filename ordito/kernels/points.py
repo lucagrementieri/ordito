@@ -39,6 +39,7 @@ from ordito.kernels.reduce import (
     last_ticket_matrix,
     last_ticket_vector,
     outer_sum_chunk,
+    peer_counted_add,
     stage_block_total,
     store_block_total,
     store_block_total_divided,
@@ -687,7 +688,7 @@ def component_sizes(
     i = wp.int32(wp.tid())
     label = find_representative(parents, i)
     out_labels[i] = label
-    wp.atomic_add(out_sizes, label, 1)
+    peer_counted_add(out_sizes, label)
 
 
 @wp.kernel

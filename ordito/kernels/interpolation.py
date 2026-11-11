@@ -14,6 +14,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
 from ordito.kernels.proximity import closest_point_query
+from ordito.kernels.reduce import peer_counted_add
 from ordito.kernels.triangles import face_vertices, point_barycentric
 
 wp.set_module_options({"enable_backward": False})
@@ -252,7 +253,7 @@ def count_cluster_members(cluster: wp.array[wp.int32], out_counts: wp.array[wp.i
     i = wp.int32(wp.tid())
     target = cluster[i]
     if target >= 0:
-        wp.atomic_add(out_counts, target + 1, 1)
+        peer_counted_add(out_counts, target + 1)
 
 
 @wp.kernel

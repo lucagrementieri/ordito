@@ -898,7 +898,9 @@ def peer_counted_add(out_counts: wp.array[wp.int32], index: wp.int32) -> None:
     # (``warp_peer_lanes``) committed once, by the lowest, as their number; a lane with no peer, and
     # every lane on the CPU device, takes the plain atomic. A count is exact in any order. For a
     # histogram whose keys crowd a few bins: the radix select's 2 048-bin digits over a 1 M pool
-    # cost the Poisson-disk round more than the sort they replaced unpooled.
+    # cost the Poisson-disk round more than the sort they replaced unpooled; component sizes
+    # (``repair.flatten_and_count_labels`` 0.06x on dragon, ``points.component_sizes`` 0.05x,
+    # ``cholesky.component_sizes`` 0.12x on bunny) and cluster counts (0.5x on dragon) the same.
     lanes = warp_peer_lanes(index)
     if lanes == 0:
         wp.atomic_add(out_counts, index, 1)

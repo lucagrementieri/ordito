@@ -41,7 +41,13 @@ from ordito.kernels.array import (
     scanned_count,
 )
 from ordito.kernels.linalg import residual_and_scale
-from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
+from ordito.kernels.reduce import (
+    block_barrier,
+    block_sum,
+    last_ticket,
+    peer_counted_add,
+    take_ticket,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -3329,7 +3335,7 @@ def component_sizes(labels: wp.array[wp.int32], out_size: wp.array[wp.int32]) ->
     # ``graph.connected_component_labels``', each the smallest row of its component, so the lowest
     # row of a component is its own label slot.
     v = wp.int32(wp.tid())
-    wp.atomic_add(out_size, labels[v], 1)
+    peer_counted_add(out_size, labels[v])
 
 
 @wp.kernel
