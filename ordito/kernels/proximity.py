@@ -2065,6 +2065,10 @@ def fill_cap_edges(
     # dim == 3 * n_faces: ``count_cap_edges`` again, writing each halfedge's endpoints into the cap
     # of every node that keeps one. ``out_fill`` is a zeroed per-node cursor, so the order inside a
     # cap varies run to run; the walk's fixed-point sum does not see it.
+    #
+    # Declined (2026-11-11): the count leaving each halfedge's first level in the mates' slot for
+    # this pass to read instead of the mate, its face and its rank. Lucy count 1.60 -> 1.76 ms
+    # (the store) and this pass 3.28 -> 3.47-3.56 ms (its rank load then waits on the level).
     h = wp.int32(wp.tid())
     leaf, first_level = halfedge_cap_levels(h, faces, mates, rank, leaf_faces, depth)
     n_leaves = wp.int32(1) << depth
