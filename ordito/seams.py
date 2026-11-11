@@ -344,12 +344,20 @@ def cut_along_edges(
     # the thread, so no edge list is materialised or compacted. Every root is its component's
     # smallest corner.
     key_base = wp.uint64(n_vertices)
-    union_inputs = [faces, twins, marked_keys, key_base]
     parents = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
-    for kernel in (kernel_seams.corner_union_prehook, kernel_seams.corner_union_hook):
-        _launch.launch(kernel, dim=n_halfedges, inputs=[*union_inputs, parents], device=device)
     # Scratch of the call alone, so one allocation: ``parents`` outlives it as the face buffer.
+    # The joins the pre-hook forms ride in ``root_ranks`` until the flatten writes it.
     roots, root_ranks = _launch.carve(wp.int32, (n_halfedges, n_halfedges), device)
+    _launch.launch(
+        kernel_seams.corner_union_prehook,
+        dim=n_halfedges,
+        inputs=[faces, twins, marked_keys, key_base],
+        outputs=[parents, root_ranks],
+        device=device,
+    )
+    _launch.launch(
+        kernel_seams.corner_union_hook, dim=n_halfedges, inputs=[root_ranks, parents], device=device
+    )
     _launch.launch(
         kernel_connected_components.ecl_flatten_root_flags,
         dim=n_halfedges,

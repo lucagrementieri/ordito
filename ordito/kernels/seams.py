@@ -126,6 +126,13 @@ def corner_union(
     return halfedge_next(h), halfedge_next(twin)
 
 
+@wp.func
+def pack_corner_join(h: wp.int32, a: wp.int32, b: wp.int32) -> wp.int32:
+    # ``corner_union``'s join of halfedge ``h`` as one code: its first corner is ``h`` or
+    # ``next(h)``, so ``b`` for the one and ``-2 - b`` for the other (a self-loop is ``h``).
+    return wp.where(a == h, b, wp.int32(-2) - b)
+
+
 @wp.kernel
 def corner_union_prehook(
     faces: wp.array[wp.int32],
@@ -133,6 +140,7 @@ def corner_union_prehook(
     marked_keys: wp.array[wp.uint64],
     key_base: wp.uint64,
     out_parents: wp.array[wp.int32],
+    out_joins: wp.array[wp.int32],
 ) -> None:
     # The union-find's initial forest, written as each corner's own value rather than pre-hooked
     # into an identity ``parents``: corner ``h`` points at the other end of its own halfedge's
@@ -143,28 +151,29 @@ def corner_union_prehook(
     # three other halfedges that can touch ``h`` (its twin, ``prev(h)`` and that one's twin): the
     # same forest as the pre-hook, with no identity launch, but the four ``corner_union`` binary
     # searches cost the union kernels 0.69x at 328 k faces, where this own-join form is 1.1x.
+    #
+    # The join is also stored for the hook (``pack_corner_join``), so its search runs once.
     h = wp.int32(wp.tid())
     a, b = corner_union(faces, twins, marked_keys, key_base, h)
     lowest = h
     if a == h:
         lowest = wp.min(h, b)
     out_parents[h] = lowest
+    out_joins[h] = pack_corner_join(h, a, b)
 
 
 @wp.kernel
-def corner_union_hook(
-    faces: wp.array[wp.int32],
-    twins: wp.array[wp.int32],
-    marked_keys: wp.array[wp.uint64],
-    key_base: wp.uint64,
-    parents: wp.array[wp.int32],
-) -> None:
-    # ``connected_components.ecl_hook_edges`` over the same corner graph. Every union points the
-    # larger root at the smaller, so each component's root is its smallest corner whichever order
-    # the unions ran in.
+def corner_union_hook(joins: wp.array[wp.int32], parents: wp.array[wp.int32]) -> None:
+    # ``connected_components.ecl_hook_edges`` over the same corner graph, read off the joins
+    # ``corner_union_prehook`` stored: forming them again cost the hook a second binary search a
+    # halfedge in the marked keys. Every union points the larger root at the smaller, so each
+    # component's root is its smallest corner whichever order the unions ran in.
     h = wp.int32(wp.tid())
-    a, b = corner_union(faces, twins, marked_keys, key_base, h)
-    ecl_hook_pair(parents, a, b)
+    code = joins[h]
+    if code >= 0:
+        ecl_hook_pair(parents, h, code)
+    else:
+        ecl_hook_pair(parents, halfedge_next(h), wp.int32(-2) - code)
 
 
 @wp.kernel
