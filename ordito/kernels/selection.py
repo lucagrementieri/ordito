@@ -687,8 +687,8 @@ def prehook_mesh_regions(
 ) -> None:
     # Both forests' pre-hook, one thread a face writing its own parent: the smallest face it is
     # joined to (itself included), which is what ``ecl_prehook_pair`` over an identity forest
-    # leaves, without that launch. A pair is joined from either side, so every edge folded here
-    # is one ``hook_mesh_regions`` hooks.
+    # leaves, without that launch. Every edge folded here is a pair ``hook_mesh_regions`` hooks
+    # (from one of its sides).
     f = wp.int32(wp.tid())
     mesh_parent = f
     region_parent = f
@@ -709,8 +709,13 @@ def hook_mesh_regions(
     mesh_parents: wp.array[wp.int32],
     region_parents: wp.array[wp.int32],
 ) -> None:
-    # Both forests' hook, one thread a halfedge: its face and ``region_partner``'s.
+    # Both forests' hook, one thread a halfedge: its face and ``region_partner``'s, each pair
+    # once. A two-halfedge edge is hooked by its lower halfedge (``mates`` is symmetric there); a
+    # halfedge of a three-or-more edge joins the lowest one's face, which only it reaches.
     h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate >= 0 and mate < h:
+        return
     f = h // 3
     g = region_partner(faces, mates, h)
     ecl_hook_pair(mesh_parents, f, g)
