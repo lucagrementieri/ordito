@@ -1048,13 +1048,27 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   neighbour row (2026-11-11, `kernels/sample.neighbour_chunk`: four entries at clamped
   addresses a step) took the Poisson-disk elimination's maxima pass 0.29-0.94x and its deletions
   0.50-0.73x from 10 k to 1 M rows of ~19; eight a step no faster. A walk that stops at its first
-  hit keeps the entry-a-step form on the CPU (chunked 1.18x there).
+  hit keeps the entry-a-step form on the CPU (chunked 1.18x there). Shared as
+  `kernels/array.row_chunk_slots` / `row_chunk_entries` and taken by `linalg.csr_row_dot` (every
+  CG round and Chebyshev step: `solve_spd` 0.91x on dragon, `min_quad_with_fixed` 0.90-0.97x on
+  bunny and dragon), the umbrella stencil and the Gauss-Seidel wave's readiness test (dragon
+  0.89-0.90x); small meshes at par, the CPU an entry a step (chunked 1.01-1.06x there). It loses
+  where the chunk adds unconditional gathers to a wide bandwidth-bound launch (the multigrid MIS
+  walk: 0.80x bunny, 1.07x dragon's fine level, calls par; declined at `mis_ball_max`).
 - **An order statistic is a radix select, not a sort, on CUDA** (2026-11-11,
   `kernels/sample.floor_digit`): digit passes of 11, 11 and 10 bits of the ordered keys, each a
   histogram (`scatter.peer_counted_add`: the coarse first digit crowds a few bins) whose last
   block finds the digit, 3 x 5.4 us against the ~50 us radix sort of a 10 k pool (four onesweep
   passes); at par from 1 M keys. Two 16-bit passes lose: the last block reading 65 536 bins is one
   SM's bandwidth (~33 us coalesced). The CPU's radix sort beats the passes (1.05-1.08x a call).
+  Generic in `kernels/reduce.RADIX_SELECT_PASS` (six dtypes) for `reduce.quantile` / `median`,
+  gated by size: 32-bit keys from 8 192 to 2^18 (0.79-0.93x; the sort wins at 4 096, CUB's
+  one-tile case, and from 2 M, where the top digits' hot bins serialize), `int64` 4 096 to 2^18,
+  `float64` from 4 096 at every size (0.52-0.83x).
+- **A crowded count histogram pools a warp's peers** (`reduce.peer_counted_add`, 2026-11-11):
+  component sizes and cluster counts, where consecutive items share a label, 0.05-0.12x
+  (`repair.flatten_and_count_labels` 374 -> 21 us on dragon, `points.component_sizes` 185 -> 8 us,
+  `cholesky.component_sizes` 15 -> 1.8 us on bunny), cluster members 0.5x; CPU at par.
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
 - **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
@@ -1284,6 +1298,19 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   pass leaves most edges alone (bunny's passes 3-5 touch 0.01-10 % of the region's edges;
   `sphere_large`'s touch all of them), and needs each kept face's verdicts to ride through the
   split's rebuild, which renumbers the rows.
+- **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
+  in §14): row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
+  `smoothing.relax_approx`'s neighbourhood frame (ball rows 10-50), `cholesky.breadth_first_level`,
+  `smoothing.ring_push` / `pushed_keeping_volume`, `umbrella_diffuse_pass`,
+  `neighbors.query_geodesic_ball_collect`. Counts: `reconstruction.count_live_margin` (a few margin
+  bins in a one-block loop; its class-list slot needs a multi-bin peer allocator, not
+  `peer_counted_add`), `cholesky.emit_structure_rows` (sorted keys: the count is the run length,
+  no atomic needed), `cholesky.dissection_crossings` (1-16 bins at shallow depths),
+  `cholesky.front_terms_and_keys`' 2-D level stats, `reduce.scatter_mean`'s `count_occurrences`
+  (pool when groups are few), `voxels.record_point_bucket`'s out-of-grid sentinel bin,
+  `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
+  weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
+  `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
