@@ -6631,7 +6631,7 @@
  "benchmarks/test_seams.py::test_uv_seam_edges[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 5,
+   "alloc": 4,
    "readback": 2,
    "scan": 1,
    "sort": 1

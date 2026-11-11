@@ -1143,6 +1143,33 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
         ),
         "edge-manifold",
     ),
+    # Both faces run ``0 -> 1``: no consistent winding, so no twins.
+    "uv_misoriented": (
+        lambda device: od.seams.uv_seam_edges(
+            wp.array(np.array([0, 1, 2, 0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device),
+            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
+            n_vertices=4,
+        ),
+        "consistently wound",
+    ),
+    "cut_nonmanifold": (
+        lambda device: od.seams.cut_along_edges(
+            wp.zeros(5, dtype=wp.vec3, device=device),
+            wp.array(
+                np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32), dtype=wp.int32, device=device
+            ),
+            odt.empty_2d((0, 2), wp.int32, device=device),
+        ),
+        "edge-manifold",
+    ),
+    "cut_misoriented": (
+        lambda device: od.seams.cut_along_edges(
+            wp.zeros(4, dtype=wp.vec3, device=device),
+            wp.array(np.array([0, 1, 2, 0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device),
+            odt.empty_2d((0, 2), wp.int32, device=device),
+        ),
+        "consistently wound",
+    ),
 }
 
 

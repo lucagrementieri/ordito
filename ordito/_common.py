@@ -15,7 +15,7 @@ from __future__ import annotations
 import itertools
 import math
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TypeVar, cast
 
 import numpy as np
@@ -677,6 +677,28 @@ def checked_index_bound(
     if high >= bound:
         raise ValueError(f"{name} must be less than {bound_name} {bound}, got a maximum of {high}")
     return bound
+
+
+def raise_twin_defects(defect_counts: Sequence[int]) -> None:
+    """
+    Raise ``halfedge.halfedge_twins``' two rejections from its read-back defect counts.
+
+    Shared by the pairing's own read and by every caller that took the counts through its
+    ``defect_counts`` keyword and read them with its own values.
+    """
+    n_nonmanifold, n_misoriented = (int(count) for count in defect_counts[:2])
+    if n_nonmanifold > 0:
+        raise ValueError(
+            f"halfedge_twins requires an edge-manifold mesh: {n_nonmanifold} edge(s) are shared by "
+            f"three or more faces."
+        )
+    if n_misoriented > 0:
+        raise ValueError(
+            f"halfedge_twins requires a consistently wound mesh: {n_misoriented} edge(s) are "
+            f"traversed in the same direction by both of their halfedges, so those two halfedges "
+            f"are not opposites of each other. Run make_winding_consistent first; a non-orientable "
+            f"surface has no consistent winding and no halfedge twin table at all."
+        )
 
 
 def require_indices_below(

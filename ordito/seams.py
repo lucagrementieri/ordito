@@ -35,6 +35,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    raise_twin_defects,
     read_array,
     read_values,
     require_indices_below,
@@ -525,19 +526,22 @@ def uv_seam_edges(
             odt.empty_2d((0, 2), wp.int32, device=device),
             odt.empty_2d((0, 4), wp.int32, device=device),
         )
-    if twins is None:
-        twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
-
     # Row ``k`` of a bitmask flags class ``k + 1`` (seam, boundary, foldover), a bit a halfedge,
     # rows a whole number of words apart. One inclusive scan of the words' populations, in place,
     # ranks all three rows, and each row's last word holds the running total that sizes them.
     row_words = (n_halfedges + 31) // 32
     n_words = 3 * row_words
     # The bits, then their words' populations, which the flagging launch adds and the scan ranks,
-    # then two slots the first two rows' totals are copied into on CUDA, beside the last row's.
-    buffer = _launch.zeros(2 * n_words + 2, dtype=wp.int32, device=device)
+    # then two slots the first two rows' totals are copied into on CUDA, beside the last row's,
+    # then two where the twins count their rejections, read back with the totals.
+    buffer = _launch.zeros(2 * n_words + 4, dtype=wp.int32, device=device)
     words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
     word_ranks = _launch.view(buffer, n_words, 2 * n_words)
+    defect_counts = _launch.view(buffer, 2 * n_words + 2, 2 * n_words + 4)
+    if twins is None:
+        twins = od.halfedge.halfedge_twins(
+            faces, n_vertices=n_vertices, defect_counts=defect_counts
+        )
     _launch.launch(
         kernel_seams.classify_uv_halfedges,
         dim=n_halfedges,
@@ -556,18 +560,20 @@ def uv_seam_edges(
         device=device,
     )
     _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
-    # Sizes the three outputs: the one host readback. The three running totals sit a row apart. On
-    # CUDA two native copies put the first two beside the last so one contiguous read takes all
-    # three (a strided view's read builds a host array through ``.numpy()``, 4x the copies and the
-    # read); a CPU array's strided view is read in place.
+    # Sizes the three outputs and validates the twins: the one host readback. The three running
+    # totals sit a row apart. On CUDA two native copies put the first two beside the last so one
+    # contiguous read takes them with the defect counts (a strided view's read builds a host array
+    # through ``.numpy()``, 4x the copies and the read); a CPU array's views are read in place.
     if wp.get_device(device).is_cuda:
         _launch.copy(buffer, buffer, 2 * n_words, n_words + row_words - 1, 1)
         _launch.copy(buffer, buffer, 2 * n_words + 1, n_words + 2 * row_words - 1, 1)
-        total, n_seams, through_boundaries = read_values(buffer, 2 * n_words - 1, 3)
+        total, n_seams, through_boundaries, *defects = read_values(buffer, 2 * n_words - 1, 5)
     else:
         n_seams, through_boundaries, total = (
             int(t) for t in read_array(word_ranks.reshape((3, row_words))[:, row_words - 1])
         )
+        defects = read_values(defect_counts, 0, 2)
+    raise_twin_defects(defects)
     n_boundaries = through_boundaries - n_seams
     n_foldovers = total - through_boundaries
     seams = odt.empty_2d((n_seams, 4), wp.int32, device=device)

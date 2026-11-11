@@ -218,6 +218,70 @@ def test_validate_false_skips_only_the_check(
         assert np.array_equal(unchecked_wp.numpy(), checked_wp.numpy())
 
 
+@pytest.mark.parametrize("bucketed", [False, True])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "boy_surface", "fan_of_three"])
+def test_defect_counts_defer_the_check(
+    request: pytest.FixtureRequest,
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    bucketed: bool,
+) -> None:
+    """
+    Ordito against ordito: ``defect_counts`` moves the validated path's two counts to the caller.
+
+    The validated call carries the oracle (``test_halfedge_twins_rejects_a_non_orientable_surface``
+    and the involution tests). With a caller's buffer the call must raise nothing, read nothing
+    back, write exactly the counts the validated call's message reports into slots 0 and 1, and
+    leave the table byte-identical. One mesh per outcome: valid, misoriented (``boy_surface``) and
+    edge-non-manifold (three faces on one edge), each on the key sort and on the buckets.
+    """
+    if bucketed:
+        request.getfixturevalue("force_halfedge_buckets")
+    if mesh_name == "fan_of_three":
+        faces_np = np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32)
+        faces_wp, n_vertices = wp.array(faces_np, dtype=wp.int32, device=device), 5
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        faces_wp, n_vertices = mesh_wp.indices, len(mesh_tm.vertices)
+    expected = [0, 0]
+    try:
+        twins_wp = od.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices)
+    except ValueError as error:
+        slot = 0 if "edge-manifold" in str(error) else 1
+        expected[slot] = int(str(error).split(": ")[1].split(" ")[0])
+        twins_wp = od.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices, validate=False)
+    assert expected != [0, 0] or mesh_name == "sphere_irregular"
+
+    defect_counts_wp = wp.zeros(3, dtype=wp.int32, device=device)
+    readbacks: list[tuple[int, ...]] = []
+    original = wp.array.numpy
+
+    def counting_numpy(
+        self: wp.array[object, Any], *, _suppress_bfloat16_warning: bool = False
+    ) -> np.ndarray:
+        readbacks.append(self.shape)
+        return original(self, _suppress_bfloat16_warning=_suppress_bfloat16_warning)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wp.array, "numpy", counting_numpy)
+        deferred_wp = od.halfedge.halfedge_twins(
+            faces_wp, n_vertices=n_vertices, defect_counts=defect_counts_wp
+        )
+    assert readbacks == []
+    assert defect_counts_wp.numpy().tolist() == [*expected, 0]
+    assert np.array_equal(deferred_wp.numpy(), twins_wp.numpy())
+
+
+def test_defect_counts_must_hold_two_entries(device: str) -> None:
+    """Not a library comparison: a one-slot buffer would take a write past its end."""
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="at least two entries"):
+        od.halfedge.halfedge_twins(
+            faces_wp, defect_counts=wp.zeros(1, dtype=wp.int32, device=device)
+        )
+
+
 def _sorted_and_bucketed_pairings(
     faces_wp: wp.array[wp.int32], n_vertices: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

@@ -165,6 +165,12 @@ def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
 
     igl gets slower from ``0.25`` to ``1.0``: its per-corner walk pays for each new vertex it
     emits.
+
+    Declined (2026-11-11): deferring the twins' validation read to the output's size read
+    (``halfedge_twins(defect_counts=)`` in two zeroed slots behind the rank flags, as
+    ``uv_seam_edges`` takes it) measured at par on CUDA, 0.98-1.01x from ``sphere_small`` to
+    ``sphere_large`` over five interleaved rounds: the zeroed scratch's memset costs what the drain
+    saved.
     """
     if bench_case.kind == "igl":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
