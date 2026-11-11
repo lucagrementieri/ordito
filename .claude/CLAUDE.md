@@ -1258,6 +1258,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
   start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
   another subtree), so what is open is a shorter chain for the same walk.
+- **ICP host tail** (2026-11-11, not attempted): `icp`'s post-loop `_apply_transform` launch and
+  the identity seed's upload (a native fill is ~3 us cheaper, §13.1) are each about 1-2 % of a
+  `sphere_small` call; folding the image into the kept fit's round would need the fit to write
+  the points every replayed round. Price before building.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
