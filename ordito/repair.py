@@ -947,7 +947,7 @@ def _exact_value_classes(
     # Readback, on the CPU only: there a read costs no sync, so a long ring sends the rows to the
     # sort before the ring kernels run (they cost a hub mesh 1.7x the sort alone there). CUDA reads
     # the count with the class total below instead, sparing every call a sync for a rare hub.
-    if device.is_cpu and int(read_scalar(class_offsets, primary_bound + 1)) > 0:
+    if wp.get_device(device).is_cpu and int(read_scalar(class_offsets, primary_bound + 1)) > 0:
         del ring_offsets, class_offsets, representatives, ring, ranks, slots
         return _sorted_value_classes(primary, words, n_words, is_float, primary_bound)
     _launch.array_scan(ring_offsets, ring_offsets, inclusive=True)

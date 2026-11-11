@@ -6483,12 +6483,10 @@
  },
  "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 7,
-   "alloc": 9,
-   "h2h": 1,
-   "readback": 1,
-   "scan": 1,
-   "sort": 2
+   "alloc": 7,
+   "launch": 6,
+   "readback": 2,
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_straighten_boundary[sphere_small-ordito-cpu]": {

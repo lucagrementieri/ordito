@@ -749,6 +749,65 @@ def test_split_vertices_by_corner_values_matches_a_numpy_oracle(
     assert position_v.size == mesh_wp.points.size
 
 
+@pytest.mark.parametrize("dtype", [wp.vec3, wp.int32])
+def test_split_vertices_by_corner_values_ring_and_sorted_groupings_agree(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], dtype: type
+) -> None:
+    """
+    Ordito against ordito: the ring grouping and the sort it falls back to number classes alike.
+
+    No reference numbers ``(vertex, value)`` classes; the sorted grouping is the definition the
+    ring comparison must reproduce bit for bit (values ordered by their words as unsigned
+    integers, so negative floats sort after positive ones, and ``-0.0`` folded into ``0.0``). The
+    values take a few levels per vertex so rings hold several distinct values and repeats.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    faces = mesh_wp.indices
+    rng = np.random.default_rng(11)
+    width = 3 if dtype == wp.vec3 else 1
+    if dtype == wp.vec3:
+        values_np = rng.integers(-2, 3, size=(faces.size, width)).astype(np.float32) * 0.5
+        values_np[rng.random(values_np.shape) < 0.2] = -0.0
+    else:
+        values_np = rng.integers(-3, 3, size=faces.size).astype(np.int32)
+    values = wp.array(values_np, dtype=dtype, device=device)
+    words = wp.array(values_np.view(np.int32).reshape(-1), dtype=wp.int32, device=device)
+    n_vertices = mesh_wp.points.size
+    inverse, first = od.repair._exact_value_classes(faces, values, n_vertices)  # pyright: ignore[reportPrivateUsage]
+    inverse_sorted, first_sorted = od.repair._sorted_value_classes(  # pyright: ignore[reportPrivateUsage]
+        faces, words, width, dtype == wp.vec3, n_vertices
+    )
+    assert np.unique(inverse_sorted.numpy()).size > n_vertices  # a real split
+    assert np.array_equal(inverse.numpy(), inverse_sorted.numpy())
+    assert np.array_equal(first.numpy(), first_sorted.numpy())
+
+
+def test_split_vertices_by_corner_values_splits_a_long_ring(device: str) -> None:
+    """
+    Not a library comparison: the oracle is the definition, on a hub the ring grouping hands off.
+
+    A fan of 200 triangles gives its centre a ring of 200 corners, past ``VALUE_RING_LONG``, so the
+    whole mesh is grouped by the sort; the classes are still one per distinct ``(vertex, value)``
+    pair, ordered by vertex, and carry each corner's value back.
+    """
+    n = 200
+    angles = np.arange(n) * 2.0 * np.pi / n
+    rim_np = np.c_[np.cos(angles), np.sin(angles), np.zeros(n)]
+    vertices_np = np.vstack([[0.0, 0.0, 0.0], rim_np]).astype(np.float32)
+    faces_np = np.array([[0, 1 + i, 1 + (i + 1) % n] for i in range(n)], dtype=np.int32)
+    vertices, faces = numpy_to_warp(vertices_np, faces_np, device)
+    values_np = np.random.default_rng(5).integers(0, 4, size=faces.size).astype(np.int32)
+    new_v, new_f, new_values, provenance = od.repair.split_vertices_by_corner_values(
+        vertices, faces, wp.array(values_np, dtype=wp.int32, device=device), return_provenance=True
+    )
+    keys = sorted(set(zip(faces_np.reshape(-1).tolist(), values_np.tolist(), strict=True)))
+    assert np.unique(values_np[faces_np.reshape(-1) == 0]).size == 4  # the hub splits
+    assert new_v.size == len(keys)
+    assert [v for v, _ in keys] == provenance.vertex_index.numpy().tolist()
+    assert np.array_equal(new_values.numpy()[new_f.numpy()], values_np)
+
+
 def test_split_vertices_by_corner_values_folds_negative_zero(device: str) -> None:
     """Not a library comparison: ``-0.0`` and ``0.0`` are one value, as IEEE-754 defines."""
     vertices, faces = od.creation.box(device=device)

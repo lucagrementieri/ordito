@@ -700,7 +700,10 @@ def test_split_vertices_by_corner_values(bench_case: BenchCase) -> None:
     No reference row: no installed library splits vertices by a per-corner field as a function
     (trimesh does it inside its OBJ loader, on the host). Each corner's texcoord is its vertex's
     ``(x, y)`` shifted by the side of the ``x = 0`` plane its face's centroid lies on, so every
-    vertex on a face crossing that plane splits in two. Two sort passes over the corners.
+    vertex on a face crossing that plane splits in two. The corners are grouped by comparing
+    values within each vertex's ring, with no sort; a ring past ``VALUE_RING_LONG`` corners sends
+    the mesh to the two-pass radix sort it replaced (0.29x on ``lucy``, 0.33x on ``dragon``,
+    0.51-0.57x at small sizes on CUDA; 0.56-0.80x on the CPU).
     """
     corners_np = bench_case.vertices_np[bench_case.faces_np]
     chart_np = np.repeat(corners_np.mean(axis=1)[:, 0] > 0.0, 3)

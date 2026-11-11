@@ -7132,12 +7132,11 @@
  },
  "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 7,
-   "alloc": 9,
-   "d2d": 1,
+   "alloc": 7,
    "d2h": 1,
-   "scan": 1,
-   "sort": 2
+   "launch": 6,
+   "memset": 1,
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_straighten_boundary[sphere_small-ordito-cuda]": {
