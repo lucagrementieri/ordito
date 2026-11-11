@@ -10002,12 +10002,43 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
 
 
 </h2>
+          <div class="doc-overloads">
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
     <span class="n">plane_origin</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">plane_normal</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="n">plane_origin</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">,</span>
+<span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">plane_normal</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="n">plane_origin</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span>
+    <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+        <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">,</span>
+    <span class="p">]</span>
+<span class="p">)</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10093,6 +10124,23 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>return_provenance</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>True</code>, also return the <a class="autorefs autorefs-internal" title="Provenance" href="../interpolation/#ordito.interpolation.Provenance"><code>Provenance</code></a> that carries
+any per-vertex or per-face field onto the result.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -10101,14 +10149,14 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
     <table>
       <thead>
         <tr>
-          <th>Type</th>
+<th>Name</th>          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-            <td>
-                  <code><span title="new_vertices">new_vertices</span></code>
+<td><code>new_vertices</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -10117,12 +10165,24 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
             </td>
           </tr>
           <tr class="doc-section-item">
-            <td>
-                  <code><span title="new_faces">new_faces</span></code>
+<td><code>new_faces</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p><code>(3 * m,)</code> flat triangle index buffer for the sliced mesh, <code>m</code> its face count.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>provenance</code></td>            <td>
+                  <code><span title="Provenance">Provenance</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Only when <code>return_provenance</code> is <code>True</code>: each kept input vertex is a copy, each
+crossing interpolates the endpoints of the edge it lies on at its position along the edge,
+and each output face comes from the input face it was cut from.</p>
               </div>
             </td>
           </tr>
@@ -10199,25 +10259,7 @@ open along the cut:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1609</span>
-<span class="normal">1610</span>
-<span class="normal">1611</span>
-<span class="normal">1612</span>
-<span class="normal">1613</span>
-<span class="normal">1614</span>
-<span class="normal">1615</span>
-<span class="normal">1616</span>
-<span class="normal">1617</span>
-<span class="normal">1618</span>
-<span class="normal">1619</span>
-<span class="normal">1620</span>
-<span class="normal">1621</span>
-<span class="normal">1622</span>
-<span class="normal">1623</span>
-<span class="normal">1624</span>
-<span class="normal">1625</span>
-<span class="normal">1626</span>
-<span class="normal">1627</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1627</span>
 <span class="normal">1628</span>
 <span class="normal">1629</span>
 <span class="normal">1630</span>
@@ -10289,12 +10331,47 @@ open along the cut:</p>
 <span class="normal">1696</span>
 <span class="normal">1697</span>
 <span class="normal">1698</span>
-<span class="normal">1699</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">1699</span>
+<span class="normal">1700</span>
+<span class="normal">1701</span>
+<span class="normal">1702</span>
+<span class="normal">1703</span>
+<span class="normal">1704</span>
+<span class="normal">1705</span>
+<span class="normal">1706</span>
+<span class="normal">1707</span>
+<span class="normal">1708</span>
+<span class="normal">1709</span>
+<span class="normal">1710</span>
+<span class="normal">1711</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span>
+<span class="normal">1717</span>
+<span class="normal">1718</span>
+<span class="normal">1719</span>
+<span class="normal">1720</span>
+<span class="normal">1721</span>
+<span class="normal">1722</span>
+<span class="normal">1723</span>
+<span class="normal">1724</span>
+<span class="normal">1725</span>
+<span class="normal">1726</span>
+<span class="normal">1727</span>
+<span class="normal">1728</span>
+<span class="normal">1729</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">plane_origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span>
+    <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">]</span>
+<span class="p">):</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Slice a mesh with a plane, returning the portion on the positive normal side.</span>
 
@@ -10312,13 +10389,20 @@ open along the cut:</p>
 <span class="sd">        Normal vector of the plane.</span>
 <span class="sd">    plane_origin</span>
 <span class="sd">        Point on the plane.</span>
+<span class="sd">    return_provenance</span>
+<span class="sd">        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries</span>
+<span class="sd">        any per-vertex or per-face field onto the result.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
-<span class="sd">    new_vertices</span>
+<span class="sd">    new_vertices : wp.array[wp.vec3]</span>
 <span class="sd">        ``(n_new_vertices,)`` vertices of the sliced mesh.</span>
-<span class="sd">    new_faces</span>
+<span class="sd">    new_faces : wp.array[wp.int32]</span>
 <span class="sd">        ``(3 * m,)`` flat triangle index buffer for the sliced mesh, ``m`` its face count.</span>
+<span class="sd">    provenance : Provenance</span>
+<span class="sd">        Only when ``return_provenance`` is ``True``: each kept input vertex is a copy, each</span>
+<span class="sd">        crossing interpolates the endpoints of the edge it lies on at its position along the edge,</span>
+<span class="sd">        and each output face comes from the input face it was cut from.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -10366,20 +10450,20 @@ open along the cut:</p>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span>
-    <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
-            <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span> <span class="o">=</span> <span class="n">_empty_clip</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">return_provenance</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># No field: the kernels form each vertex's plane dot where they read it.</span>
+        <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span> <span class="o">=</span> <span class="n">_clip_with_vertex_field</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">plane</span><span class="o">=</span><span class="p">(</span><span class="n">plane_normal</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">),</span>
+            <span class="n">with_provenance</span><span class="o">=</span><span class="n">return_provenance</span><span class="p">,</span>
         <span class="p">)</span>
-
-    <span class="c1"># No field: the kernels form each vertex's plane dot where they read it.</span>
-    <span class="k">return</span> <span class="n">_clip_with_vertex_field</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span>
-        <span class="n">faces</span><span class="p">,</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-        <span class="n">plane</span><span class="o">=</span><span class="p">(</span><span class="n">plane_normal</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">),</span>
-    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">provenance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
+    <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -10737,37 +10821,7 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1724</span>
-<span class="normal">1725</span>
-<span class="normal">1726</span>
-<span class="normal">1727</span>
-<span class="normal">1728</span>
-<span class="normal">1729</span>
-<span class="normal">1730</span>
-<span class="normal">1731</span>
-<span class="normal">1732</span>
-<span class="normal">1733</span>
-<span class="normal">1734</span>
-<span class="normal">1735</span>
-<span class="normal">1736</span>
-<span class="normal">1737</span>
-<span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
-<span class="normal">1742</span>
-<span class="normal">1743</span>
-<span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
-<span class="normal">1748</span>
-<span class="normal">1749</span>
-<span class="normal">1750</span>
-<span class="normal">1751</span>
-<span class="normal">1752</span>
-<span class="normal">1753</span>
-<span class="normal">1754</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1754</span>
 <span class="normal">1755</span>
 <span class="normal">1756</span>
 <span class="normal">1757</span>
@@ -11002,7 +11056,40 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 <span class="normal">1986</span>
 <span class="normal">1987</span>
 <span class="normal">1988</span>
-<span class="normal">1989</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span>
+<span class="normal">1991</span>
+<span class="normal">1992</span>
+<span class="normal">1993</span>
+<span class="normal">1994</span>
+<span class="normal">1995</span>
+<span class="normal">1996</span>
+<span class="normal">1997</span>
+<span class="normal">1998</span>
+<span class="normal">1999</span>
+<span class="normal">2000</span>
+<span class="normal">2001</span>
+<span class="normal">2002</span>
+<span class="normal">2003</span>
+<span class="normal">2004</span>
+<span class="normal">2005</span>
+<span class="normal">2006</span>
+<span class="normal">2007</span>
+<span class="normal">2008</span>
+<span class="normal">2009</span>
+<span class="normal">2010</span>
+<span class="normal">2011</span>
+<span class="normal">2012</span>
+<span class="normal">2013</span>
+<span class="normal">2014</span>
+<span class="normal">2015</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span>
+<span class="normal">2022</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -11158,6 +11245,9 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">plane_normal</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">,</span> <span class="n">tol</span><span class="p">,</span> <span class="n">child_counts</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="c1"># Declined (2026-11-10): counting and scanning in one block (``polyline._upsample``'s form);</span>
+    <span class="c1"># it pays only to ~2 048 items (1.05-1.13x at 4 096) and every benchmarked mesh has 5 k faces</span>
+    <span class="c1"># or more.</span>
     <span class="n">face_offsets</span><span class="p">,</span> <span class="n">n_out</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">counts_to_offsets</span><span class="p">(</span><span class="n">child_counts</span><span class="p">)</span>
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">n_out</span> <span class="o">-</span> <span class="n">n_faces</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -11282,6 +11372,7 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 
 
 </h2>
+          <div class="doc-overloads">
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
@@ -11289,7 +11380,38 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
     <span class="n">isovalue</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">cap</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">values</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
+    <span class="n">isovalue</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">cap</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">,</span>
+<span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">values</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
+    <span class="n">isovalue</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">cap</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span>
+    <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+        <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">,</span>
+    <span class="p">]</span>
+<span class="p">)</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11407,6 +11529,23 @@ instead.</p>
                   <code>False</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>return_provenance</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>True</code>, also return the <a class="autorefs autorefs-internal" title="Provenance" href="../interpolation/#ordito.interpolation.Provenance"><code>Provenance</code></a> that carries
+any per-vertex or per-face field onto the result.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -11415,14 +11554,14 @@ instead.</p>
     <table>
       <thead>
         <tr>
-          <th>Type</th>
+<th>Name</th>          <th>Type</th>
           <th>Description</th>
         </tr>
       </thead>
       <tbody>
           <tr class="doc-section-item">
-            <td>
-                  <code><span title="new_vertices">new_vertices</span></code>
+<td><code>new_vertices</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -11431,12 +11570,25 @@ instead.</p>
             </td>
           </tr>
           <tr class="doc-section-item">
-            <td>
-                  <code><span title="new_faces">new_faces</span></code>
+<td><code>new_faces</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p><code>(3 * m,)</code> flat triangle index buffer for the clipped region, <code>m</code> its face count.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>provenance</code></td>            <td>
+                  <code><span title="Provenance">Provenance</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Only when <code>return_provenance</code> is <code>True</code>: each kept input vertex is a copy, each
+crossing interpolates the endpoints of the edge it lies on at its position along the edge,
+so a field carried through it reads <code>isovalue</code> on the section, and each output face comes
+from the input face it was cut from. A cap face has no source (<code>-1</code>).</p>
               </div>
             </td>
           </tr>
@@ -11536,60 +11688,7 @@ the <em>near</em> side, so the field enters negated:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1992</span>
-<span class="normal">1993</span>
-<span class="normal">1994</span>
-<span class="normal">1995</span>
-<span class="normal">1996</span>
-<span class="normal">1997</span>
-<span class="normal">1998</span>
-<span class="normal">1999</span>
-<span class="normal">2000</span>
-<span class="normal">2001</span>
-<span class="normal">2002</span>
-<span class="normal">2003</span>
-<span class="normal">2004</span>
-<span class="normal">2005</span>
-<span class="normal">2006</span>
-<span class="normal">2007</span>
-<span class="normal">2008</span>
-<span class="normal">2009</span>
-<span class="normal">2010</span>
-<span class="normal">2011</span>
-<span class="normal">2012</span>
-<span class="normal">2013</span>
-<span class="normal">2014</span>
-<span class="normal">2015</span>
-<span class="normal">2016</span>
-<span class="normal">2017</span>
-<span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
-<span class="normal">2025</span>
-<span class="normal">2026</span>
-<span class="normal">2027</span>
-<span class="normal">2028</span>
-<span class="normal">2029</span>
-<span class="normal">2030</span>
-<span class="normal">2031</span>
-<span class="normal">2032</span>
-<span class="normal">2033</span>
-<span class="normal">2034</span>
-<span class="normal">2035</span>
-<span class="normal">2036</span>
-<span class="normal">2037</span>
-<span class="normal">2038</span>
-<span class="normal">2039</span>
-<span class="normal">2040</span>
-<span class="normal">2041</span>
-<span class="normal">2042</span>
-<span class="normal">2043</span>
-<span class="normal">2044</span>
-<span class="normal">2045</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2045</span>
 <span class="normal">2046</span>
 <span class="normal">2047</span>
 <span class="normal">2048</span>
@@ -11733,18 +11832,18 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="normal">2186</span>
 <span class="normal">2187</span>
 <span class="normal">2188</span>
-<span class="normal">2189</span>
-<span class="normal">2190</span>
-<span class="normal">2191</span>
-<span class="normal">2192</span>
-<span class="normal">2193</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+<span class="normal">2189</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">isovalue</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">cap</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+    <span class="n">return_provenance</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span>
+    <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">od</span><span class="o">.</span><span class="n">interpolation</span><span class="o">.</span><span class="n">Provenance</span><span class="p">]</span>
+<span class="p">):</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Keep the ``values &gt;= isovalue`` region of the mesh, cutting faces the level set crosses.</span>
 
@@ -11780,13 +11879,21 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="sd">        are not merged); only the crossing points the cut appends are shared. Use</span>
 <span class="sd">        [`fill_min_weight`][ordito.holes.fill_min_weight] on the result to close every hole</span>
 <span class="sd">        instead.</span>
+<span class="sd">    return_provenance</span>
+<span class="sd">        If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries</span>
+<span class="sd">        any per-vertex or per-face field onto the result.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
-<span class="sd">    new_vertices</span>
+<span class="sd">    new_vertices : wp.array[wp.vec3]</span>
 <span class="sd">        ``(n_new_vertices,)`` vertices of the clipped region, with the crossing points appended.</span>
-<span class="sd">    new_faces</span>
+<span class="sd">    new_faces : wp.array[wp.int32]</span>
 <span class="sd">        ``(3 * m,)`` flat triangle index buffer for the clipped region, ``m`` its face count.</span>
+<span class="sd">    provenance : Provenance</span>
+<span class="sd">        Only when ``return_provenance`` is ``True``: each kept input vertex is a copy, each</span>
+<span class="sd">        crossing interpolates the endpoints of the edge it lies on at its position along the edge,</span>
+<span class="sd">        so a field carried through it reads ``isovalue`` on the section, and each output face comes</span>
+<span class="sd">        from the input face it was cut from. A cap face has no source (``-1``).</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -11857,88 +11964,19 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">values</span><span class="o">=</span><span class="n">values</span><span class="p">)</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span>
-    <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
-            <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span> <span class="o">=</span> <span class="n">_empty_clip</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">return_provenance</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="ow">not</span> <span class="n">cap</span><span class="p">:</span>
+        <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span> <span class="o">=</span> <span class="n">_clip_with_vertex_field</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">_shifted_field</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">isovalue</span><span class="p">),</span> <span class="n">with_provenance</span><span class="o">=</span><span class="n">return_provenance</span>
         <span class="p">)</span>
-
-    <span class="n">shifted</span> <span class="o">=</span> <span class="n">_shifted_field</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">isovalue</span><span class="p">)</span>
-    <span class="k">if</span> <span class="ow">not</span> <span class="n">cap</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_clip_with_vertex_field</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">shifted</span><span class="p">)</span>
-    <span class="c1"># The cut writes its crossing points per face, so a rim edge shared by two cut faces arrives as</span>
-    <span class="c1"># two bitwise-equal vertices; merging those (and only those -- the input vertices are kept as</span>
-    <span class="c1"># given) turns the section into real boundary loops.</span>
-    <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">source</span> <span class="o">=</span> <span class="n">_clip_with_sources</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">shifted</span><span class="p">,</span> <span class="n">merge_crossings</span><span class="o">=</span><span class="kc">True</span>
-    <span class="p">)</span>
-    <span class="k">assert</span> <span class="n">source</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-    <span class="k">if</span> <span class="n">new_faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span> <span class="o">=</span> <span class="n">_capped_clip</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">_shifted_field</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="n">isovalue</span><span class="p">),</span> <span class="n">return_provenance</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">provenance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-    <span class="c1"># The cap closes the section and nothing else, as VTK caps the cut's own polylines: the boundary</span>
-    <span class="c1"># edges with both ends on the level set (a crossing point, or an input vertex the classifier</span>
-    <span class="c1"># reads as on it, within its tolerance), chained into cycles. Any other boundary edge was the</span>
-    <span class="c1"># input's and stays open, and a section that runs into one is a chain, not a cycle, and stays</span>
-    <span class="c1"># open too. An edge with both ends on the section lies only in faces with two corners on it, so</span>
-    <span class="c1"># its boundary status is decided among those faces: the rim is taken over them alone, not the</span>
-    <span class="c1"># whole mesh, and only its section edges are kept.</span>
-    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">new_faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
-    <span class="n">scanned</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">section_face_flags</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">new_faces</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">shifted</span><span class="p">,</span> <span class="n">scanned</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="c1"># Readback: the touching-face count sizes their buffer.</span>
-    <span class="n">n_touching</span> <span class="o">=</span> <span class="n">scan_count</span><span class="p">(</span><span class="n">scanned</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">n_touching</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-    <span class="n">touching</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_touching</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">emit_section_faces</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">new_faces</span><span class="p">,</span> <span class="n">scanned</span><span class="p">,</span> <span class="n">touching</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">new_vertices</span><span class="p">,</span> <span class="n">touching</span><span class="p">)</span>
-    <span class="n">n_rim</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="k">if</span> <span class="n">n_rim</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-    <span class="c1"># The rim's section edges, chained in the vertex numbering: a non-section row reads</span>
-    <span class="c1"># ``(-1, -1)`` and the chaining drops it, so nothing is read back before the cycles' totals.</span>
-    <span class="n">edges</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_rim</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">n_section</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">section_rim_edges</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_rim</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rim</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">shifted</span><span class="p">],</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">n_section</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">cycles</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">successor_cycles</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">new_vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="c1"># A clean section's cycles cover each section edge once. Where they do not, the section is not</span>
-    <span class="c1"># a set of disjoint cycles: a chain into an input boundary, or a pinch, where two crossings</span>
-    <span class="c1"># merged into one point the section passes twice and the vertex chaining keeps one of its two</span>
-    <span class="c1"># successors (its ranks then collide and name vertices off the section). The cap reads the</span>
-    <span class="c1"># count back with its own bookkeeping and gives up on a mismatch, so a clean section pays no</span>
-    <span class="c1"># read for it; the section is then chained on the host.</span>
-    <span class="n">capped</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="k">if</span> <span class="n">cycles</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">capped</span> <span class="o">=</span> <span class="n">_cap_section_loops</span><span class="p">(</span><span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">cycles</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">n_section</span><span class="p">)</span>
-    <span class="c1"># Readback, where no cycle came out: whether there was a section at all.</span>
-    <span class="k">elif</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">n_section</span><span class="p">))</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-    <span class="k">if</span> <span class="n">capped</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">cycles</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">_section_cycles_on_host</span><span class="p">(</span><span class="n">edges</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">cycles</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-        <span class="n">capped</span> <span class="o">=</span> <span class="n">_cap_section_loops</span><span class="p">(</span><span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">cycles</span><span class="p">,</span> <span class="n">offsets</span><span class="p">)</span>
-        <span class="k">assert</span> <span class="n">capped</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-    <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">capped</span>
+    <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">provenance</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -12239,134 +12277,134 @@ result is as watertight as the input:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span>
-<span class="normal">2393</span>
-<span class="normal">2394</span>
-<span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
-<span class="normal">2402</span>
-<span class="normal">2403</span>
-<span class="normal">2404</span>
-<span class="normal">2405</span>
-<span class="normal">2406</span>
-<span class="normal">2407</span>
-<span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
-<span class="normal">2415</span>
-<span class="normal">2416</span>
-<span class="normal">2417</span>
-<span class="normal">2418</span>
-<span class="normal">2419</span>
-<span class="normal">2420</span>
-<span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
-<span class="normal">2424</span>
-<span class="normal">2425</span>
-<span class="normal">2426</span>
-<span class="normal">2427</span>
-<span class="normal">2428</span>
-<span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
-<span class="normal">2451</span>
-<span class="normal">2452</span>
-<span class="normal">2453</span>
-<span class="normal">2454</span>
-<span class="normal">2455</span>
-<span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span>
-<span class="normal">2460</span>
-<span class="normal">2461</span>
-<span class="normal">2462</span>
-<span class="normal">2463</span>
-<span class="normal">2464</span>
-<span class="normal">2465</span>
-<span class="normal">2466</span>
-<span class="normal">2467</span>
-<span class="normal">2468</span>
-<span class="normal">2469</span>
-<span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span>
-<span class="normal">2474</span>
-<span class="normal">2475</span>
-<span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2511</span>
 <span class="normal">2512</span>
 <span class="normal">2513</span>
 <span class="normal">2514</span>
 <span class="normal">2515</span>
-<span class="normal">2516</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
+<span class="normal">2516</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
+<span class="normal">2524</span>
+<span class="normal">2525</span>
+<span class="normal">2526</span>
+<span class="normal">2527</span>
+<span class="normal">2528</span>
+<span class="normal">2529</span>
+<span class="normal">2530</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span>
+<span class="normal">2538</span>
+<span class="normal">2539</span>
+<span class="normal">2540</span>
+<span class="normal">2541</span>
+<span class="normal">2542</span>
+<span class="normal">2543</span>
+<span class="normal">2544</span>
+<span class="normal">2545</span>
+<span class="normal">2546</span>
+<span class="normal">2547</span>
+<span class="normal">2548</span>
+<span class="normal">2549</span>
+<span class="normal">2550</span>
+<span class="normal">2551</span>
+<span class="normal">2552</span>
+<span class="normal">2553</span>
+<span class="normal">2554</span>
+<span class="normal">2555</span>
+<span class="normal">2556</span>
+<span class="normal">2557</span>
+<span class="normal">2558</span>
+<span class="normal">2559</span>
+<span class="normal">2560</span>
+<span class="normal">2561</span>
+<span class="normal">2562</span>
+<span class="normal">2563</span>
+<span class="normal">2564</span>
+<span class="normal">2565</span>
+<span class="normal">2566</span>
+<span class="normal">2567</span>
+<span class="normal">2568</span>
+<span class="normal">2569</span>
+<span class="normal">2570</span>
+<span class="normal">2571</span>
+<span class="normal">2572</span>
+<span class="normal">2573</span>
+<span class="normal">2574</span>
+<span class="normal">2575</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span>
+<span class="normal">2579</span>
+<span class="normal">2580</span>
+<span class="normal">2581</span>
+<span class="normal">2582</span>
+<span class="normal">2583</span>
+<span class="normal">2584</span>
+<span class="normal">2585</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span>
+<span class="normal">2588</span>
+<span class="normal">2589</span>
+<span class="normal">2590</span>
+<span class="normal">2591</span>
+<span class="normal">2592</span>
+<span class="normal">2593</span>
+<span class="normal">2594</span>
+<span class="normal">2595</span>
+<span class="normal">2596</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span>
+<span class="normal">2623</span>
+<span class="normal">2624</span>
+<span class="normal">2625</span>
+<span class="normal">2626</span>
+<span class="normal">2627</span>
+<span class="normal">2628</span>
+<span class="normal">2629</span>
+<span class="normal">2630</span>
+<span class="normal">2631</span>
+<span class="normal">2632</span>
+<span class="normal">2633</span>
+<span class="normal">2634</span>
+<span class="normal">2635</span>
+<span class="normal">2636</span>
+<span class="normal">2637</span>
+<span class="normal">2638</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>

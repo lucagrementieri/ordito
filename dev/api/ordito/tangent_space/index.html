@@ -6447,7 +6447,19 @@ here.</p>
 <span class="normal">149</span>
 <span class="normal">150</span>
 <span class="normal">151</span>
-<span class="normal">152</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_tangent_frames</span><span class="p">(</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_tangent_frames</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6534,33 +6546,45 @@ here.</p>
     <span class="k">if</span> <span class="n">rings</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">rings</span> <span class="o">=</span> <span class="n">vertex_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
     <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span> <span class="o">=</span> <span class="n">rings</span>
-
+    <span class="c1"># Rings the walk listed as long are skipped by the thread-a-vertex kernel and laid out a block</span>
+    <span class="c1"># a ring after it; with none known (none exists, or none was read back), every ring is a</span>
+    <span class="c1"># thread's.</span>
+    <span class="n">listed</span> <span class="o">=</span> <span class="n">long_rings</span><span class="p">(</span><span class="n">ring_offsets</span><span class="p">)</span>
+    <span class="n">gather</span> <span class="o">=</span> <span class="n">normals</span> <span class="ow">is</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames</span>
+        <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_short</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames</span><span class="p">,</span>
+            <span class="n">kernel</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-                <span class="n">vertices</span><span class="p">,</span>
-                <span class="n">faces</span><span class="p">,</span>
-                <span class="n">normals</span><span class="p">,</span>
-                <span class="n">ring_offsets</span><span class="p">,</span>
-                <span class="n">ring_halfedges</span><span class="p">,</span>
-                <span class="n">is_boundary</span><span class="p">,</span>
-                <span class="n">basis_x</span><span class="p">,</span>
-                <span class="n">basis_y</span><span class="p">,</span>
-            <span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="k">return</span> <span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span>
-
-    <span class="n">normals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_gathered</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_gathered</span>
+        <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_gathered_short</span>
+        <span class="n">normals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
+            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_long</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">listed</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">,</span> <span class="n">listed</span><span class="p">,</span> <span class="n">gather</span><span class="p">,</span>
+            <span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="n">block_dim</span><span class="o">=</span><span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">FRAME_LONG_LANES</span><span class="p">,</span>
+        <span class="p">)</span>  <span class="c1"># fmt: skip</span>
     <span class="k">return</span> <span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -6737,19 +6761,7 @@ compare all three vectors element-wise instead of through an invariant.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">167</span>
 <span class="normal">168</span>
 <span class="normal">169</span>
 <span class="normal">170</span>
@@ -6823,7 +6835,19 @@ compare all three vectors element-wise instead of through an invariant.</p>
 <span class="normal">238</span>
 <span class="normal">239</span>
 <span class="normal">240</span>
-<span class="normal">241</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_tangent_frames</span><span class="p">(</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_tangent_frames</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7111,19 +7135,7 @@ vertex, and every angle stays below a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">244</span>
-<span class="normal">245</span>
-<span class="normal">246</span>
-<span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">256</span>
 <span class="normal">257</span>
 <span class="normal">258</span>
 <span class="normal">259</span>
@@ -7206,7 +7218,34 @@ vertex, and every angle stays below a full turn:</p>
 <span class="normal">336</span>
 <span class="normal">337</span>
 <span class="normal">338</span>
-<span class="normal">339</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span>
+<span class="normal">345</span>
+<span class="normal">346</span>
+<span class="normal">347</span>
+<span class="normal">348</span>
+<span class="normal">349</span>
+<span class="normal">350</span>
+<span class="normal">351</span>
+<span class="normal">352</span>
+<span class="normal">353</span>
+<span class="normal">354</span>
+<span class="normal">355</span>
+<span class="normal">356</span>
+<span class="normal">357</span>
+<span class="normal">358</span>
+<span class="normal">359</span>
+<span class="normal">360</span>
+<span class="normal">361</span>
+<span class="normal">362</span>
+<span class="normal">363</span>
+<span class="normal">364</span>
+<span class="normal">365</span>
+<span class="normal">366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7285,11 +7324,26 @@ vertex, and every angle stays below a full turn:</p>
     <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span> <span class="o">=</span> <span class="n">rings</span>
 
     <span class="k">if</span> <span class="n">face_angles</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># The ring walk forms each corner angle itself, as ``triangles.face_angles`` would.</span>
+        <span class="c1"># The ring walk forms each corner angle itself, as ``triangles.face_angles`` would; the</span>
+        <span class="c1"># long rings ``vertex_one_rings`` listed have theirs formed across the device first.</span>
+        <span class="n">listed</span> <span class="o">=</span> <span class="n">long_rings</span><span class="p">(</span><span class="n">ring_offsets</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+                <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">park_long_ring_angles</span><span class="p">,</span>
+                <span class="n">dim</span><span class="o">=</span><span class="n">listed</span><span class="o">.</span><span class="n">size</span>
+                <span class="o">*</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_PARK_BLOCKS</span>
+                <span class="o">*</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">,</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">listed</span><span class="p">],</span>
+                <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">],</span>
+                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_from_positions</span><span class="p">,</span>
+            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_from_positions</span>
+            <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="kc">None</span>
+            <span class="k">else</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_parked</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=-</span><span class="p">(</span><span class="o">-</span><span class="n">n</span> <span class="o">//</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">,</span> <span class="n">angles</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
             <span class="n">block_dim</span><span class="o">=</span><span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">,</span>
         <span class="p">)</span>
@@ -7512,34 +7566,7 @@ modulo a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span>
-<span class="normal">346</span>
-<span class="normal">347</span>
-<span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
-<span class="normal">351</span>
-<span class="normal">352</span>
-<span class="normal">353</span>
-<span class="normal">354</span>
-<span class="normal">355</span>
-<span class="normal">356</span>
-<span class="normal">357</span>
-<span class="normal">358</span>
-<span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
-<span class="normal">365</span>
-<span class="normal">366</span>
-<span class="normal">367</span>
-<span class="normal">368</span>
-<span class="normal">369</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">369</span>
 <span class="normal">370</span>
 <span class="normal">371</span>
 <span class="normal">372</span>
@@ -7615,7 +7642,34 @@ modulo a full turn:</p>
 <span class="normal">442</span>
 <span class="normal">443</span>
 <span class="normal">444</span>
-<span class="normal">445</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span>
+<span class="normal">456</span>
+<span class="normal">457</span>
+<span class="normal">458</span>
+<span class="normal">459</span>
+<span class="normal">460</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

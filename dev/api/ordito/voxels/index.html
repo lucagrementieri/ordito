@@ -18238,7 +18238,10 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 <span class="normal">3057</span>
 <span class="normal">3058</span>
 <span class="normal">3059</span>
-<span class="normal">3060</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
+<span class="normal">3060</span>
+<span class="normal">3061</span>
+<span class="normal">3062</span>
+<span class="normal">3063</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cull_internal</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18324,6 +18327,9 @@ relying on an index into the full lattice: it was not, since the lattice itself 
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">counts</span><span class="p">,</span> <span class="n">vertices</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="c1"># Declined (2026-11-10): counting and scanning in one block (``polyline._upsample``'s form);</span>
+    <span class="c1"># it pays only to ~2 048 items (1.05-1.13x at 4 096) and the benchmarked grids hold 16-29 k</span>
+    <span class="c1"># voxels.</span>
     <span class="n">offsets</span><span class="p">,</span> <span class="n">n_quads</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">)</span>
     <span class="n">faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_quads</span> <span class="o">*</span> <span class="mi">6</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
@@ -18503,10 +18509,7 @@ module needs it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3063</span>
-<span class="normal">3064</span>
-<span class="normal">3065</span>
-<span class="normal">3066</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3066</span>
 <span class="normal">3067</span>
 <span class="normal">3068</span>
 <span class="normal">3069</span>
@@ -18564,7 +18567,10 @@ module needs it.</p>
 <span class="normal">3121</span>
 <span class="normal">3122</span>
 <span class="normal">3123</span>
-<span class="normal">3124</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
+<span class="normal">3124</span>
+<span class="normal">3125</span>
+<span class="normal">3126</span>
+<span class="normal">3127</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build the deduplicated corner lattice of the voxel set, plus each voxel's eight corners.</span>
 

@@ -6613,8 +6613,8 @@ VTK, glTF, ...).</p>
 <li><code>vertex_normals</code> : <code>wp.array[wp.vec3]</code> from <code>nx, ny, nz</code> per-vertex data.</li>
 <li><code>uv</code> : <code>wp.array[wp.vec2]</code> from <code>u, v</code> (or <code>s, t</code> / <code>texture_u, texture_v</code>).</li>
 <li><code>corner_uv</code> : <code>(3 * n_faces,)</code> <code>wp.array[wp.vec2]</code>, one texcoord per face corner,
-  from an OBJ file's <code>vt</code> indices -- the form of a UV atlas, whose seams give one vertex
-  several texcoords.
+  from an OBJ file's <code>vt</code> indices or a PLY file's <code>texcoord</code> face list -- the form of
+  a UV atlas, whose seams give one vertex several texcoords.
   <a class="autorefs autorefs-internal" title="split_vertices_by_corner_values" href="../repair/#ordito.repair.split_vertices_by_corner_values"><code>split_vertices_by_corner_values</code></a>
   turns it into per-vertex <code>uv</code>.</li>
 <li><code>colors</code> : <code>wp.array[wp.vec3]</code> or <code>wp.array[wp.vec4]</code> from <code>red, green, blue</code>
@@ -6643,7 +6643,8 @@ VTK, glTF, ...).</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If an OBJ file's face names a vertex or a texcoord it does not define.</p>
+                <p>If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with
+per-corner texcoords is malformed or names a vertex it does not define.</p>
               </div>
             </td>
           </tr>
@@ -6663,7 +6664,9 @@ attributes verbatim and never computes them, so <code>face_normals</code> appear
 file itself contained per-face normals.</p>
 <p>An OBJ file is read here rather than by <code>meshio</code>, which refuses one whose <code>vt</code> count
 differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its positions, triangles and
-<code>corner_uv</code> are returned; polygons with more than three corners are ignored as above.</p>
+<code>corner_uv</code> are returned; polygons with more than three corners are ignored as above. A PLY
+file whose faces carry a <code>texcoord</code> (or <code>texcoords</code>) list, which <code>meshio</code> cannot decode,
+is read here too, ASCII or binary, with every attribute above.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -6805,36 +6808,7 @@ differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its po
 <span class="normal">163</span>
 <span class="normal">164</span>
 <span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span>
-<span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span>
-<span class="normal">180</span>
-<span class="normal">181</span>
-<span class="normal">182</span>
-<span class="normal">183</span>
-<span class="normal">184</span>
-<span class="normal">185</span>
-<span class="normal">186</span>
-<span class="normal">187</span>
-<span class="normal">188</span>
-<span class="normal">189</span>
-<span class="normal">190</span>
-<span class="normal">191</span>
-<span class="normal">192</span>
-<span class="normal">193</span>
-<span class="normal">194</span>
-<span class="normal">195</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
+<span class="normal">166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load every mesh attribute ``meshio`` can read from a file into Warp arrays.</span>
 
@@ -6860,8 +6834,8 @@ differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its po
 <span class="sd">        - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.</span>
 <span class="sd">        - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).</span>
 <span class="sd">        - ``corner_uv`` : ``(3 * n_faces,)`` ``wp.array[wp.vec2]``, one texcoord per face corner,</span>
-<span class="sd">          from an OBJ file's ``vt`` indices -- the form of a UV atlas, whose seams give one vertex</span>
-<span class="sd">          several texcoords.</span>
+<span class="sd">          from an OBJ file's ``vt`` indices or a PLY file's ``texcoord`` face list -- the form of</span>
+<span class="sd">          a UV atlas, whose seams give one vertex several texcoords.</span>
 <span class="sd">          [`split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values]</span>
 <span class="sd">          turns it into per-vertex ``uv``.</span>
 <span class="sd">        - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``</span>
@@ -6871,7 +6845,8 @@ differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its po
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If an OBJ file's face names a vertex or a texcoord it does not define.</span>
+<span class="sd">        If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with</span>
+<span class="sd">        per-corner texcoords is malformed or names a vertex it does not define.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -6885,7 +6860,9 @@ differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its po
 
 <span class="sd">    An OBJ file is read here rather than by ``meshio``, which refuses one whose ``vt`` count</span>
 <span class="sd">    differs from its ``v`` count -- every UV-mapped OBJ with a seam. Its positions, triangles and</span>
-<span class="sd">    ``corner_uv`` are returned; polygons with more than three corners are ignored as above.</span>
+<span class="sd">    ``corner_uv`` are returned; polygons with more than three corners are ignored as above. A PLY</span>
+<span class="sd">    file whose faces carry a ``texcoord`` (or ``texcoords``) list, which ``meshio`` cannot decode,</span>
+<span class="sd">    is read here too, ASCII or binary, with every attribute above.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -6916,55 +6893,23 @@ differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its po
 <span class="sd">    """</span>
     <span class="k">if</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">suffix</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s2">".obj"</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_load_obj_data</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">_is_ply_with_corner_texcoords</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+        <span class="n">ply</span> <span class="o">=</span> <span class="n">_read_ply</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">),</span> <span class="s2">"load_mesh_data"</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_mesh_data</span><span class="p">(</span>
+            <span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">point_data</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">corner_uv</span><span class="p">,</span> <span class="n">device</span>
+        <span class="p">)</span>
     <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
     <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-
-    <span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-    <span class="n">result</span><span class="p">:</span> <span class="n">MeshData</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"vertices"</span><span class="p">:</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)}</span>
-
-    <span class="n">faces_np</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">faces_np</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">faces_np</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">faces_flat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
-        <span class="n">result</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">]</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">faces_flat</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-
-    <span class="n">point_data</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">point_data</span>
-
-    <span class="n">normals</span> <span class="o">=</span> <span class="n">_stack_columns</span><span class="p">(</span><span class="n">point_data</span><span class="p">,</span> <span class="n">_NORMAL_COLUMNS</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">result</span><span class="p">[</span><span class="s2">"vertex_normals"</span><span class="p">]</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-            <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">normals</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-        <span class="p">)</span>
-
-    <span class="k">for</span> <span class="n">names</span> <span class="ow">in</span> <span class="n">_UV_COLUMN_SETS</span><span class="p">:</span>
-        <span class="n">uv</span> <span class="o">=</span> <span class="n">_stack_columns</span><span class="p">(</span><span class="n">point_data</span><span class="p">,</span> <span class="n">names</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">uv</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">result</span><span class="p">[</span><span class="s2">"uv"</span><span class="p">]</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-                <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-            <span class="p">)</span>
-            <span class="k">break</span>
-
-    <span class="n">colors_raw</span> <span class="o">=</span> <span class="n">_stack_columns</span><span class="p">(</span><span class="n">point_data</span><span class="p">,</span> <span class="n">_COLOR_COLUMNS_RGBA</span><span class="p">)</span>
-    <span class="n">has_alpha</span> <span class="o">=</span> <span class="n">colors_raw</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-    <span class="k">if</span> <span class="n">colors_raw</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">colors_raw</span> <span class="o">=</span> <span class="n">_stack_columns</span><span class="p">(</span><span class="n">point_data</span><span class="p">,</span> <span class="n">_COLOR_COLUMNS</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">colors_raw</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">colors</span> <span class="o">=</span> <span class="n">colors_raw</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">issubdtype</span><span class="p">(</span><span class="n">colors_raw</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">integer</span><span class="p">):</span>
-            <span class="n">colors</span> <span class="o">/=</span> <span class="mf">255.0</span>
-        <span class="n">colors</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">colors</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-        <span class="n">result</span><span class="p">[</span><span class="s2">"colors"</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">colors</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">has_alpha</span>
-            <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">colors</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="p">)</span>
-
-    <span class="n">face_normals</span> <span class="o">=</span> <span class="n">_face_normals_from_cell_data</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">result</span><span class="p">[</span><span class="s2">"face_normals"</span><span class="p">]</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-            <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-        <span class="p">)</span>
-
-    <span class="k">return</span> <span class="n">result</span>
+    <span class="k">return</span> <span class="n">_mesh_data</span><span class="p">(</span>
+        <span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span>
+        <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">),</span>
+        <span class="n">mesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">,</span>
+        <span class="n">_face_normals_from_cell_data</span><span class="p">(</span><span class="n">mesh</span><span class="p">),</span>
+        <span class="kc">None</span><span class="p">,</span>
+        <span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7078,8 +7023,8 @@ owns its buffers.</p>
             <td>
               <div class="doc-md-description">
                 <p>If the file contains no triangle faces (e.g. a point cloud or a triangle-strip
-PLY that <code>meshio</code> cannot decode), or if a face references a vertex index the file's own
-vertex count does not cover.</p>
+PLY that <code>meshio</code> cannot decode), if a face references a vertex index the file's own
+vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.</p>
               </div>
             </td>
           </tr>
@@ -7122,86 +7067,90 @@ vertex count does not cover.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
-<span class="normal">298</span>
-<span class="normal">299</span>
-<span class="normal">300</span>
-<span class="normal">301</span>
-<span class="normal">302</span>
-<span class="normal">303</span>
-<span class="normal">304</span>
-<span class="normal">305</span>
-<span class="normal">306</span>
-<span class="normal">307</span>
-<span class="normal">308</span>
-<span class="normal">309</span>
-<span class="normal">310</span>
-<span class="normal">311</span>
-<span class="normal">312</span>
-<span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
-<span class="normal">316</span>
-<span class="normal">317</span>
-<span class="normal">318</span>
-<span class="normal">319</span>
-<span class="normal">320</span>
-<span class="normal">321</span>
-<span class="normal">322</span>
-<span class="normal">323</span>
-<span class="normal">324</span>
-<span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span>
-<span class="normal">346</span>
-<span class="normal">347</span>
-<span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
-<span class="normal">351</span>
-<span class="normal">352</span>
-<span class="normal">353</span>
-<span class="normal">354</span>
-<span class="normal">355</span>
-<span class="normal">356</span>
-<span class="normal">357</span>
-<span class="normal">358</span>
-<span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
-<span class="normal">365</span>
-<span class="normal">366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span>
+<span class="normal">654</span>
+<span class="normal">655</span>
+<span class="normal">656</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load a triangle mesh file into a ``warp.Mesh``.</span>
 
@@ -7225,8 +7174,8 @@ vertex count does not cover.</p>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If the file contains no triangle faces (e.g. a point cloud or a triangle-strip</span>
-<span class="sd">        PLY that ``meshio`` cannot decode), or if a face references a vertex index the file's own</span>
-<span class="sd">        vertex count does not cover.</span>
+<span class="sd">        PLY that ``meshio`` cannot decode), if a face references a vertex index the file's own</span>
+<span class="sd">        vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7262,18 +7211,22 @@ vertex count does not cover.</p>
             <span class="n">points</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
             <span class="n">indices</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
-    <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
-    <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-    <span class="n">faces_np</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">_is_ply_with_corner_texcoords</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+        <span class="n">ply</span> <span class="o">=</span> <span class="n">_read_ply</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="n">points_np</span><span class="p">,</span> <span class="n">faces_np</span> <span class="o">=</span> <span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
+        <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="n">points_np</span><span class="p">,</span> <span class="n">faces_np</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">faces_np</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">faces_np</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Mesh file </span><span class="si">{</span><span class="n">path</span><span class="si">!r}</span><span class="s2"> has no triangle faces; cannot build a wp.Mesh."</span><span class="p">)</span>
     <span class="c1"># A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer</span>
     <span class="c1"># doesn't cover; this is the trust boundary where that first enters ordito. The check reads</span>
     <span class="c1"># the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or</span>
     <span class="c1"># above ``2**31`` into range.</span>
-    <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces_np</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">),</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
+    <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces_np</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">points_np</span><span class="p">),</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
     <span class="n">vertices_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">points_np</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
     <span class="p">)</span>
     <span class="n">faces_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
         <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
@@ -7447,64 +7400,64 @@ allocated Warp arrays (no aliasing with <code>vertices</code> / <code>faces</cod
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">369</span>
-<span class="normal">370</span>
-<span class="normal">371</span>
-<span class="normal">372</span>
-<span class="normal">373</span>
-<span class="normal">374</span>
-<span class="normal">375</span>
-<span class="normal">376</span>
-<span class="normal">377</span>
-<span class="normal">378</span>
-<span class="normal">379</span>
-<span class="normal">380</span>
-<span class="normal">381</span>
-<span class="normal">382</span>
-<span class="normal">383</span>
-<span class="normal">384</span>
-<span class="normal">385</span>
-<span class="normal">386</span>
-<span class="normal">387</span>
-<span class="normal">388</span>
-<span class="normal">389</span>
-<span class="normal">390</span>
-<span class="normal">391</span>
-<span class="normal">392</span>
-<span class="normal">393</span>
-<span class="normal">394</span>
-<span class="normal">395</span>
-<span class="normal">396</span>
-<span class="normal">397</span>
-<span class="normal">398</span>
-<span class="normal">399</span>
-<span class="normal">400</span>
-<span class="normal">401</span>
-<span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
-<span class="normal">419</span>
-<span class="normal">420</span>
-<span class="normal">421</span>
-<span class="normal">422</span>
-<span class="normal">423</span>
-<span class="normal">424</span>
-<span class="normal">425</span>
-<span class="normal">426</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">659</span>
+<span class="normal">660</span>
+<span class="normal">661</span>
+<span class="normal">662</span>
+<span class="normal">663</span>
+<span class="normal">664</span>
+<span class="normal">665</span>
+<span class="normal">666</span>
+<span class="normal">667</span>
+<span class="normal">668</span>
+<span class="normal">669</span>
+<span class="normal">670</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span>
+<span class="normal">692</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span>
+<span class="normal">706</span>
+<span class="normal">707</span>
+<span class="normal">708</span>
+<span class="normal">709</span>
+<span class="normal">710</span>
+<span class="normal">711</span>
+<span class="normal">712</span>
+<span class="normal">713</span>
+<span class="normal">714</span>
+<span class="normal">715</span>
+<span class="normal">716</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>

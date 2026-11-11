@@ -6860,7 +6860,8 @@ per ray and <code>-1</code> for the miss:</p>
 <span class="normal">245</span>
 <span class="normal">246</span>
 <span class="normal">247</span>
-<span class="normal">248</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersects_first</span><span class="p">(</span>
+<span class="normal">248</span>
+<span class="normal">249</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersects_first</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">ray_origins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">ray_directions</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -6927,7 +6928,8 @@ per ray and <code>-1</code> for the miss:</p>
     <span class="c1"># ``first_hit`` returns ``(face, location)`` and ``wp.map`` wants one ``out=`` per returned</span>
     <span class="c1"># value, so the location is written and dropped. Kept rather than given a face-only</span>
     <span class="c1"># ``@wp.func`` of its own: that would generate a second ``map_*`` module to save one</span>
-    <span class="c1"># allocation and an (n,) vec3 store, well under a percent of a call this size.</span>
+    <span class="c1"># allocation and an (n,) vec3 store, well under a percent of a call this size. Not carved</span>
+    <span class="c1"># with the output: the returned faces would keep the scratch alive, four times their bytes.</span>
     <span class="n">locations_scratch</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">ray_origins</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">map</span><span class="p">(</span>
         <span class="n">kernel_ray</span><span class="o">.</span><span class="n">first_hit</span><span class="p">,</span>
@@ -7131,8 +7133,7 @@ away along the first ray, so <code>max_t=1.0</code> stops short of it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/ray.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">251</span>
-<span class="normal">252</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">252</span>
 <span class="normal">253</span>
 <span class="normal">254</span>
 <span class="normal">255</span>
@@ -7205,7 +7206,8 @@ away along the first ray, so <code>max_t=1.0</code> stops short of it:</p>
 <span class="normal">322</span>
 <span class="normal">323</span>
 <span class="normal">324</span>
-<span class="normal">325</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersects_any</span><span class="p">(</span>
+<span class="normal">325</span>
+<span class="normal">326</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersects_any</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">ray_origins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">ray_directions</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7496,8 +7498,7 @@ outside, pointing away, it never ends:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/ray.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">328</span>
-<span class="normal">329</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">329</span>
 <span class="normal">330</span>
 <span class="normal">331</span>
 <span class="normal">332</span>
@@ -7576,7 +7577,8 @@ outside, pointing away, it never ends:</p>
 <span class="normal">405</span>
 <span class="normal">406</span>
 <span class="normal">407</span>
-<span class="normal">408</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">longest_ray</span><span class="p">(</span>
+<span class="normal">408</span>
+<span class="normal">409</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">longest_ray</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">ray_origins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">ray_directions</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7683,10 +7685,11 @@ outside, pointing away, it never ends:</p>
     <div class="doc doc-contents ">
 
         <p>Test whether query points lie inside a closed mesh (ray parity sign).</p>
-<p>Uses <code>wp.mesh_query_point_sign_parity</code> on the mesh BVH, sharing the same
-parity path as
-<a class="autorefs autorefs-internal" title="signed_distance_on_mesh" href="../proximity/#ordito.proximity.signed_distance_on_mesh"><code>signed_distance_on_mesh</code></a>. Points
-outside the mesh axis-aligned bounding box are rejected without a parity test.</p>
+<p>Casts the perturbed rays of <code>wp.mesh_query_point_sign_parity</code>'s parity vote on the mesh
+BVH, the same vote that signs
+<a class="autorefs autorefs-internal" title="signed_distance_on_mesh" href="../proximity/#ordito.proximity.signed_distance_on_mesh"><code>signed_distance_on_mesh</code></a>, and stops casting once
+the majority is decided. Points outside the mesh axis-aligned bounding box are rejected
+without a parity test.</p>
 <p>Ordito mesh queries use <strong>Warp's SDF sign convention</strong> (outside positive,
 inside negative). A point is classified as inside when its signed distance
 would be negative; behavior on the on-surface tolerance band is undefined.
@@ -7871,8 +7874,7 @@ still separates the inside from the outside:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/ray.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">419</span>
-<span class="normal">420</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">420</span>
 <span class="normal">421</span>
 <span class="normal">422</span>
 <span class="normal">423</span>
@@ -7965,16 +7967,19 @@ still separates the inside from the outside:</p>
 <span class="normal">510</span>
 <span class="normal">511</span>
 <span class="normal">512</span>
-<span class="normal">513</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">contains_points</span><span class="p">(</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">contains_points</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_sample</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span> <span class="n">perturbation_scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Test whether query points lie inside a closed mesh (ray parity sign).</span>
 
-<span class="sd">    Uses ``wp.mesh_query_point_sign_parity`` on the mesh BVH, sharing the same</span>
-<span class="sd">    parity path as</span>
-<span class="sd">    [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]. Points</span>
-<span class="sd">    outside the mesh axis-aligned bounding box are rejected without a parity test.</span>
+<span class="sd">    Casts the perturbed rays of ``wp.mesh_query_point_sign_parity``'s parity vote on the mesh</span>
+<span class="sd">    BVH, the same vote that signs</span>
+<span class="sd">    [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh], and stops casting once</span>
+<span class="sd">    the majority is decided. Points outside the mesh axis-aligned bounding box are rejected</span>
+<span class="sd">    without a parity test.</span>
 
 <span class="sd">    Ordito mesh queries use **Warp's SDF sign convention** (outside positive,</span>
 <span class="sd">    inside negative). A point is classified as inside when its signed distance</span>
