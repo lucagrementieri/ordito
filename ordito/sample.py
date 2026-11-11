@@ -506,7 +506,7 @@ def sample_surface_poisson_disk(
                 _launch.empty(2 * init_count, dtype=wp.int32, device=device),
             ]
         else:
-            hist = _launch.zeros(kernel_sample.FLOOR_DIGIT_BINS, dtype=wp.int32, device=device)
+            hist = _launch.zeros(kernel_reduce.RADIX_SELECT_BINS, dtype=wp.int32, device=device)
         # The survivors' weights subtract their deleted neighbours in row order rather than by
         # float atomics in arrival order; the CPU device runs the scatter's threads one after
         # another, so its order is fixed already.
@@ -534,7 +534,7 @@ def sample_surface_poisson_disk(
                     device=device,
                 )
             else:
-                for shift, width in kernel_sample.FLOOR_PASSES:
+                for shift, width in kernel_reduce.RADIX_SELECT_PASSES_32:
                     _launch.launch_tiled(
                         kernel_sample.floor_digit,
                         dim=[floor_blocks],
