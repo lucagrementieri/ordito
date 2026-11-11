@@ -6312,8 +6312,8 @@
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cuda-far45deg]": {
   "counts": {
    "launch": 7,
-   "alloc": 6,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 1
   }
@@ -6321,8 +6321,8 @@
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cuda-near5deg]": {
   "counts": {
    "launch": 7,
-   "alloc": 6,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 1
   }
@@ -6330,8 +6330,8 @@
  "benchmarks/test_registration.py::test_icp_mesh[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 7,
-   "alloc": 6,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 1
   }
@@ -6347,8 +6347,8 @@
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 7,
-   "alloc": 6,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 1
   }
@@ -6356,8 +6356,8 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 6,
-   "alloc": 7,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 1
   }
@@ -6365,8 +6365,8 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 11,
-   "alloc": 10,
-   "memset": 2,
+   "alloc": 6,
+   "memset": 1,
    "h2d": 1,
    "d2h": 3,
    "sort": 2
@@ -6375,8 +6375,8 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 6,
-   "alloc": 7,
-   "memset": 2,
+   "alloc": 3,
+   "memset": 1,
    "h2d": 1,
    "d2h": 2
   }

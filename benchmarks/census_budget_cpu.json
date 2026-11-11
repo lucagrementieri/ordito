@@ -5743,7 +5743,7 @@
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cpu-far45deg]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 3,
    "h2h": 1,
    "readback": 1
   }
@@ -5751,7 +5751,7 @@
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cpu-near5deg]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 3,
    "h2h": 1,
    "readback": 1
   }
@@ -5759,7 +5759,7 @@
  "benchmarks/test_registration.py::test_icp_mesh[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 3,
    "h2h": 1,
    "readback": 1
   }
@@ -5775,7 +5775,7 @@
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 3,
    "h2h": 1,
    "readback": 1
   }
@@ -5783,7 +5783,7 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 7,
+   "alloc": 3,
    "h2h": 1,
    "readback": 1
   }
@@ -5791,7 +5791,7 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 10,
-   "alloc": 10,
+   "alloc": 6,
    "h2h": 1,
    "readback": 3,
    "sort": 2
@@ -5800,7 +5800,7 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 7,
+   "alloc": 3,
    "h2h": 1,
    "readback": 2
   }

@@ -481,22 +481,25 @@ def icp(
     # ``fitted`` and is kept in ``total`` only once ``close_point_to_point_round`` has seen that it
     # carried weight; ``state`` is the shared round / condition word; ``acc`` is the fit's moments
     # plus the kept fit's cost, which is also the "previous cost" the convergence test reads.
-    closest = _launch.empty(n, dtype=wp.vec3, device=device)
-    weights = (
-        _launch.empty(n, dtype=wp.float32, device=device)
-        if max_distance is not None
-        else _zero_length(wp.float32, device)
-    )
-    # One ``ICP_POINT_ACC_SIZE`` row per block, added in a fixed order into the leading slots,
-    # where the kept cost also lives, so every round repeats bit for bit on CUDA.
+    # ``acc`` holds one ``ICP_POINT_ACC_SIZE`` row per block, added in a fixed order into the
+    # leading slots, where the kept cost also lives, so every round repeats bit for bit on CUDA.
+    # After ``state`` comes the integer ticket that elects the fit's last block to close the round
+    # under the atomic commit (``kernel_reduce.last_atomic_block``). All of them, the matches and a
+    # distance gate's weights are one zeroed allocation: only ``acc`` and the state words need the
+    # zeros, and the rest are written before they are read.
     blocks = kernel_reduce.blocks_1d(n)
     stride = int(kernel_registration.ICP_POINT_ACC_SIZE)
-    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
-    fitted = _launch.empty(1, dtype=wp.mat44, device=device)
-    # The loop state, then the integer ticket that elects the fit's last block to close the round
-    # under the atomic commit (``kernel_reduce.last_atomic_block``): one zeroed allocation.
     words = kernel_array.LOOP_STATE_SIZE
-    state_and_ticket = _launch.zeros(words + 1, dtype=wp.int32, device=device)
+    parts = [
+        (wp.float32, _launch.block_partials_size(blocks, stride)),
+        (wp.int32, words + 1),
+        (wp.mat44, 1),
+        (wp.vec3, n),
+    ]
+    if max_distance is not None:
+        parts.append((wp.float32, n))
+    acc, state_and_ticket, fitted, closest, *gate = _launch.carve_typed(parts, device, zeroed=True)
+    weights = gate[0] if gate else _zero_length(wp.float32, device)
     state = _launch.view(state_and_ticket, 0, words)
     ticket = _launch.view(state_and_ticket, words, words + 1)
 
@@ -907,22 +910,28 @@ def icp_point_to_plane(
     # ``current`` by the next correspondence search, the solve composes into ``total`` and zeroes
     # the moments it has just read. ``total`` is ``_resolve_initial``'s own copy, so composing into
     # it never touches a caller's array. ``acc`` is the normal equations, the two scalars and the
-    # previous kept cost in one buffer (``kernel_registration.ICP_ACC_SIZE``); ``state`` the shared
-    # round and condition slots.
-    closest = _launch.empty(n, dtype=wp.vec3, device=device)
-    distance = _launch.empty(n, dtype=wp.float32, device=device)
-    # One ``ICP_ACC_SIZE`` row per block, added in a fixed order into the leading slots, where the
-    # previous kept cost also lives, so every round repeats bit for bit on CUDA.
+    # previous kept cost in one buffer (``kernel_registration.ICP_ACC_SIZE``), one such row per
+    # block added in a fixed order into the leading slots, so every round repeats bit for bit on
+    # CUDA; ``state`` the shared round and condition slots. After it comes the integer ticket that
+    # elects the accumulation's last block to close the round under the atomic commit
+    # (``kernel_reduce.last_atomic_block``). All of them, the step, the matches, their distances
+    # and their faces are one zeroed allocation: only ``acc`` and the state words need the zeros,
+    # and the rest are written before they are read.
     blocks = kernel_reduce.blocks_1d(n)
     stride = int(kernel_registration.ICP_ACC_SIZE)
-    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
-    step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
-    # The loop state, then the integer ticket that elects the accumulation's last block to close
-    # the round under the atomic commit (``kernel_reduce.last_atomic_block``), then the
-    # matched faces, which the searches write before any read: one zeroed allocation.
-    state, ticket, triangle_id = _launch.carve(
-        wp.int32, [kernel_array.LOOP_STATE_SIZE, 1, n], device, zeroed=True
+    acc, state, ticket, step, closest, distance, triangle_id = _launch.carve_typed(
+        (
+            (wp.float32, _launch.block_partials_size(blocks, stride)),
+            (wp.int32, kernel_array.LOOP_STATE_SIZE),
+            (wp.int32, 1),
+            (wp.mat44, 1),
+            (wp.vec3, n),
+            (wp.float32, n),
+            (wp.int32, n),
+        ),
+        device,
+        zeroed=True,
     )
 
     # The correspondence step is one launch: the step applied to each point, and its match on the
