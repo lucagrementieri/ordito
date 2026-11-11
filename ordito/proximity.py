@@ -39,6 +39,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    SEARCH_ORDER_ALWAYS_QUERIES_CUDA,
     offsets_buffer,
     prefers_tiled_reduction,
     read_values,
@@ -376,6 +377,8 @@ def closest_point_on_edges(
     # in the kernel from one twelve-slot corner buffer (``vertices`` first, ``queries`` second),
     # so neither is read back. With a limit given, only the vertex box is reduced. Without a
     # ``bvh`` the per-edge boxes it is built from are formed in the same launch.
+    # The order is chosen first, so the read it may take waits on no launch of this call.
+    order = search_order(queries, _sampled_order_floor(queries))
     corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
     n_query_chunks = kernel_reduce.chunks_1d(m) if max_dist is None else 0
     n_bounds = n_edges if bvh is None else 0
@@ -417,6 +420,7 @@ def closest_point_on_edges(
             wp.float32(caller_max_dist),
             wp.float32(_EDGE_INITIAL_RADIUS_SCALE * caller_max_dist),
             wp.float32(_EDGE_INITIAL_RADIUS_SCALE),
+            order,
             out_closest,
             out_distance,
             out_edge,
@@ -806,6 +810,7 @@ def normals_at_closest_faces(
 
     if max_dist is None:
         max_dist = math.inf
+    order = search_order(points, _sampled_order_floor(points))
     out_normals = _launch.empty(m, dtype=wp.vec3, device=device)
     if face_normals is None:
         # No table: the hit face's normal is formed in the query's thread, the same value the
@@ -813,14 +818,22 @@ def normals_at_closest_faces(
         _launch.launch(
             kernel_proximity.normals_at_closest_faces_computed,
             dim=m,
-            inputs=[mesh.id, points, wp.float32(max_dist), mesh.points, mesh.indices, out_normals],
+            inputs=[
+                mesh.id,
+                points,
+                wp.float32(max_dist),
+                mesh.points,
+                mesh.indices,
+                order,
+                out_normals,
+            ],
             device=device,
         )
         return out_normals
     _launch.launch(
         kernel_proximity.normals_at_closest_faces,
         dim=m,
-        inputs=[mesh.id, points, wp.float32(max_dist), face_normals, out_normals],
+        inputs=[mesh.id, points, wp.float32(max_dist), face_normals, order, out_normals],
         device=device,
     )
     return out_normals
@@ -960,7 +973,8 @@ def signed_distance_on_mesh(
         return _launch.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
         return _launch.full(m, float("inf"), dtype=wp.float32, device=device)
-
+    # The order is chosen before the mesh is built, so the read it may take waits on no build.
+    order = search_order(points)
     mesh = _signed_distance_mesh(vertices, faces, sign_mode, mesh)
     if max_dist is None:
         max_dist = math.inf
@@ -975,6 +989,7 @@ def signed_distance_on_mesh(
                 wp.float32(max_dist),
                 wp.float32(accuracy),
                 wp.float32(winding_threshold),
+                order,
                 out_distance,
             ],
             device=device,
@@ -989,6 +1004,7 @@ def signed_distance_on_mesh(
             wp.float32(max_dist),
             wp.int32(n_sample),
             wp.float32(perturbation_scale),
+            order,
             out_distance,
         ],
         device=device,
@@ -1737,3 +1753,16 @@ def containing_faces_2d(
         device=device,
     )
     return out_face
+
+
+def _sampled_order_floor(queries: wp.array[wp.vec3]) -> int | None:
+    """
+    Return the query count from which a closest-edge or closest-normal search takes an order.
+
+    ``None`` keeps [`search_order`][ordito._common.search_order]'s own gates; on CUDA those two
+    searches take an order only where that function always does
+    (``kernels/proximity.SAMPLED_ORDER_ALWAYS_ONLY_CUDA``).
+    """
+    if kernel_proximity.SAMPLED_ORDER_ALWAYS_ONLY_CUDA and wp.get_device(queries.device).is_cuda:
+        return SEARCH_ORDER_ALWAYS_QUERIES_CUDA
+    return None

@@ -161,6 +161,18 @@ def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3
     return nearest_offset_within(mesh_id, p, wp.length(best), best)
 
 
+# The point searches here take their queries in ``_common.search_order``'s Hilbert order
+# (2026-11-11, CUDA dragon, uniformly scattered queries in the mesh box, new/old): at 1 M queries,
+# where the order is always taken, ``signed_distance_on_mesh`` 0.62x (parity) and 0.53x (winding),
+# ``normals_at_closest_faces`` 0.69x, ``closest_point_on_edges`` 0.82x; at 300 k, where the sampled
+# test takes it, the signed distances 0.73-0.92x but the normals 1.05-1.12x and the edges
+# 1.14-1.17x, so on CUDA those two take an order only from the always-gate
+# (``proximity._sampled_order_floor``); scan-ordered queries, which the test declines, at par.
+# CPU (bunny, 300 k, the test's gate) scattered 0.75-0.84x for all four, scan order at par.
+# Answers bit-identical: a query's search does not depend on which thread runs it.
+SAMPLED_ORDER_ALWAYS_ONLY_CUDA = True
+
+
 @wp.kernel
 def closest_point_on_mesh(
     mesh_id: wp.uint64,
@@ -397,6 +409,7 @@ def closest_point_on_edges(
     caller_max_dist: wp.float32,
     caller_initial_radius: wp.float32,
     initial_radius_scale: wp.float32,
+    order: wp.array[wp.int32],
     out_closest: wp.array[wp.vec3],
     out_distance: wp.array[wp.float32],
     out_edge: wp.array[wp.int32],
@@ -434,7 +447,8 @@ def closest_point_on_edges(
     # gave no limit: it is then the diagonal of the union of both boxes, which no query's nearest
     # edge exceeds, so it only seeds the first radius (``initial_radius_scale`` of it); otherwise
     # the caller's limit and seed are used as given.
-    tid = wp.int32(wp.tid())
+    # Thread ``t`` answers query ``order[t]`` (``_common.search_order``).
+    tid = ordered_item(order, wp.int32(wp.tid()))
     q = queries[tid]
 
     min_bound = wp.vec3(corners[0], corners[1], corners[2])
@@ -1363,12 +1377,15 @@ def normals_at_closest_faces(
     points: wp.array[wp.vec3],
     max_dist: wp.float32,
     face_normals: wp.array[wp.vec3],
+    order: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],
 ) -> None:
     # The normal of the face closest to each point, gathered from a caller's table in the same
     # thread that found the face. ``normals_at_closest_faces_computed`` is the no-table variant.
-    tid = wp.int32(wp.tid())
-    out_normals[tid] = face_normals[closest_face_or_first(mesh_id, points[tid], max_dist)]
+    # Thread ``t`` answers point ``order[t]`` (``_common.search_order``), as in every point query
+    # here.
+    i = ordered_item(order, wp.int32(wp.tid()))
+    out_normals[i] = face_normals[closest_face_or_first(mesh_id, points[i], max_dist)]
 
 
 @wp.func
@@ -1395,13 +1412,14 @@ def normals_at_closest_faces_computed(
     max_dist: wp.float32,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    order: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],
 ) -> None:
     # ``normals_at_closest_faces`` with the hit face's normal formed in the thread
     # (``closest_face_normal``). The two kernels differ only in where the normal comes from: a
     # whole-mesh table costs a launch and two face-sized buffers the queries read a few entries of.
-    tid = wp.int32(wp.tid())
-    out_normals[tid] = closest_face_normal(mesh_id, points[tid], max_dist, vertices, faces)
+    i = ordered_item(order, wp.int32(wp.tid()))
+    out_normals[i] = closest_face_normal(mesh_id, points[i], max_dist, vertices, faces)
 
 
 @wp.func
@@ -1456,11 +1474,12 @@ def signed_distance_on_mesh(
     max_dist: wp.float32,
     n_sample: wp.int32,
     perturbation_scale: wp.float32,
+    order: wp.array[wp.int32],
     out_distance: wp.array[wp.float32],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    out_distance[tid] = signed_distance_parity(
-        mesh_id, points[tid], max_dist, n_sample, perturbation_scale
+    i = ordered_item(order, wp.int32(wp.tid()))
+    out_distance[i] = signed_distance_parity(
+        mesh_id, points[i], max_dist, n_sample, perturbation_scale
     )
 
 
@@ -1510,11 +1529,12 @@ def signed_distance_on_mesh_winding(
     max_dist: wp.float32,
     accuracy: wp.float32,
     winding_threshold: wp.float32,
+    order: wp.array[wp.int32],
     out_distance: wp.array[wp.float32],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    out_distance[tid] = signed_distance_winding(
-        mesh_id, points[tid], max_dist, accuracy, winding_threshold
+    i = ordered_item(order, wp.int32(wp.tid()))
+    out_distance[i] = signed_distance_winding(
+        mesh_id, points[i], max_dist, accuracy, winding_threshold
     )
 
 
