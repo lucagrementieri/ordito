@@ -43,6 +43,7 @@ from ordito._common import (
     require_nonempty_mesh,
     require_same_device,
     scan_count,
+    search_order,
     tiled_ball_walk,
 )
 from ordito.config import is_deterministic
@@ -435,6 +436,10 @@ def transfer_onto_vertices(
     if n_target == 0 or source_faces.size == 0:
         return out_values, _launch.full(n_target, float("inf"), dtype=wp.float32, device=device)
 
+    # The order is chosen before the mesh is built, so the read it may take waits on no build.
+    order = search_order(
+        target_vertices, sampled_on_cuda=kernel_interpolation.TRANSFER_SAMPLED_ORDER_ON_CUDA
+    )
     if mesh is None:
         require_nonempty_mesh(source_faces, "transfer_onto_vertices")
         # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
@@ -450,6 +455,7 @@ def transfer_onto_vertices(
             mesh.id,
             target_vertices,
             wp.float32(math.inf if max_dist is None else max_dist),
+            order,
             out_values,
             distance,
         ],

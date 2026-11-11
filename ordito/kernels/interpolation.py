@@ -7,6 +7,7 @@ from ordito.kernels.array import (
     declare_map_signatures,
     divide_if_positive,
     map_probe,
+    ordered_item,
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
@@ -44,6 +45,16 @@ def mean_rounded_if_counted(total: wp.float64, count: wp.float32) -> wp.float32:
     return wp.float32(divide_if_positive(total, wp.float64(count)))
 
 
+# ``transfer_onto_vertices`` takes its targets in ``_common.search_order``'s Hilbert order
+# (2026-11-11, CUDA, a dragon source, new/old, under a shared GPU, three interleaved rounds):
+# lucy's 14 M vertices scrambled 0.18-0.21x (235-283 -> 48-51 ms), where the order is always taken;
+# dragon's own jittered vertices, at 437 k between the gates, scrambled 0.93-1.03x and in scan
+# order 1.05-1.10x (the sampled test's cost), so on CUDA it takes an order only from the
+# always-gate. The CPU keeps the sampled test: 437 k scrambled 0.49-0.52x, scan order at par.
+# Answers bit-identical.
+TRANSFER_SAMPLED_ORDER_ON_CUDA = False
+
+
 @wp.kernel
 def transfer_onto_vertices(
     source_vertices: wp.array[wp.vec3],
@@ -52,6 +63,7 @@ def transfer_onto_vertices(
     mesh_id: wp.uint64,
     target_vertices: wp.array[wp.vec3],
     max_dist: wp.float32,
+    order: wp.array[wp.int32],
     out_values: wp.array[Any],
     out_distance: wp.array[wp.float32],
 ) -> None:
@@ -70,7 +82,10 @@ def transfer_onto_vertices(
     # query 0.4-0.9x as long but build 10-300x as long (dragon: 0.70 ms LBVH, 16-400 ms the
     # others). A zero-filled value buffer in place of an empty one written on a miss costs ~3 us
     # of a ~190 us small call (the mesh build ~150 us): not taken.
-    i = wp.int32(wp.tid())
+    #
+    # Thread ``t`` answers target vertex ``order[t]`` (``_common.search_order``, the order
+    # ``proximity.closest_point_on_mesh`` takes; index order for ``None``).
+    i = ordered_item(order, wp.int32(wp.tid()))
     closest, distance, f = closest_point_query(mesh_id, target_vertices[i], max_dist)
     if f < 0:
         out_distance[i] = wp.float32(wp.INF)
@@ -682,6 +697,7 @@ def _register_overloads() -> None:
                 wp.uint64,
                 wp.array[wp.vec3],
                 wp.float32,
+                wp.array[wp.int32],
                 wp.array[d],
                 wp.array[wp.float32],
             ]

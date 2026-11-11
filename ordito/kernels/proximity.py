@@ -167,10 +167,11 @@ def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3
 # ``normals_at_closest_faces`` 0.69x, ``closest_point_on_edges`` 0.82x; at 300 k, where the sampled
 # test takes it, the signed distances 0.73-0.92x but the normals 1.05-1.12x and the edges
 # 1.14-1.17x, so on CUDA those two take an order only from the always-gate
-# (``proximity._sampled_order_floor``); scan-ordered queries, which the test declines, at par.
+# (``_common.search_order(sampled_on_cuda=False)``); scan-ordered queries, which the test
+# declines, at par.
 # CPU (bunny, 300 k, the test's gate) scattered 0.75-0.84x for all four, scan order at par.
 # Answers bit-identical: a query's search does not depend on which thread runs it.
-SAMPLED_ORDER_ALWAYS_ONLY_CUDA = True
+SAMPLED_ORDER_ON_CUDA = False
 
 
 @wp.kernel

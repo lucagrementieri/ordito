@@ -862,6 +862,8 @@ def search_order(
     queries: wp.array[wp.vec3],
     min_queries: int | None = None,
     always_queries_cuda: int | None = None,
+    *,
+    sampled_on_cuda: bool = True,
 ) -> wp.array[wp.int32] | None:
     """
     Return the order a tree search should take ``queries`` in, or ``None`` for index order.
@@ -873,7 +875,13 @@ def search_order(
     ``SEARCH_ORDER_MIN_QUERIES`` for when it is chosen; between the two gates the choice costs one
     small launch and a readback. ``min_queries`` and ``always_queries_cuda`` replace the two gates
     for a search whose launch repays an order at other sizes (``None`` keeps the module's).
+    ``sampled_on_cuda=False`` is for a search the sampled test's order does not repay on CUDA: there
+    it takes an order only from the always-gate, and never pays for the test.
     """
+    if not sampled_on_cuda and wp.get_device(queries.device).is_cuda:
+        min_queries = (
+            SEARCH_ORDER_ALWAYS_QUERIES_CUDA if always_queries_cuda is None else always_queries_cuda
+        )
     mode = _search_order_mode(queries, min_queries, always_queries_cuda)
     if mode == _ORDER_TEST:
         count = _launch.empty(1, dtype=wp.float32, device=queries.device)
