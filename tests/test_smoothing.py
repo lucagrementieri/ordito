@@ -2442,8 +2442,11 @@ def _sphere_region_wp(
     return vertices_np, faces_np, free_np, vertices_wp, faces_wp, free_wp
 
 
+@pytest.mark.parametrize("multigrid", [False, True], ids=["polynomial", "multigrid"])
 @pytest.mark.parity("smooth_region_fixed_rim", "meshlib")
-def test_smooth_region_fixed_rim_matches_meshlib(device: str):
+def test_smooth_region_fixed_rim_matches_meshlib(
+    device: str, multigrid: bool, monkeypatch: pytest.MonkeyPatch
+):
     """
     Class A on the positions: ``positionVertsSmoothlySharpBd`` solves the same system, directly.
 
@@ -2456,7 +2459,12 @@ def test_smooth_region_fixed_rim_matches_meshlib(device: str):
     pinned vertex by a hair would still pass the tolerance on the free set. Not a library
     comparison, on the same answer: the unit-weight umbrella residual
     ``deg(v) * p_v - sum_neighbors p_d`` vanishes at every free vertex.
+
+    Run under both preconditioners: lowering the free-vertex gates makes this small region take the
+    V-cycle large regions take.
     """
+    if multigrid:
+        _force_fixed_rim_multigrid(monkeypatch)
     vertices_np, faces_np, free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
 
     result_wp = od.smoothing.smooth_region_fixed_rim(v_wp, f_wp, free_wp)
@@ -2483,6 +2491,86 @@ def test_smooth_region_fixed_rim_matches_meshlib(device: str):
         residual = len(neighbors) * result_np[v] - result_np[neighbors].sum(axis=0)
         max_residual = max(max_residual, float(np.linalg.norm(residual)))
     assert max_residual < 1e-4
+
+
+def _force_fixed_rim_multigrid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``smooth_region_fixed_rim`` precondition every region with the V-cycle."""
+    monkeypatch.setattr(od.smoothing, "_FIXED_RIM_MULTIGRID_FROM_CUDA", 0)
+    monkeypatch.setattr(od.smoothing, "_FIXED_RIM_MULTIGRID_FROM_CPU", 0)
+
+
+@pytest.mark.parametrize("multigrid", [False, True], ids=["polynomial", "multigrid"])
+@pytest.mark.parametrize("stabilizer", [0.0, 0.5])
+def test_smooth_region_fixed_rim_leaves_an_unanchored_fragment_in_place(
+    device: str, stabilizer: float, multigrid: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: no reference places a free component that touches no fixed vertex.
+
+    ``smooth_region``'s fragment test below, for the fixed-rim solve: a bumpy grid with a fixed
+    rim beside a wholly free grid and a faceless free vertex. Unstabilized, the fragment's
+    umbrella rows are singular on it, and the solve pulled it onto one point (on dragon's top
+    quarter by z, 79 such islands; MeshLib's ``positionVertsSmoothlySharpBd`` collapses them too,
+    and moves them); it must come back where it was, and the anchored grid solve as it does alone.
+    A stabilizer places the fragment, which must then move. Under the V-cycle too, which the
+    unpinned singular block kept from converging.
+    """
+    if multigrid:
+        _force_fixed_rim_multigrid(monkeypatch)
+    bumpy_np, faces_np, interior_np, vertices_np, both_faces_np, free_np = (
+        _grid_beside_a_free_fragment()
+    )
+    n_grid = bumpy_np.shape[0]
+
+    both_wp = od.smoothing.smooth_region_fixed_rim(
+        wp.array(vertices_np, dtype=wp.vec3, device=device),
+        wp.array(both_faces_np, dtype=wp.int32, device=device),
+        wp.array(free_np, dtype=wp.bool, device=device),
+        stabilizer,
+    ).numpy()
+    alone_wp = od.smoothing.smooth_region_fixed_rim(
+        wp.array(bumpy_np, dtype=wp.vec3, device=device),
+        wp.array(faces_np, dtype=wp.int32, device=device),
+        wp.array(interior_np, dtype=wp.bool, device=device),
+        stabilizer,
+    ).numpy()
+
+    assert np.abs(alone_wp - bumpy_np).max() > 1e-2
+    assert np.allclose(both_wp[:n_grid], alone_wp, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(both_wp[2 * n_grid :], vertices_np[2 * n_grid :])
+    fragment_moved = np.abs(both_wp[n_grid : 2 * n_grid] - vertices_np[n_grid : 2 * n_grid]).max()
+    if stabilizer == 0.0:
+        assert fragment_moved == 0.0
+    else:
+        assert fragment_moved > 1e-3
+
+
+def _grid_beside_a_free_fragment() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
+    """
+    Return a bumpy grid with a free interior, and that grid beside a wholly free one.
+
+    ``(bumpy, faces, interior, vertices, both_faces, free)``: the bumpy ``6 x 6`` grid, its faces
+    and its interior mask; then the bumpy grid, a scaled copy offset along x with random heights
+    and one faceless vertex, their faces, and the mask freeing the first grid's interior and all of
+    the rest.
+    """
+    grid_v, grid_f = od.creation.grid(count=(6, 6))
+    grid_np = np.asarray(grid_v.numpy(), dtype=np.float32).reshape(-1, 3)
+    faces_np = grid_f.numpy()
+    rng = np.random.default_rng(7)
+    bumpy_np = grid_np.copy()
+    interior_np = np.asarray((np.abs(grid_np[:, :2]) < 0.45).all(axis=1), dtype=bool)
+    bumpy_np[interior_np, 2] = rng.uniform(-0.2, 0.2, int(interior_np.sum()))
+    fragment_np = grid_np * 0.3 + np.array([3.0, 0.0, 0.0], dtype=np.float32)
+    fragment_np[:, 2] = rng.uniform(-0.1, 0.1, fragment_np.shape[0])
+    n_grid = grid_np.shape[0]
+    faceless_np = np.array([[5.0, 5.0, 5.0]], dtype=np.float32)
+    vertices_np = np.concatenate([bumpy_np, fragment_np, faceless_np]).astype(np.float32)
+    both_faces_np = np.concatenate([faces_np, faces_np + n_grid]).astype(np.int32)
+    free_np = np.concatenate([interior_np, np.ones(n_grid + 1, dtype=bool)])
+    return bumpy_np, faces_np, interior_np, vertices_np, both_faces_np, free_np
 
 
 @pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
@@ -2577,20 +2665,11 @@ def test_smooth_region_leaves_an_unanchored_fragment_in_place(
     """
     if multigrid_from is not None:
         monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", multigrid_from)
-    grid_v, grid_f = od.creation.grid(count=(6, 6))
-    grid_np = np.asarray(grid_v.numpy(), dtype=np.float32).reshape(-1, 3)
-    faces_np = grid_f.numpy()
-    rng = np.random.default_rng(7)
-    bumpy_np = grid_np.copy()
-    interior_np = np.asarray((np.abs(grid_np[:, :2]) < 0.45).all(axis=1), dtype=bool)
-    bumpy_np[interior_np, 2] = rng.uniform(-0.2, 0.2, int(interior_np.sum()))
-    fragment_np = grid_np * 0.3 + np.array([3.0, 0.0, 0.0], dtype=np.float32)
-    fragment_np[:, 2] = rng.uniform(-0.1, 0.1, fragment_np.shape[0])
-    n_grid = grid_np.shape[0]
-    faceless_np = np.array([[5.0, 5.0, 5.0]], dtype=np.float32)
-    vertices_np = np.concatenate([bumpy_np, fragment_np, faceless_np]).astype(np.float32)
-    both_faces_np = np.concatenate([faces_np, faces_np + n_grid]).astype(np.int32)
-    free_np = np.concatenate([interior_np, np.ones(n_grid + 1, dtype=bool)])
+    bumpy_np, faces_np, interior_np, vertices_np, both_faces_np, free_np = (
+        _grid_beside_a_free_fragment()
+    )
+    n_grid = bumpy_np.shape[0]
+    fragment_np, faceless_np = vertices_np[n_grid : 2 * n_grid], vertices_np[2 * n_grid :]
 
     both_wp = od.smoothing.smooth_region(
         wp.array(vertices_np, dtype=wp.vec3, device=device),

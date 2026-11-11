@@ -138,12 +138,17 @@ _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
 # icosphere, bunny, dragon), CUDA, Chebyshev/Jacobi wall: 1.31-1.61x at 300-600 free vertices,
 # 0.82-0.90x at 1 000, 0.47-0.62x at 1 500 and 0.38-0.50x from 5 000. The hole fills' refined
 # patches (1 000 free vertices) lost 1.03-1.11x under it, so the gate sits above them.
-# Declined (2026-11-11): the smoothed-aggregation V-cycle (``preconditioner="multigrid"``) on the
-# same cap regions, against this polynomial: 14 iterations against 22-31 on ``sphere_med`` and
-# bunny, but its setup made the call 2.2-2.8x; ``"auto"`` 1.9-2.9x (it probed and escalated on
-# every one). On dragon the V-cycle did not converge at all (the ``10 * n_free`` cap, a wrong
-# answer returned silently), so the gate has no multigrid arm.
 _FIXED_RIM_CHEBYSHEV_FROM = 1_500
+
+# Free-vertex count from which ``smooth_region_fixed_rim`` preconditions with the smoothed-
+# aggregation V-cycle (``preconditioner="multigrid"``), per device. Its rounds stay at 13-17 where
+# the polynomial's grow with the region (35 to 290), but its setup is a fixed cost. Top-of-z cap
+# regions, multigrid over the default, CUDA: 21-44 k free 1.22-1.66x, 54-87 k 0.61-0.94x, 109-140 k
+# 0.40-0.66x, 701 k 0.15x (lucy's top 5 %, 378 -> 55 ms); CPU: 1.5-2.7 k 1.03-1.20x, 3.6 k 0.75x,
+# 4.4-22 k 0.42-0.64x, 109-136 k 0.16x (2026-11-11). Measured once the unanchored components were
+# pinned: on dragon's top quarter, singular on its 79 islands, the V-cycle had not converged.
+_FIXED_RIM_MULTIGRID_FROM_CUDA = 50_000
+_FIXED_RIM_MULTIGRID_FROM_CPU = 3_500
 
 # Fraction of the way to the level set each ``smooth_region_boundary`` pass moves. A full step
 # overshoots, because the field is rebuilt from the moved positions and the level set moves too.
@@ -3121,8 +3126,8 @@ def smooth_region_fixed_rim(
     free_mask
         ``(n_vertices,)`` mask of the vertices to reposition.
     stabilizer
-        Optional attraction to the original position (adds to the diagonal), which also makes the
-        system solvable for a fully-free component. Defaults to ``0``.
+        Optional attraction to the original position (adds to the diagonal), which also places a
+        free component no fixed vertex touches. Defaults to ``0``.
     unique_edges, inverse
         ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
         for ``faces`` when the caller holds it --
@@ -3152,8 +3157,10 @@ def smooth_region_fixed_rim(
 
     Notes
     -----
-    The system is SPD only when no free connected component is entirely free (or ``stabilizer >
-    0``); the hole-filling pipeline guarantees this because the patch rim is always fixed.
+    A free connected component that touches no fixed vertex is placed by no equation: its
+    umbrella rows fix its shape only up to a translation. At ``stabilizer=0`` such a component is
+    returned where it was; a positive ``stabilizer`` places it, pulling it toward its input while
+    it smooths.
 
     A free vertex that no face refers to contributes no row, so the solve does not constrain it
     and it is returned where it was. That is what the ``solution`` seed decides rather than the
@@ -3813,6 +3820,30 @@ def _solve_region_fixed_rim(
         outputs=[values, rhs[0], rhs[1], rhs[2], sol[0], sol[1], sol[2]],
         device=device,
     )
+    if stabilizer == 0.0:
+        # A free component no fixed vertex touches is placed by no equation: its rows are its own
+        # vertices' umbrella rows, singular on it, and the solve would pull it onto one point (its
+        # seed's mean). Its rows are pinned at the seed instead, as ``smooth_region`` pins them, so
+        # it keeps its input position and the system is definite. A stabilizer places it.
+        anchored = _launch.zeros(n_free, dtype=wp.int32, device=device)
+        labels = _anchored_components(free_mask, region, values, anchored)
+        _launch.launch(
+            kernel_smoothing.pin_unanchored_dirichlet_rows,
+            dim=n,
+            inputs=[
+                free_mask,
+                free_map,
+                region.pattern_offsets,
+                region.pattern_columns,
+                labels,
+                anchored,
+                sol[0],
+                sol[1],
+                sol[2],
+            ],
+            outputs=[values, rhs[0], rhs[1], rhs[2]],
+            device=device,
+        )
     system = _csr_matrix(n_free, region.pattern_offsets, region.pattern_columns, values)
     twl.solve_spd_columns(
         system,
@@ -3820,7 +3851,7 @@ def _solve_region_fixed_rim(
         odt.as_array2d(sol, wp.float64),
         tol=twl.CG_TOLERANCE,
         maxiter=10 * n_free,
-        preconditioner="chebyshev" if n_free >= _FIXED_RIM_CHEBYSHEV_FROM else "diag",
+        preconditioner=_fixed_rim_preconditioner(n_free, device),
     )
     out = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(
@@ -3831,6 +3862,18 @@ def _solve_region_fixed_rim(
         device=device,
     )
     return out
+
+
+def _fixed_rim_preconditioner(n_free: int, device: wp.DeviceLike) -> str:
+    """Return the fixed-rim solve's preconditioner for a region of ``n_free`` free vertices."""
+    multigrid_from = (
+        _FIXED_RIM_MULTIGRID_FROM_CPU
+        if wp.get_device(device).is_cpu
+        else _FIXED_RIM_MULTIGRID_FROM_CUDA
+    )
+    if n_free >= multigrid_from:
+        return "multigrid"
+    return "chebyshev" if n_free >= _FIXED_RIM_CHEBYSHEV_FROM else "diag"
 
 
 def _solve_region_smooth(
@@ -3982,16 +4025,7 @@ def _solve_region_smooth(
     # are pinned at the seed as the product is written (``normal_equations_values``), so it keeps
     # its input position, as a vertex with no row does, and its singular block never reaches the
     # solve.
-    labels = od.graph.connected_component_labels(
-        _csr_matrix(n_free, region.pattern_offsets, region.pattern_columns, factor)
-    )
-    _launch.launch(
-        kernel_smoothing.mark_anchored_components,
-        dim=n,
-        inputs=[free_mask, free_map, region.incidence_offsets, region.pattern_offsets, labels],
-        outputs=[anchored],
-        device=device,
-    )
+    labels = _anchored_components(free_mask, region, factor, anchored)
     _launch.launch(
         kernel_smoothing.normal_equations_values,
         dim=n,
@@ -4063,6 +4097,39 @@ def _solve_region_smooth(
         device=device,
     )
     return out
+
+
+def _anchored_components(
+    free_mask: wp.array[wp.bool],
+    region: _RegionTopology,
+    values: wp.array[wp.float64],
+    out_anchored: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """
+    Label the region's free components and flag those a fixed vertex touches.
+
+    The components are those of the free-free pattern (``values`` stored over it; only the
+    structure is read), and ``out_anchored``, ``(n_free,)`` and zeroed, gets a ``1`` at the label of
+    every component with a fixed neighbour (``kernel_smoothing.mark_anchored_components``). Both
+    region solves pin the rest at their seed. Returns the ``(n_free,)`` labels.
+    """
+    labels = od.graph.connected_component_labels(
+        _csr_matrix(region.n_free, region.pattern_offsets, region.pattern_columns, values)
+    )
+    _launch.launch(
+        kernel_smoothing.mark_anchored_components,
+        dim=free_mask.size,
+        inputs=[
+            free_mask,
+            region.free_map,
+            region.incidence_offsets,
+            region.pattern_offsets,
+            labels,
+        ],
+        outputs=[out_anchored],
+        device=free_mask.device,
+    )
+    return labels
 
 
 def _smooth_region_chebyshev_degree(n_free: int, unit: int) -> int:

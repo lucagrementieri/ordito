@@ -860,6 +860,21 @@ def mark_anchored_components(
         out_anchored[labels[i]] = wp.int32(1)
 
 
+@wp.func
+def component_pinned(
+    anchored: wp.array[wp.int32], labels: wp.array[wp.int32], row: wp.int32
+) -> wp.bool:
+    # Whether free row ``row``'s component touches no fixed vertex (``mark_anchored_components``),
+    # so a region solve pins it at its seed.
+    return anchored[labels[row]] == 0
+
+
+@wp.func
+def pinned_row_value(column: wp.int32, row: wp.int32) -> wp.float64:
+    # Entry ``column`` of a pinned row ``row``: the identity's.
+    return wp.where(column == row, wp.float64(1.0), wp.float64(0.0))
+
+
 @wp.kernel
 def normal_equations_values(
     free_mask: wp.array[wp.bool],
@@ -894,13 +909,13 @@ def normal_equations_values(
         return
     source = term_offsets[ri]
     start = system_offsets[ri]
-    pinned = anchored[labels[ri]] == 0
+    pinned = component_pinned(anchored, labels, ri)
     has_diagonal = wp.bool(False)
     for s in range(system_offsets[ri + 1] - start):
         column = row_columns[source + s]
         out_columns[start + s] = column
         if pinned:
-            out_values[start + s] = wp.where(column == ri, wp.float64(1.0), wp.float64(0.0))
+            out_values[start + s] = pinned_row_value(column, ri)
             if column == ri:
                 has_diagonal = True
         else:
@@ -909,6 +924,39 @@ def normal_equations_values(
         atb_x[ri] = sol_x[ri]
         atb_y[ri] = sol_y[ri]
         atb_z[ri] = sol_z[ri]
+
+
+@wp.kernel
+def pin_unanchored_dirichlet_rows(
+    free_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    pattern_offsets: wp.array[wp.int32],
+    pattern_columns: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    anchored: wp.array[wp.int32],
+    sol_x: wp.array[wp.float64],
+    sol_y: wp.array[wp.float64],
+    sol_z: wp.array[wp.float64],
+    out_values: wp.array[wp.float64],
+    out_rhs_x: wp.array[wp.float64],
+    out_rhs_y: wp.array[wp.float64],
+    out_rhs_z: wp.array[wp.float64],
+) -> None:
+    # ``dirichlet_system_values``' rows of a free component no fixed vertex touches, rewritten as
+    # the identity with the seed as their right-hand side: ``normal_equations_values``' pinning, for
+    # the fixed-rim system. The component's umbrella rows sum to zero on it, so the system was
+    # singular there and conjugate gradient pulled it onto its seed's mean; pinned, it keeps its
+    # input position and the matrix is definite. Its columns occur only in its own rows, so the
+    # matrix stays symmetric.
+    v = wp.int32(wp.tid())
+    ri = selected_row(free_mask, free_map, v)
+    if ri < 0 or not component_pinned(anchored, labels, ri):
+        return
+    for k in range(pattern_offsets[ri], pattern_offsets[ri + 1]):
+        out_values[k] = pinned_row_value(pattern_columns[k], ri)
+    out_rhs_x[ri] = sol_x[ri]
+    out_rhs_y[ri] = sol_y[ri]
+    out_rhs_z[ri] = sol_z[ri]
 
 
 @wp.kernel

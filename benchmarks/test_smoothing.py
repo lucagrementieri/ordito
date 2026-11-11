@@ -930,12 +930,15 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
     ``PositionVertsSmoothlyParams``; it agrees with ordito to 1e-5 (``tests/test_smoothing.py``).
     Same in-place mutation, so same rebuild inside the timed callable.
 
-    **Two preconditioners, switched by size.** From ``smoothing._FIXED_RIM_CHEBYSHEV_FROM`` free
+    **Three preconditioners, switched by size.** From ``smoothing._FIXED_RIM_CHEBYSHEV_FROM`` free
     vertices the three coordinate columns take the Jacobi-Chebyshev polynomial
     (``preconditioner="chebyshev"``), below it Jacobi; ``sphere_small``'s region sits below the
     gate and every scan row above it (0.39-0.65x against Jacobi on bunny to lucy). From
     ``kernels/algorithms/multigrid.CHEBYSHEV_STEP_ROWS_FROM`` rows each polynomial step walks a
-    row once for all three columns, which is what the dragon to lucy rows ride on.
+    row once for all three columns. From ``_FIXED_RIM_MULTIGRID_FROM_CUDA`` (``_CPU`` on the CPU)
+    free vertices the solve takes the V-cycle instead: dragon's and happy_buddha's rows on CUDA,
+    every scan row on the CPU. Dragon's region holds 79 free islands no fixed vertex reaches, which
+    the solve pins in place; unpinned, they kept the V-cycle from converging.
     """
     skip_larger_than(
         bench_case,
