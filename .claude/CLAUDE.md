@@ -1289,15 +1289,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   cheap tests first, then run their empty-ball walks a lane each. Declined on the way: runs of
   ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
   component-status.md`, `ball_pivoting`).
-- **A flip loop's first round** (2026-11-11): the rounds after a call's first re-test only the
-  rows a flip touched (`kernels/remesh.flip_row_settled`), but each call's first round still
-  tests every row in `float64` (`subdivide_region_to_size` on `sphere_large`: 2.6 of a 6.3 ms
-  call, on a mesh that flips nothing). Unbuilt: a `float32` prefilter with a rigorous error
-  bound on the Delone metric comparison (narrowing the predicate itself is refuted: it changes
-  flips); carrying settled verdicts across a region refinement's split, which pays only where a
-  pass leaves most edges alone (bunny's passes 3-5 touch 0.01-10 % of the region's edges;
-  `sphere_large`'s touch all of them), and needs each kept face's verdicts to ride through the
-  split's rebuild, which renumbers the rows.
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14): row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
   `smoothing.relax_approx`'s neighbourhood frame (ball rows 10-50), `cholesky.breadth_first_level`,

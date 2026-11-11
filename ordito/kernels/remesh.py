@@ -880,6 +880,15 @@ def write_split_children(
 
 
 @wp.func
+def carried_source(index_in: wp.array[wp.int32], f: wp.int32) -> wp.int32:
+    # What face ``f``'s children carry: its entry of ``index_in``, or ``-1`` when it is empty.
+    src = wp.int32(-1)
+    if index_in.shape[0] > 0:
+        src = index_in[f]
+    return src
+
+
+@wp.func
 def emit_size_face(
     faces: wp.array[wp.int32],
     corner_edge: wp.array[wp.int32],
@@ -889,7 +898,7 @@ def emit_size_face(
     word_ranks: wp.array[wp.int32],
     vertex_offset: wp.int32,
     vertices: wp.array[wp.vec3],
-    index_in: wp.array[wp.int32],
+    src: wp.int32,
     face_offsets: wp.array[wp.int32],
     f: wp.int32,
     out_faces: wp.array2d[wp.int32],
@@ -897,12 +906,8 @@ def emit_size_face(
 ) -> None:
     # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
     # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
-    # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
-    # launch) carries no provenance.
-    src = wp.int32(-1)
-    if index_in.shape[0] > 0:
-        src = index_in[f]
-
+    # ``split_child_counts_and_midpoints``), each carrying ``src`` (``carried_source``). An empty
+    # ``out_index`` (``None`` at launch) carries no provenance.
     c0, c1, c2 = corner_triple(faces, f)
     fv = wp.vec3i(c0, c1, c2)
     mv = split_corner_midpoints(
@@ -945,7 +950,7 @@ def emit_size_faces(
         word_ranks,
         vertex_offset,
         vertices,
-        index_in,
+        carried_source(index_in, f),
         face_offsets,
         f,
         out_faces,
@@ -990,7 +995,7 @@ def emit_size_faces_checked(
         word_ranks,
         vertex_offset,
         vertices,
-        index_in,
+        carried_source(index_in, f),
         face_offsets,
         f,
         out_faces,
@@ -1011,6 +1016,75 @@ def emit_size_faces_checked(
                 long_left = True
     if long_left:
         out_long_left[0] = wp.int32(1)
+
+
+# ``subdivide_region_to_size``'s region flag bit for a face whose every flip row was a final "no"
+# when the last flip pass ended, carried by the split onto the face it leaves unchanged
+# (``emit_size_faces_settling``) and read by the next flip pass's first round
+# (``flip_row_carried_settled``). Set only on region faces, beside their ``1``, so every test of a
+# region flag against zero reads it as it did.
+REGION_FLIP_SETTLED = wp.int32(2)
+
+
+@wp.func
+def face_flip_rows_settled(
+    settled: wp.array[wp.int32], halfedge_row: wp.array[wp.int32], f: wp.int32
+) -> wp.bool:
+    # Whether every flip row of face ``f``'s edges (``halfedge_row``, ``-1`` for an edge with no
+    # row) holds a settled state in ``_FlipTopology.settled``. After a flip loop that ended at its
+    # fixpoint, that is a final "no" not from the duplicate-edge guard, of the faces as they are.
+    for j in range(3):
+        row = halfedge_row[3 * f + j]
+        if row >= 0 and settled[row] == 0:
+            return False
+    return True
+
+
+@wp.kernel
+def emit_size_faces_settling(
+    faces: wp.array[wp.int32],
+    corner_edge: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    vertex_offset: wp.int32,
+    vertices: wp.array[wp.vec3],
+    region_flags: wp.array[wp.int32],
+    settled: wp.array[wp.int32],
+    halfedge_row: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    out_faces: wp.array2d[wp.int32],
+    out_region_flags: wp.array[wp.int32],
+) -> None:
+    # ``emit_size_faces`` carrying the region flags, with ``REGION_FLIP_SETTLED`` recomputed: set
+    # on a region face the split leaves unchanged (one child) whose flip rows ``settled`` /
+    # ``halfedge_row`` (the last flip pass's, ended at its fixpoint) all settled, cleared on every
+    # other. Empty ``settled`` sets none: the last pass did not reach its fixpoint.
+    f = wp.int32(wp.tid())
+    src = region_flags[f] & ~REGION_FLIP_SETTLED
+    if (
+        src != 0
+        and settled.shape[0] > 0
+        and face_offsets[f + 1] - face_offsets[f] == 1
+        and face_flip_rows_settled(settled, halfedge_row, f)
+    ):
+        src = src | REGION_FLIP_SETTLED
+    emit_size_face(
+        faces,
+        corner_edge,
+        split_mask,
+        offsets,
+        words,
+        word_ranks,
+        vertex_offset,
+        vertices,
+        src,
+        face_offsets,
+        f,
+        out_faces,
+        out_region_flags,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1828,6 +1902,25 @@ def flip_row_settled(
 
 
 @wp.func
+def flip_row_carried_settled(
+    round_state: wp.array[wp.int32],
+    carried_flags: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    k: wp.int32,
+) -> wp.bool:
+    # Whether row ``k``'s verdict was settled before this flip loop began: in its first round (a
+    # zero flip total), both its faces carry ``REGION_FLIP_SETTLED`` in ``carried_flags``. Such a
+    # face is one the split before this loop left unchanged, every row of which was a final "no"
+    # when the last loop ended, so the row is the same edge between the same two faces, apexes,
+    # positions and region, and its verdict stands. Empty, nothing is carried.
+    if carried_flags.shape[0] == 0 or round_state[FLIP_TOTAL] != 0:
+        return False
+    return (carried_flags[adjacency[k, 0]] & REGION_FLIP_SETTLED) != 0 and (
+        carried_flags[adjacency[k, 1]] & REGION_FLIP_SETTLED
+    ) != 0
+
+
+@wp.func
 def settle_flip_row(
     round_state: wp.array[wp.int32],
     settled: wp.array[wp.int32],
@@ -2100,15 +2193,21 @@ def delone_flip_candidates(
     max_angle_change: wp.float32,
     max_deviation_sq: wp.float32,
     critical_aspect: wp.float32,
+    carried_flags: wp.array[wp.int32],
     settled: wp.array[wp.int32],
     out_flip: wp.array[wp.bool],
     out_quad: wp.array2d[wp.int32],
 ) -> None:
+    # ``carried_flags`` is the region flags as the split before this loop left them, for
+    # ``flip_row_carried_settled``; ``None`` (empty) for a loop no such split precedes.
     k = wp.int32(wp.tid())
     if flip_round_idle(round_state):
         return
     out_flip[k] = wp.bool(False)
     if flip_row_settled(round_state, settled, adjacency, k):
+        return
+    if flip_row_carried_settled(round_state, carried_flags, adjacency, k):
+        settle_flip_row(round_state, settled, adjacency, wp.int32(-1), wp.bool(False), k)
         return
     a, b, c, d = _resolve_flip_quad_in_region(
         faces,

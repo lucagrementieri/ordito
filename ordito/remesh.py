@@ -4112,6 +4112,7 @@ def flip_to_delaunay(
                 mac,
                 mdsq,
                 car,
+                None,
                 settled,
                 out_flip,
                 out_quad,
@@ -5745,6 +5746,9 @@ def subdivide_region_to_size(
         # edges (long, and inside the region) and what rides along (``region_flags``, carried
         # through ``index`` so the grown region comes back resolved onto the new faces).
         carried = region_flags if face_index is None else face_index
+        # With the flags carried (not the provenance's face index), the split marks the faces the
+        # last flip pass settled and leaves unchanged, for the next pass's first round.
+        settling = topology if face_index is None and topology is not None else None
         current_vertices, current_faces, carried = _split_ranked_edges(
             current_vertices,
             current_faces,
@@ -5758,6 +5762,7 @@ def subdivide_region_to_size(
             None,
             True,
             split_bits=split_bits,
+            settling=settling,
         )
         if face_index is None:
             region_flags = carried
@@ -5777,6 +5782,7 @@ def subdivide_region_to_size(
                 max_deviation,
                 8,
                 topology,
+                carried_flags=region_flags if settling is not None else None,
             )
 
     # Nothing in the region needed splitting, so ``current_*`` are still the caller's own buffers;
@@ -6518,6 +6524,7 @@ def _split_ranked_edges(
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
     length_check: _LengthCheck | None = None,
+    settling: _FlipTopology | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
 @overload
 def _split_ranked_edges(
@@ -6535,6 +6542,7 @@ def _split_ranked_edges(
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
     length_check: _LengthCheck | None = None,
+    settling: _FlipTopology | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], None]: ...
 @overload
 def _split_ranked_edges(
@@ -6552,6 +6560,7 @@ def _split_ranked_edges(
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
     length_check: _LengthCheck | None = None,
+    settling: _FlipTopology | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]: ...
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
@@ -6568,6 +6577,7 @@ def _split_ranked_edges(
     *,
     split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
     length_check: _LengthCheck | None = None,
+    settling: _FlipTopology | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Split the ranked edges: the body of [`split_edges`][ordito.remesh.split_edges] past its scan.
@@ -6581,7 +6591,9 @@ def _split_ranked_edges(
     ``return_index`` asks for it back. The provenance is always the third element;
     ``split_edges`` drops it when not asked. ``carried=None`` threads none and returns ``None``.
     ``length_check``, when given, learns whether any edge of the result is still longer than its
-    target (``long_left``, one more readback).
+    target (``long_left``, one more readback). ``settling``, the last flip pass's topology over
+    ``faces``, has the carried region flags recompute ``kernel_remesh.REGION_FLIP_SETTLED``
+    (``kernel_remesh.emit_size_faces_settling``), set only where that pass ended at its fixpoint.
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -6639,6 +6651,31 @@ def _split_ranked_edges(
     out_index = (
         None if carried is None else _launch.empty(n_out_faces, dtype=wp.int32, device=device)
     )
+    if settling is not None:
+        assert carried is not None
+        assert out_index is not None
+        at_fixpoint = settling.at_fixpoint
+        _launch.launch(
+            kernel_remesh.emit_size_faces_settling,
+            dim=n_faces,
+            inputs=[
+                faces,
+                corner_edge,
+                split_mask,
+                offsets,
+                *words_and_ranks,
+                wp.int32(n_vertices),
+                new_vertices,
+                carried,
+                settling.settled if at_fixpoint else None,
+                settling.halfedge_row if at_fixpoint else None,
+                face_offsets,
+                out_faces,
+                out_index,
+            ],
+            device=device,
+        )
+        return new_vertices, out_faces.reshape(-1), out_index
     if length_check is None:
         _launch.launch(
             kernel_remesh.emit_size_faces,
@@ -6697,13 +6734,17 @@ def _flip_region_faces(
     topology: _FlipTopology | None = None,
     *,
     critical_aspect_ratio: float = 1000.0,
+    carried_flags: wp.array[wp.int32] | None = None,
 ) -> int:
     """
     Run the parallel Delone flip pass over the region, mutating ``faces`` in place.
 
     ``topology`` is handed through to ``_flip_interior_edges``, which leaves it describing
     ``faces`` as the pass leaves it. ``critical_aspect_ratio`` is
-    [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]'s.
+    [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]'s. ``carried_flags`` is
+    ``region_flags`` itself when the split just before this pass marked the faces whose flip
+    verdicts stand (``kernel_remesh.emit_size_faces_settling``), for the pass's first round to
+    settle their rows untested.
     """
     device = faces.device
     n_vertices = vertices.size
@@ -6740,6 +6781,7 @@ def _flip_region_faces(
                 mac,
                 mdsq,
                 car,
+                carried_flags,
                 settled,
                 out_flip,
                 out_quad,

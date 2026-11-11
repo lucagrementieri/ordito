@@ -1270,6 +1270,41 @@ def test_subdivide_region_to_size_returns_its_edges(device: str, delaunay: bool)
     assert np.array_equal(given[4].numpy(), inverse_wp.numpy())
 
 
+@pytest.mark.parametrize("fraction", [0.5, 0.35])
+def test_subdivide_region_to_size_carried_flip_verdicts_change_nothing(
+    device: str, monkeypatch: pytest.MonkeyPatch, fraction: float
+) -> None:
+    """
+    Ordito against ordito: carrying settled flip verdicts across a split changes no output.
+
+    Each split marks the region faces it leaves unchanged whose flip rows all settled when the
+    last flip pass ended (``kernel_remesh.emit_size_faces_settling``), and the next pass's first
+    round settles a row between two such faces untested. The same call with the marking stripped
+    is the oracle. A jittered sphere has flips in every pass; letting a split face's children keep
+    the mark, or a re-split face keep a stale one, changes the result here.
+    """
+    vertices_np, faces_np = (
+        array.numpy() for array in od.creation.icosphere(subdivisions=5, device="cpu")
+    )
+    vertices_np = vertices_np + np.random.default_rng(3).normal(scale=0.004, size=vertices_np.shape)
+    vertices, faces = numpy_to_warp(vertices_np, faces_np.reshape(-1, 3), device)
+    centroid_x = vertices_np[faces_np.reshape(-1, 3), 0].mean(axis=1)
+    region = wp.array(centroid_x < np.median(centroid_x), dtype=wp.bool, device=device)
+    max_edge = fraction * float(od.edges.mean_unique_edge_length(vertices, faces))
+
+    carried = od.remesh.subdivide_region_to_size(vertices, faces, region, max_edge)
+    split = od.remesh._split_ranked_edges
+
+    def without_settling(*args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("settling", None)
+        return split(*args, **kwargs)
+
+    monkeypatch.setattr(od.remesh, "_split_ranked_edges", without_settling)
+    plain = od.remesh.subdivide_region_to_size(vertices, faces, region, max_edge)
+    for carried_wp, plain_wp in zip(carried, plain, strict=True):
+        assert np.array_equal(carried_wp.numpy(), plain_wp.numpy())
+
+
 def _referenced_mesh(
     vertices_np: np.ndarray, faces_np: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
