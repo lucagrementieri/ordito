@@ -638,7 +638,7 @@ def test_contested_rows_kept_match_meshlib_builder(
     kept_wp = od.reconstruction._contested_rows_kept(  # pyright: ignore[reportPrivateUsage]
         wp.array(points_np, dtype=wp.vec3, device=device),
         cast(Any, wp.array(rows_ml, dtype=wp.int32, device=device)),
-        n_rep3,
+        wp.array([n_rep3], dtype=wp.int32, device=device),
     )
     assert np.array_equal(kept_wp.numpy().reshape(-1, 3), kept_ml)
     if group_rows is not None:
@@ -815,10 +815,10 @@ def _fan_orientation_rows(cloud: str, device: str) -> tuple[np.ndarray, int, np.
     od.reconstruction._orient_fans(  # pyright: ignore[reportPrivateUsage]
         points_wp, fans, keys, slots, n_candidates, od.bounds.aabb(points_wp)
     )
-    rows_wp, n_rep3 = od.reconstruction._oriented_candidate_rows(  # pyright: ignore[reportPrivateUsage]
+    rows_wp, rep3_wp = od.reconstruction._oriented_candidate_rows(  # pyright: ignore[reportPrivateUsage]
         points_wp, fans, keys, slots, n_candidates
     )
-    return rows_wp.numpy(), n_rep3, rows_ml, rep3.shape[0]
+    return rows_wp.numpy(), int(rep3_wp.numpy()[0]), rows_ml, rep3.shape[0]
 
 
 @pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")

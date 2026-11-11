@@ -5559,7 +5559,7 @@
    "launch": 22,
    "alloc": 26,
    "h2h": 1,
-   "readback": 8,
+   "readback": 7,
    "scan": 7,
    "sort": 5
   }
@@ -5569,7 +5569,7 @@
    "launch": 28,
    "alloc": 32,
    "h2h": 2,
-   "readback": 8,
+   "readback": 7,
    "scan": 7,
    "sort": 6
   }

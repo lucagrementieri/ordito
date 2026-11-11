@@ -555,10 +555,10 @@ def _assemble_fans(
     keys, slots = _sorted_candidate_keys(fans, n_candidates, points.size)
     if orient_from is not None:
         _orient_fans(points, fans, keys, slots, n_candidates, orient_from)
-    rows, n_rep3 = _oriented_candidate_rows(points, fans, keys, slots, n_candidates)
+    rows, rep3 = _oriented_candidate_rows(points, fans, keys, slots, n_candidates)
     if rows.shape[0] == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
-    faces = _contested_rows_kept(points, rows, n_rep3)
+    faces = _contested_rows_kept(points, rows, rep3)
     vertices, faces, _ = od.repair.remove_unreferenced_vertices(points, faces)
     if crit_hole_length != 0.0 and faces.size > 0:
         faces = od.holes._fill_small(  # pyright: ignore[reportPrivateUsage]
@@ -823,9 +823,12 @@ def _oriented_candidate_rows(
     keys: wp.array[wp.uint64],
     slots: wp.array[wp.int32],
     n_candidates: int,
-) -> tuple[odt.Array2dInt32, int]:
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
     """
     Return the candidate triangles as rows in the order the builder adds them, and the ``t3`` count.
+
+    The count stays on the device, a ``(1,)`` array: only a cloud with a contested region reads it
+    ([`_contested_rows_kept`][ordito.reconstruction._contested_rows_kept]).
 
     A triangle three fans agree on in one winding (``t3``), else two (``t2``); a degenerate one is
     kept, as the builder rejects only a repeated vertex. Each row is stored lowest vertex
@@ -852,7 +855,7 @@ def _oriented_candidate_rows(
     m = int(read_scalar(flags))
     rows = odt.empty_2d((m, 3), wp.int32, device=device)
     if m == 0:
-        return rows, 0
+        return rows, rep3
     low, high, high_sorted, order = _launch.carve_typed(
         ((wp.uint64, 2 * m), (wp.uint64, 2 * m), (wp.uint64, 2 * m), (wp.int32, 2 * m)), device
     )
@@ -868,8 +871,7 @@ def _oriented_candidate_rows(
     _launch.copy(high_sorted, od.array.gather(_launch.view(high, 0, m), _launch.view(order, 0, m)))
     _launch.radix_sort_pairs(high_sorted, order, count=m, end_bit=max(1, (2 * n - 1).bit_length()))
     ordered = od.array.gather(rows, _launch.view(order, 0, m))
-    # Readback: the class boundary is the builder's first-call region, read on the host.
-    return odt.as_array2d(ordered, wp.int32), int(read_scalar(rep3, index=0))
+    return odt.as_array2d(ordered, wp.int32), rep3
 
 
 # How far from a conflict the builder runs: the rows that touch a vertex within this many rings
@@ -879,10 +881,12 @@ _CONTESTED_RINGS = 1 + kernel_mesh_builder.COMPLICATING_ROUNDS
 
 
 def _contested_rows_kept(
-    points: wp.array[wp.vec3], rows: odt.Array2dInt32, n_rep3: int
+    points: wp.array[wp.vec3], rows: odt.Array2dInt32, rep3: wp.array[wp.int32]
 ) -> wp.array[wp.int32]:
     """
     Return the candidate rows the builder keeps, flat, in their order.
+
+    ``rep3`` is the ``(1,)`` device count of the ``t3`` rows, which lead ``rows``.
 
     A vertex is *clean* when its rows share no directed edge and chain into one fan: the builder
     adds such rows whatever its order. Every other vertex seeds a contested region, and only the
@@ -963,9 +967,12 @@ def _contested_rows_kept(
         outputs=[local_rows],
         device=device,
     )
-    # Readback: the region's rows below the class boundary are the builder's first call; the
-    # contested rows ascend, so it is one search of them on the host.
+    # Readback: the region's rows below the class boundary (``rep3``, the ``t3`` count) are the
+    # builder's first call; the contested rows ascend, so it is one search of them on the host.
+    # Read here, not where the count is formed, so that a cloud with no contested row reads
+    # neither.
     contested_np = read_array(contested)
+    n_rep3 = int(read_scalar(rep3, index=0))
     n_rep3_local = int(np.searchsorted(contested_np, n_rep3))
     state = _run_mesh_builder(
         od.array.gather(points, used),
