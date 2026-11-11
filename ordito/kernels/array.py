@@ -1832,24 +1832,20 @@ def lattice_cell_1024(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp
 
 
 @wp.func
-def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
-    # The 30-bit Morton code of ``point``'s cell of the 1024^3 lattice over the box
-    # (``lattice_cell_1024``). Sorting points by it puts spatial neighbours next to each other.
-    # Through the ``bits``-generic ``morton_index``: identical codes, the key kernel 1.00-1.05x on
-    # CUDA and 1.10x on the CPU at 4 M / 200 k points against the unrolled 10-bit form it replaced.
-    return wp.int32(morton_index(lattice_cell_1024(point, lower, inv_extent), 10))
-
-
-@wp.func
-def hilbert_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
-    # ``morton_code_30``'s lattice ordered along a Hilbert curve instead (``hilbert_index``), at
-    # the same price against its unrolled form.
-    return wp.int32(hilbert_index(lattice_cell_1024(point, lower, inv_extent), 10))
+def point_curve_code(
+    point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3, curve: wp.int32
+) -> wp.int32:
+    # The 30-bit index along ``curve`` (``curve_index``) of ``point``'s cell of the 1024^3 lattice
+    # over the box (``lattice_cell_1024``, framed by ``morton_frame``). Sorting points by it puts
+    # spatial neighbours next to each other; a Hilbert run is a more compact patch than a Morton
+    # one. Every point key goes through it: ``point_curve_keys`` (``_common.space_filling_order``)
+    # and the kernels keying a point they form in the thread.
+    return wp.int32(curve_index(lattice_cell_1024(point, lower, inv_extent), 10, curve))
 
 
 @wp.func
 def morton_frame(corners: wp.array[wp.float32]) -> tuple[wp.vec3, wp.vec3]:
-    # ``morton_code_30``'s ``(lower, inv_extent)`` from a packed box left on the device by
+    # ``point_curve_code``'s ``(lower, inv_extent)`` from a packed box left on the device by
     # ``kernels/reduce.minmax_vec3_chunked`` (``[lower, -upper]``), so no readback sits between the
     # box reduction and the key kernel. A flat axis maps to ``0``.
     lower = wp.vec3(corners[0], corners[1], corners[2])
@@ -1869,14 +1865,12 @@ def point_curve_keys(
     out_keys: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # Each point's 30-bit index along ``curve`` (``curve_index``) of its cell of the 1024^3 lattice
-    # over the box ``corners`` (``morton_frame``), with its index, into the radix sort's
-    # double-width buffers (``_common.space_filling_order``): consecutive points of the sorted
-    # order are a compact patch.
+    # Each point's ``point_curve_code`` over the box ``corners``, with its index, into the radix
+    # sort's double-width buffers (``_common.space_filling_order``): consecutive points of the
+    # sorted order are a compact patch.
     i = wp.int32(wp.tid())
     lower, inv_extent = morton_frame(corners)
-    cell = lattice_cell_1024(points[i], lower, inv_extent)
-    out_keys[i] = wp.int32(curve_index(cell, 10, curve))
+    out_keys[i] = point_curve_code(points[i], lower, inv_extent, curve)
     out_order[i] = i
 
 

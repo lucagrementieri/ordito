@@ -5,12 +5,13 @@ from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import (
+    CURVE_HILBERT,
     OverloadTable,
     append_slot,
     bit_rank,
-    hilbert_code_30,
     lattice_position,
     nth_bit_position,
+    point_curve_code,
     ravel_index,
     store_counted_ballot_bit,
     unravel_index,
@@ -202,7 +203,9 @@ def cone_group_keys(
     # leading halves of the radix sort's double-width buffers: consecutive components in the sorted
     # order are near each other, so a run of them is a compact group.
     c = wp.int32(wp.tid())
-    out_keys[c] = hilbert_code_30(vertices[sorted_keys[starts[c]]], lower, inv_extent)
+    out_keys[c] = point_curve_code(
+        vertices[sorted_keys[starts[c]]], lower, inv_extent, CURVE_HILBERT
+    )
     out_order[c] = c
 
 

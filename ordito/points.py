@@ -59,7 +59,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _launch
+from ordito import _common, _launch
 from ordito._common import (
     ball_grid_cell_width,
     read_array,
@@ -70,7 +70,6 @@ from ordito._common import (
     slice_count,
     tiled_ball_walk,
 )
-from ordito._common import space_filling_order as space_filling_order_on
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
@@ -3113,4 +3112,4 @@ def space_filling_order(
         raise ValueError(f"curve must be 'hilbert' or 'morton', got {curve!r}.")
     if points.size == 0:
         return _launch.empty(0, dtype=wp.int32, device=points.device)
-    return space_filling_order_on(points, int(curves[curve]))
+    return _common.space_filling_order(points, int(curves[curve]))

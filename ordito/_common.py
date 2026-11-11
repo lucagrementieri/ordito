@@ -811,6 +811,10 @@ def space_filling_order(
     """
     Return ``(n,)`` the points' indices in order along ``curve`` over their bounding box.
 
+    The core of [`points.space_filling_order`][ordito.points.space_filling_order], with ``curve``
+    already resolved and ``points`` non-empty, for the callers below ``points``
+    ([`search_order`][ordito._common.search_order], ``geodesic_walk``, ``visibility``'s
+    point-major occlusion): one implementation, the public function only validating.
     ``curve`` is ``kernels/array.CURVE_HILBERT`` or ``CURVE_MORTON``. A launch over the points in
     Hilbert order puts a compact patch in each block: a block-local iteration then carries a value
     across the patch (``geodesic_walk``'s shortest-edge tree). One box reduction, one key pass and

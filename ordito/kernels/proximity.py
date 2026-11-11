@@ -3,14 +3,15 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
+    CURVE_HILBERT,
     RegisterBlockedTable,
     atomic_min_packed_box,
     atomic_min_unless_below,
-    hilbert_code_30,
     lattice_position,
     lift_vec2,
     morton_frame,
     ordered_item,
+    point_curve_code,
     to_vec3,
     to_vec3d,
 )
@@ -1836,13 +1837,14 @@ def winding_face_keys(
     # dim == n_faces: the Hilbert code of each face centroid over the vertices' box, and the
     # face's own index, into the radix sort's double-width buffers. ``corners`` is
     # ``kernel_reduce.minmax_vec3_chunked``'s ``[lower, -upper]``, read here so no readback sits
-    # between the reduction and the sort; ``visibility.morton_point_order`` keys points on the same
-    # lattice in Z-order. A Hilbert run is a more compact patch than a Morton one, so the tree's
-    # nodes have shorter boundaries (fewer cap edges per query; see the measurements above).
+    # between the reduction and the sort; ``kernels/array.point_curve_code`` keys every point
+    # (``_common.space_filling_order``) on the same lattice. A Hilbert run is a more compact patch
+    # than a Morton one, so the tree's nodes have shorter boundaries (fewer cap edges per query;
+    # see the measurements above).
     f = wp.int32(wp.tid())
     lower, inv_extent = morton_frame(corners)
     a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
-    out_keys[f] = hilbert_code_30((a + b + c) / 3.0, lower, inv_extent)
+    out_keys[f] = point_curve_code((a + b + c) / 3.0, lower, inv_extent, CURVE_HILBERT)
     out_order[f] = f
 
 

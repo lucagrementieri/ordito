@@ -41,8 +41,9 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device, search_order
+from ordito._common import read_scalar, require_same_device, search_order, space_filling_order
 from ordito.constants import TOLERANCE_PLANAR
+from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility
 from ordito.proximity import (
@@ -313,7 +314,11 @@ def _occlusion_bundle(
         _launch.launch_tiled(
             kernel_visibility.occlusion_point_major,
             dim=(-(-m // kernel_visibility.POINT_MAJOR_POINTS),),
-            inputs=[*trace[:3], _morton_order(points), *trace[3:]],
+            inputs=[
+                *trace[:3],
+                space_filling_order(points, int(kernel_array.CURVE_MORTON)),
+                *trace[3:],
+            ],
             block_dim=kernel_visibility.POINT_MAJOR_BLOCK,
             device=device,
         )
@@ -324,35 +329,6 @@ def _occlusion_bundle(
         kernel, dim=(m,), inputs=inputs, block_dim=kernel_visibility.BUNDLE_BLOCK, device=device
     )
     return out_occlusion
-
-
-def _morton_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
-    """
-    ``(m,)`` permutation of ``points`` into Morton (Z-order) order over their own box.
-
-    The order the point-major occlusion kernel walks a large cloud in, so a block's points are
-    spatial neighbours. Its first ``m`` entries are the permutation; the buffer is the radix sort's
-    double width.
-    """
-    device = points.device
-    m = points.size
-    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_reduce.minmax_vec3_chunked,
-        dim=kernel_reduce.chunks_1d(m),
-        inputs=[points, corners],
-        device=device,
-    )
-    keys, order = _launch.carve(wp.int32, [2 * m, 2 * m], device)
-    _launch.launch(
-        kernel_visibility.morton_point_order,
-        dim=m,
-        inputs=[points, corners],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, count=m, end_bit=30)
-    return order
 
 
 def shape_diameter(

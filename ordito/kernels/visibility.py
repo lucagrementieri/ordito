@@ -3,14 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import (
-    RegisterBlockedTable,
-    append_slot,
-    morton_code_30,
-    morton_frame,
-    ordered_item,
-    to_vec3d,
-)
+from ordito.kernels.array import RegisterBlockedTable, append_slot, ordered_item, to_vec3d
 from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
 from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query
 from ordito.kernels.ray import longest_ray_distance
@@ -242,12 +235,12 @@ def obscurance(
 
 # The point-major layout of the bundle kernels for large clouds: a block of ``POINT_MAJOR_BLOCK``
 # lanes takes ``POINT_MAJOR_POINTS`` points that are consecutive in Morton order
-# (``morton_point_order``), lane ``t`` tracing point ``t % POINT_MAJOR_POINTS`` along ray group ``t
-# // POINT_MAJOR_POINTS``, so a warp traces 32 neighbouring points along one lattice direction and
-# their BVH walks share nodes. Per-point sums over the groups are one ``block_sum`` of a vector
-# holding each lane's sums in its own point's slot (reading them off a lane-sized ``(groups,
-# points)`` tile instead measured 0.89x / 0.87x at 64 / 256 rays on a 14 M-point scan). It pays only
-# once the cloud is dense enough for 32 Morton neighbours to be close
+# (``_common.space_filling_order``), lane ``t`` tracing point ``t % POINT_MAJOR_POINTS`` along ray
+# group ``t // POINT_MAJOR_POINTS``, so a warp traces 32 neighbouring points along one lattice
+# direction and their BVH walks share nodes. Per-point sums over the groups are one ``block_sum`` of
+# a vector holding each lane's sums in its own point's slot (reading them off a lane-sized
+# ``(groups, points)`` tile instead measured 0.89x / 0.87x at 64 / 256 rays on a 14 M-point scan).
+# It pays only once the cloud is dense enough for 32 Morton neighbours to be close
 # (``_OCCLUSION_POINT_MAJOR_FROM`` in ``ordito/visibility.py``); below that one block per point
 # wins. Binary occlusion only: the same layout for ``shape_diameter``'s inward closest-hit bundle
 # measured 0.65x (a row of scratch per point, scattered stores) and 0.98x with the scratch
@@ -257,22 +250,6 @@ def obscurance(
 POINT_MAJOR_POINTS = 32
 POINT_MAJOR_BLOCK = 128
 PointMajorSums = wp.types.vector(length=POINT_MAJOR_POINTS, dtype=wp.float32)
-
-
-@wp.kernel
-def morton_point_order(
-    points: wp.array[wp.vec3],
-    corners: wp.array[wp.float32],
-    out_keys: wp.array[wp.int32],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # dim == n_points: each point's Morton code and its own index, written into the radix sort's
-    # double-width buffers. The box stays on the device (``morton_frame``), as in
-    # ``proximity.winding_face_keys``, which keys face centroids instead of points.
-    i = wp.int32(wp.tid())
-    lower, inv_extent = morton_frame(corners)
-    out_keys[i] = morton_code_30(points[i], lower, inv_extent)
-    out_order[i] = i
 
 
 @wp.kernel
