@@ -2828,7 +2828,7 @@
  },
  "benchmarks/test_holes.py::test_fill_cone[rim_long-ordito-cuda]": {
   "counts": {
-   "launch": 10,
+   "launch": 11,
    "alloc": 7,
    "memset": 3,
    "d2d": 2,

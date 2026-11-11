@@ -363,8 +363,8 @@ def fill_fan(
     _launch.copy(filled, faces, count=faces.size)
     _launch.launch(
         kernel_holes.fan_faces,
-        dim=n_loops,
-        inputs=[flat_loops, loop_offsets, odt.as_dense(filled[faces.size :])],
+        dim=total,
+        inputs=[flat_loops, loop_offsets, None, odt.as_dense(filled[faces.size :])],
         device=device,
     )
     return _faces_and_provenance(vertices, faces, filled, return_provenance)
@@ -2046,15 +2046,27 @@ def _cone_packed_loops(
     if n_vertices > 0:
         _launch.copy(new_vertices, vertices, count=n_vertices)
     _launch.copy(new_faces, faces, count=faces.size)
+    centroids = odt.as_dense(new_vertices[n_vertices:])
+    # A long loop's centroid is summed a block a loop on CUDA; the CPU runs the threads in turn.
+    blocked = device.is_cuda and packed.max_size > kernel_holes.CONE_THREAD_CENTROID_MAX
+    if blocked:
+        _launch.launch_tiled(
+            kernel_holes.cone_centroids,
+            dim=[packed.n_loops],
+            inputs=[vertices, packed.flat_loops, packed.offsets, centroids],
+            device=device,
+        )
     _launch.launch(
         kernel_holes.cone_fill,
-        dim=packed.n_loops,
+        dim=packed.total,
         inputs=[
             vertices,
             packed.flat_loops,
             packed.offsets,
+            None,
             wp.int32(n_vertices),
-            odt.as_dense(new_vertices[n_vertices:]),
+            not blocked,
+            centroids,
             odt.as_dense(new_faces[faces.size :]),
         ],
         device=device,

@@ -6,6 +6,7 @@ from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     loop_next_slot,
+    loop_owner,
     loop_point,
     loop_rim_edge_vertices,
     pack_nearest_key,
@@ -28,6 +29,7 @@ from ordito.kernels.reduce import (
     block_barrier,
     block_max,
     block_min,
+    block_sum,
     last_ticket,
     load_coherent_float_2d,
     load_coherent_int_2d,
@@ -75,18 +77,26 @@ MAX_MIN_ANGLE_SIN = wp.float32(0.86602540378443864676)
 
 @wp.kernel
 def fan_faces(
-    flat_loops: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+    flat_loops: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
 ) -> None:
-    ell = wp.int32(wp.tid())
+    # One thread per rim entry, its loop found by ``loop_owner``: entry ``k`` of a loop of ``s``
+    # (``1 <= k <= s - 2``) writes fan triangle ``k``. A thread per loop wrote a long rim alone,
+    # its whole call on ``rim_long``'s 65 536-vertex rims.
+    p = wp.int32(wp.tid())
+    ell = loop_owner(loop_id, loop_offsets, p)
     o = loop_offsets[ell]
     s = loop_offsets[ell + 1] - o
+    k = p - o
+    if k < 1 or k > s - 2:
+        return
     # This loop contributes s - 2 fan triangles; earlier loops occupy o - 2 * ell of them.
-    base = o - 2 * ell
-    for k in range(1, s - 1):
-        t = base + (k - 1)
-        out_faces[3 * t + 0] = flat_loops[o]
-        out_faces[3 * t + 1] = flat_loops[o + k + 1]
-        out_faces[3 * t + 2] = flat_loops[o + k]
+    t = o - 2 * ell + (k - 1)
+    out_faces[3 * t + 0] = flat_loops[o]
+    out_faces[3 * t + 1] = flat_loops[o + k + 1]
+    out_faces[3 * t + 2] = flat_loops[o + k]
 
 
 @wp.kernel
@@ -109,35 +119,62 @@ def kept_then_sources(
         out_index[i] = -1
 
 
+# Longest loop whose centroid ``cone_fill`` sums in the thread of the loop's first entry on CUDA;
+# past it ``cone_centroids`` sums each loop a block. A thread costs about a dependent add a vertex.
+CONE_THREAD_CENTROID_MAX = 64
+
+
+@wp.kernel
+def cone_centroids(
+    vertices: wp.array[wp.vec3],
+    flat_loops: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    out_centroids: wp.array[wp.vec3],
+) -> None:
+    # Each loop's apex at its centroid, a block a loop: the lanes stride its rim and one block sum
+    # in a fixed tree adds their partials. For CUDA loops past ``CONE_THREAD_CENTROID_MAX``: one
+    # thread summing ``rim_long``'s 65 536-vertex rims in turn was the whole cone call.
+    ell, lane = wp.tid()
+    o = loop_offsets[ell]
+    s = loop_offsets[ell + 1] - o
+    acc = wp.vec3(0.0, 0.0, 0.0)
+    for i in range(lane, s, wp.block_dim()):
+        acc = acc + vertices[flat_loops[o + i]]
+    acc = block_sum(acc)
+    if lane == 0:
+        out_centroids[ell] = acc * (1.0 / wp.float32(s))
+
+
 @wp.kernel
 def cone_fill(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
     n_vertices: wp.int32,
+    sum_centroids: wp.bool,
     out_centroids: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # One thread per hole: place the loop's apex at its centroid and emit the cone fan around it.
-    # The two were separate launches over the same loops; the fan does not read the centroid (the
-    # apex is an *index*, ``n_vertices + ell``), so nothing is shared but the loop's own bounds --
-    # which is exactly what makes one launch enough.
-    ell = wp.int32(wp.tid())
+    # One thread per rim entry, its loop found by ``loop_owner``: entry ``j`` writes the cone
+    # triangle on its rim edge. Under ``sum_centroids`` a loop's first entry also places its apex
+    # at the centroid, summed in rim order; otherwise ``cone_centroids`` places it. A thread a
+    # loop wrote a long rim's triangles alone: half of the cone call on ``rim_long``. The fan does
+    # not read the centroid (the apex is an *index*, ``n_vertices + ell``).
+    p = wp.int32(wp.tid())
+    ell = loop_owner(loop_id, loop_offsets, p)
     o = loop_offsets[ell]
     s = loop_offsets[ell + 1] - o
-    acc = wp.vec3(0.0, 0.0, 0.0)
-    for j in range(s):
-        acc = acc + vertices[flat_loops[o + j]]
-    out_centroids[ell] = acc * (1.0 / wp.float32(s))
-
-    apex = n_vertices + ell
+    j = p - o
+    if sum_centroids and j == 0:
+        acc = wp.vec3(0.0, 0.0, 0.0)
+        for i in range(s):
+            acc = acc + vertices[flat_loops[o + i]]
+        out_centroids[ell] = acc * (1.0 / wp.float32(s))
     # This loop contributes s cone triangles; the cone base equals o (scan of the loop sizes).
-    for j in range(s):
-        t = o + j
-        nxt = o + (j + 1) % s
-        out_faces[3 * t + 0] = apex
-        out_faces[3 * t + 1] = flat_loops[nxt]
-        out_faces[3 * t + 2] = flat_loops[o + j]
+    out_faces[3 * p + 0] = n_vertices + ell
+    out_faces[3 * p + 1] = flat_loops[o + (j + 1) % s]
+    out_faces[3 * p + 2] = flat_loops[p]
 
 
 @wp.kernel
