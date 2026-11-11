@@ -6624,20 +6624,20 @@
  },
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cuda-0.25]": {
   "counts": {
-   "launch": 30,
-   "alloc": 21,
-   "memset": 12,
-   "d2h": 8,
+   "launch": 27,
+   "alloc": 20,
+   "memset": 9,
+   "d2h": 7,
    "scan": 7,
    "sort": 4
   }
  },
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cuda-None]": {
   "counts": {
-   "launch": 28,
-   "alloc": 28,
-   "memset": 15,
-   "d2h": 10,
+   "launch": 25,
+   "alloc": 27,
+   "memset": 12,
+   "d2h": 9,
    "scan": 10,
    "sort": 3
   }

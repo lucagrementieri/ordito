@@ -1622,8 +1622,10 @@ def _flip_interior_edges(
     # quad's four sides alone, so the interior-edge count is fixed from here on and every row keeps
     # describing one edge. A tracked valence is seeded by a build, so it forces one.
     topology.valence = valence
+    topology.at_fixpoint = False
     m = topology.rows if topology.built and valence is None else topology.rebuild()
     if m == 0:
+        topology.at_fixpoint = True
         return 0
 
     def flip_round(progress: wp.array[wp.int32], *, refresh: bool = True) -> None:
@@ -1773,6 +1775,7 @@ def _flip_interior_edges(
             n = int(read_scalar(count, 0)) - total
             total += n
             if n == 0:
+                topology.at_fixpoint = True
                 break
             if topology.incremental:
                 topology.refresh(count)
@@ -1792,6 +1795,7 @@ def _flip_interior_edges(
         if n:
             topology.flipped(n)
         if idle:
+            topology.at_fixpoint = True
             break
     return total
 
@@ -1871,6 +1875,10 @@ class _FlipTopology:
         Power-of-two mask for ``edge_claim`` slots.
     claims_armed : bool
         Whether ``face_claim`` and ``edge_claim`` currently hold the unclaimed key everywhere.
+    at_fixpoint : bool
+        Whether the last ``_flip_interior_edges`` call over this topology ended on a round that
+        flipped nothing, so that a call with the same predicate over the same faces and vertices
+        would flip nothing either.
     valence : wp.array[wp.int32] | None
         Per-vertex unique-edge count a build seeds and ``commit_flips`` keeps current, when the
         loop's caller asked for one.
@@ -1935,6 +1943,7 @@ class _FlipTopology:
         # Whether both claim tables hold the unclaimed key: a refresh arms them for the next round,
         # a commit spends them.
         self.claims_armed = False
+        self.at_fixpoint = False
         # The halfedge maps are carved above and adopted by the first build; the key set is
         # allocated when the topology first turns incremental.
         self.incremental = False
@@ -5723,7 +5732,10 @@ def subdivide_region_to_size(
     if current_vertices is vertices:
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
 
-    if delaunay:
+    # Every exit from the loop above follows its grouping and precedes any split, so a pass whose
+    # flips ended at their fixpoint left the faces the closing pass would start from: the same
+    # predicate over them flips nothing, and the loop's last grouping is already of them.
+    if delaunay and (topology is None or not topology.at_fixpoint):
         # The closing pass builds the topology it is handed, so one held here outlives it and
         # carries the sort its edge grouping needs.
         if return_edges and topology is None:

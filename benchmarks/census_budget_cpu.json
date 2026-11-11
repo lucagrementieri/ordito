@@ -6021,18 +6021,18 @@
  },
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-0.25]": {
   "counts": {
-   "launch": 26,
-   "alloc": 21,
-   "readback": 8,
+   "launch": 24,
+   "alloc": 20,
+   "readback": 7,
    "scan": 7,
    "sort": 4
   }
  },
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-None]": {
   "counts": {
-   "launch": 25,
-   "alloc": 28,
-   "readback": 10,
+   "launch": 23,
+   "alloc": 27,
+   "readback": 9,
    "scan": 10,
    "sort": 3
   }
