@@ -11636,9 +11636,9 @@ for rank-2 input with an explicit axis.</p>
     <div class="doc doc-contents ">
 
         <p>Median of a 1D scalar array (<code>numpy.median</code>).</p>
-<p>Sorts a copy of the values on-device with <code>warp.utils.radix_sort_pairs</code> and reads the
-middle element (odd length) or averages the two middle elements (even length). The result
-is always a Python <code>float</code>, regardless of input dtype.</p>
+<p>Finds the middle order statistic on the device, by a radix select or a radix sort of a copy,
+and reads the middle element (odd length) or averages the two middle elements (even length).
+The result is always a Python <code>float</code>, regardless of input dtype.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -11796,9 +11796,9 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Median of a 1D scalar array (``numpy.median``).</span>
 
-<span class="sd">    Sorts a copy of the values on-device with ``warp.utils.radix_sort_pairs`` and reads the</span>
-<span class="sd">    middle element (odd length) or averages the two middle elements (even length). The result</span>
-<span class="sd">    is always a Python ``float``, regardless of input dtype.</span>
+<span class="sd">    Finds the middle order statistic on the device, by a radix select or a radix sort of a copy,</span>
+<span class="sd">    and reads the middle element (odd length) or averages the two middle elements (even length).</span>
+<span class="sd">    The result is always a Python ``float``, regardless of input dtype.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -11855,9 +11855,9 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
     <div class="doc doc-contents ">
 
         <p>Quantile <code>q</code> of a 1D scalar array (<code>numpy.quantile</code> with <code>method="linear"</code>).</p>
-<p>Sorts a copy of the values on-device and interpolates linearly between the two order
-statistics around the fractional rank <code>q * (n - 1)</code>, as NumPy's default method does, so
-<code>q = 0</code> is the minimum, <code>q = 1</code> the maximum and <code>q = 0.5</code> the
+<p>Finds the two order statistics around the fractional rank <code>q * (n - 1)</code> on the device (a
+radix select, or a radix sort of a copy) and interpolates linearly between them, as NumPy's
+default method does, so <code>q = 0</code> is the minimum, <code>q = 1</code> the maximum and <code>q = 0.5</code> the
 <a class="autorefs autorefs-internal" title="median" href="./#ordito.reduce.median"><code>median</code></a>. The result is always a Python <code>float</code>.</p>
 
 
@@ -12037,9 +12037,9 @@ statistics around the fractional rank <code>q * (n - 1)</code>, as NumPy's defau
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Quantile ``q`` of a 1D scalar array (``numpy.quantile`` with ``method="linear"``).</span>
 
-<span class="sd">    Sorts a copy of the values on-device and interpolates linearly between the two order</span>
-<span class="sd">    statistics around the fractional rank ``q * (n - 1)``, as NumPy's default method does, so</span>
-<span class="sd">    ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the</span>
+<span class="sd">    Finds the two order statistics around the fractional rank ``q * (n - 1)`` on the device (a</span>
+<span class="sd">    radix select, or a radix sort of a copy) and interpolates linearly between them, as NumPy's</span>
+<span class="sd">    default method does, so ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the</span>
 <span class="sd">    [`median`][ordito.reduce.median]. The result is always a Python ``float``.</span>
 
 <span class="sd">    Parameters</span>
