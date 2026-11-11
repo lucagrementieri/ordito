@@ -72,6 +72,7 @@ _LaunchCandidates = Callable[
         "wp.uint64",  # key base (n_vertices)
         "wp.array[wp.bool]",  # out_flip (m,)
         odt.Array2dInt32,  # out_quad (m, 4)
+        "wp.array[wp.int32]",  # settled rows and rewritten faces (_FlipTopology.settled)
     ],
     None,
 ]
@@ -1407,6 +1408,7 @@ def _valence_flip_pass(
         key_base: wp.uint64,
         out_flip: wp.array[wp.bool],
         out_quad: odt.Array2dInt32,
+        _settled: wp.array[wp.int32],
     ) -> None:
         _launch.launch(
             kernel_remesh.valence_flip_candidates,
@@ -1642,6 +1644,7 @@ def _flip_interior_edges(
             key_base,
             topology.flip,
             topology.quad,
+            topology.settled,
         )
         # Independent-set selection: a flip commits only if it wins both incident faces and the
         # hashed slot of its new edge (prevents two disjoint flips creating the same edge).
@@ -1681,6 +1684,7 @@ def _flip_interior_edges(
                     topology.halfedge_row,
                     topology.edge_set,
                     valence,
+                    topology.settled,
                 ],
                 outputs=[faces, progress],
                 device=device,
@@ -1721,6 +1725,7 @@ def _flip_interior_edges(
                 topology.halfedge_row,
                 topology.edge_set,
                 valence,
+                topology.settled,
                 faces,
                 progress,
             ],
@@ -1876,6 +1881,10 @@ class _FlipTopology:
         Power-of-two mask for ``edge_claim`` slots.
     claims_armed : bool
         Whether ``face_claim`` and ``edge_claim`` currently hold the unclaimed key everywhere.
+    settled : wp.array[wp.int32]
+        Length ``m + n_faces``: each row's settled verdict, then each face's last rewrite, which
+        the predicate kernels read to re-test only the rows a flip touched since they last said no
+        (``kernel_remesh.flip_row_settled``, which says why none of it needs a fill).
     at_fixpoint : bool
         Whether the last ``_flip_interior_edges`` call over this topology ended on a round that
         flipped nothing, so that a call with the same predicate over the same faces and vertices
@@ -2155,6 +2164,8 @@ class _FlipTopology:
         self._flips_since_build += count
         if self._flips_since_build > self._flip_budget:
             self.rebuild(read_count=False, incremental=True)
+            # A build renumbers the rows, so their settled verdicts go.
+            _launch.zero_(_launch.view(self.settled, 0, self._rows))
 
     def sorted_corner_keys(self) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
         """
@@ -2205,16 +2216,18 @@ class _FlipTopology:
     def _allocate_rows(self, m: int) -> None:
         """(Re)allocate the ``m``-row tables and the hashed edge-claim table sized from them."""
         self._rows = m
-        # The four ``int32`` row tables in one allocation, and the row -> halfedges map an
-        # incremental build adopts.
-        adjacency, adjacency_edges, unshared, quad, row_halfedges = _split_buffer(
-            _launch.empty(12 * m, dtype=wp.int32, device=self._device),
+        # The four ``int32`` row tables in one allocation, the row -> halfedges map an
+        # incremental build adopts, and the settled rows and rewritten faces.
+        adjacency, adjacency_edges, unshared, quad, row_halfedges, settled = _split_buffer(
+            _launch.empty(13 * m + self._n_faces, dtype=wp.int32, device=self._device),
             2 * m,
             2 * m,
             2 * m,
             4 * m,
             2 * m,
+            m + self._n_faces,
         )
+        self.settled = settled
         self._row_halfedges_store = odt.as_array2d(row_halfedges.reshape((m, 2)), wp.int32)
         self.adjacency = odt.as_array2d(adjacency.reshape((m, 2)), wp.int32)
         self.adjacency_edges = odt.as_array2d(adjacency_edges.reshape((m, 2)), wp.int32)
@@ -4079,6 +4092,7 @@ def flip_to_delaunay(
         key_base: wp.uint64,
         out_flip: wp.array[wp.bool],
         out_quad: odt.Array2dInt32,
+        settled: wp.array[wp.int32],
     ) -> None:
         _launch.launch(
             kernel_remesh.delone_flip_candidates,
@@ -4098,6 +4112,7 @@ def flip_to_delaunay(
                 mac,
                 mdsq,
                 car,
+                settled,
                 out_flip,
                 out_quad,
             ],
@@ -4255,6 +4270,7 @@ def flip_by_objective(
         key_base: wp.uint64,
         out_flip: wp.array[wp.bool],
         out_quad: odt.Array2dInt32,
+        settled: wp.array[wp.int32],
     ) -> None:
         _launch.launch(
             kernel_remesh.objective_flip_candidates,
@@ -4275,6 +4291,7 @@ def flip_by_objective(
                 metric_flag,
                 planar_cos,
                 wp.float32(aspect_threshold),
+                settled,
                 out_flip,
                 out_quad,
             ],
@@ -6703,6 +6720,7 @@ def _flip_region_faces(
         key_base: wp.uint64,
         out_flip: wp.array[wp.bool],
         out_quad: odt.Array2dInt32,
+        settled: wp.array[wp.int32],
     ) -> None:
         _launch.launch(
             kernel_remesh.delone_flip_candidates,
@@ -6722,6 +6740,7 @@ def _flip_region_faces(
                 mac,
                 mdsq,
                 car,
+                settled,
                 out_flip,
                 out_quad,
             ],

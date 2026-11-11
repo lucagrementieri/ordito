@@ -1282,13 +1282,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   one). Unbuilt: a public deferred form (twins plus their unread counts, raised from the caller's
   one read). It is safe because a garbage table still holds in-range indices. Other `halfedge_twins`
   callers with a sizing read of their own would take it too.
-- **The Delone flip predicate's first round** (2026-11-11): each `subdivide_region_to_size` pass
-  tests every region edge of the freshly split mesh once in `float64`
-  (`kernels/remesh.delone_flip_candidates`; `sphere_large` 2.6 of a 6.3 ms call, a mesh that
-  flips nothing), now metric-first. Unbuilt: a `float32` prefilter with a rigorous error bound on
-  the metric comparison (narrowing the predicate itself is refuted: it changes flips), or testing
-  only the edges a split touched (the rows renumber at each pass's build, so an untouched edge's
-  verdict would have to ride through the split).
+- **A flip loop's first round** (2026-11-11): the rounds after a call's first re-test only the
+  rows a flip touched (`kernels/remesh.flip_row_settled`), but each call's first round still
+  tests every row in `float64` (`subdivide_region_to_size` on `sphere_large`: 2.6 of a 6.3 ms
+  call, on a mesh that flips nothing). Unbuilt: a `float32` prefilter with a rigorous error
+  bound on the Delone metric comparison (narrowing the predicate itself is refuted: it changes
+  flips); carrying settled verdicts across a region refinement's split, which pays only where a
+  pass leaves most edges alone (bunny's passes 3-5 touch 0.01-10 % of the region's edges;
+  `sphere_large`'s touch all of them), and needs each kept face's verdicts to ride through the
+  split's rebuild, which renumbers the rows.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

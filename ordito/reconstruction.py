@@ -150,6 +150,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
         key_base: wp.uint64,
         out_flip: wp.array[wp.bool],
         out_quad: odt.Array2dInt32,
+        settled: wp.array[wp.int32],
     ) -> None:
         _launch.launch(
             kernel_remesh.incircle_flip_candidates,
@@ -165,6 +166,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
                 edge_set,
                 edge_set_mask,
                 key_base,
+                settled,
                 out_flip,
                 out_quad,
             ],

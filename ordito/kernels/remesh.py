@@ -123,6 +123,11 @@ FLIP_IDLE = wp.int32(1)
 FLIP_SNAPSHOT = wp.int32(2)
 FLIP_ROUND_STATE_SIZE = 3
 
+# ``_resolve_flip_quad_guarded``'s ``a`` for a quad rejected because its new diagonal already is
+# an edge: the one rejection a flip elsewhere can lift (by removing that edge), so the only one a
+# row is not settled on (``settle_flip_row``).
+FLIP_QUAD_DUPLICATE = wp.int32(-2)
+
 
 @wp.func
 def flip_round_idle(round_state: wp.array[wp.int32]) -> wp.bool:
@@ -1768,6 +1773,57 @@ def edge_key_exists(
 
 
 @wp.func
+def flip_row_settled(
+    round_state: wp.array[wp.int32],
+    settled: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    k: wp.int32,
+) -> wp.bool:
+    # Whether row ``k``'s last verdict still holds: it was a final "no" (``settle_flip_row``) and
+    # no commit has rewritten either of its faces since. A geometric predicate reads only the
+    # row's two faces, the fixed positions and the region, so with neither face rewritten it would
+    # answer the same: the rounds after a call's first re-test only the rows a flip touched.
+    #
+    # ``settled`` is ``_FlipTopology.settled``: a state a row in its first ``m`` entries, then a
+    # stamp a face (``stamp_flipped_faces``). Nothing in it is filled: a round before any commit of
+    # the loop (a zero flip total: the first, since a round that commits nothing ends the loop)
+    # reads none of it, and writes every row's state and clears the stamps of every face a row
+    # names (``settle_flip_row``); a build inside the loop clears the rows. Empty, nothing is
+    # settled.
+    if settled.shape[0] == 0 or round_state[FLIP_TOTAL] == 0:
+        return False
+    row_state = settled[k]
+    if row_state == 0:
+        return False
+    m = adjacency.shape[0]
+    return settled[m + adjacency[k, 0]] < row_state and settled[m + adjacency[k, 1]] < row_state
+
+
+@wp.func
+def settle_flip_row(
+    round_state: wp.array[wp.int32],
+    settled: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    a: wp.int32,
+    wanted: wp.bool,
+    k: wp.int32,
+) -> None:
+    # Record row ``k``'s verdict for ``flip_row_settled``: settled when it is a final "no" (not
+    # wanted and not rejected by the duplicate-edge guard), at the flip total this round started
+    # from plus one, which every commit before this round stamped below and every commit from it on
+    # stamps at or above; ``0`` otherwise. The loop's first round, before any commit, also clears
+    # its two faces' stamps (every row's thread writes the same zero).
+    if settled.shape[0] == 0:
+        return
+    total = round_state[FLIP_TOTAL]
+    if total == 0:
+        m = adjacency.shape[0]
+        settled[m + adjacency[k, 0]] = wp.int32(0)
+        settled[m + adjacency[k, 1]] = wp.int32(0)
+    settled[k] = wp.where(wanted or a == FLIP_QUAD_DUPLICATE, wp.int32(0), total + 1)
+
+
+@wp.func
 def _resolve_flip_quad_guarded(
     faces: wp.array[wp.int32],
     adjacency_edges: wp.array2d[wp.int32],
@@ -1782,7 +1838,8 @@ def _resolve_flip_quad_guarded(
 ) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32]:
     # Shared flip-candidate preamble: reject missing apexes, inconsistent winding, b == d, and
     # flips that would duplicate an existing edge. Returns the unpacked ``(a, b, c, d)`` with
-    # a < 0 when not flippable, so every candidate kernel opens with the same two lines; out_quad[k]
+    # a < 0 when not flippable (``FLIP_QUAD_DUPLICATE`` for the last), so every candidate kernel
+    # opens with the same two lines; out_quad[k]
     # is written only for valid quads (claim/commit read quad[k] only when the caller has set
     # out_flip[k], which stays False for rejected/non-flipped edges).
     a = wp.int32(-1)
@@ -1793,21 +1850,20 @@ def _resolve_flip_quad_guarded(
     d1 = unshared[k, 1]
     if d0 >= 0 and d1 >= 0:
         quad = _resolve_flip_quad(faces, f0, adjacency_edges[k, 0], adjacency_edges[k, 1], d0, d1)
-        if (
-            quad[0] >= 0
-            and quad[1] != quad[3]
-            and not edge_key_exists(
+        if quad[0] >= 0 and quad[1] != quad[3]:
+            if edge_key_exists(
                 sorted_edge_keys, edge_set, edge_set_mask, pack_edge_key(quad[1], quad[3], key_base)
-            )
-        ):
-            a = quad[0]
-            b = quad[1]
-            c = quad[2]
-            d = quad[3]
-            out_quad[k, 0] = a
-            out_quad[k, 1] = b
-            out_quad[k, 2] = c
-            out_quad[k, 3] = d
+            ):
+                a = FLIP_QUAD_DUPLICATE
+            else:
+                a = quad[0]
+                b = quad[1]
+                c = quad[2]
+                d = quad[3]
+                out_quad[k, 0] = a
+                out_quad[k, 1] = b
+                out_quad[k, 2] = c
+                out_quad[k, 3] = d
     return a, b, c, d
 
 
@@ -1866,6 +1922,47 @@ def flip_quad_positions_d(
     )
 
 
+@wp.func
+def _delone_flip_wanted(
+    vertices: wp.array[wp.vec3],
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    d: wp.int32,
+    max_angle_change: wp.float32,
+    max_deviation_sq: wp.float32,
+    critical_aspect: wp.float32,
+) -> wp.bool:
+    # ``delone_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``.
+    ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
+    n_abc = triangle_normal(ap, bp, cp)
+    n_acd = triangle_normal(ap, cp, dp)
+    n_abd = triangle_normal(ap, bp, dp)
+    n_dbc = triangle_normal(dp, bp, cp)
+    # The gates below are pure tests a flip must pass, so they run after the verdict, only for a
+    # flip it wants: the same mask in any order.
+    verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
+    if verdict == DELONE_KEEP:
+        return False
+    if verdict == DELONE_FLIP_UNLESS_TURNED:
+        angle = wp.float64(max_angle_change)
+        if critical_aspect < F32_LARGE and angle < NO_ANGLE_CHANGE_LIMIT:
+            max_aspect = wp.max(
+                triangle_aspect_ratio(ap, cp, dp), triangle_aspect_ratio(cp, ap, bp)
+            )
+            if max_aspect > wp.float64(critical_aspect):
+                angle = NO_ANGLE_CHANGE_LIMIT
+        if angle < NO_ANGLE_CHANGE_LIMIT:
+            old_angle = dihedral_angle(n_abd, n_dbc, dp - bp)
+            new_angle = dihedral_angle(n_abc, n_acd, ap - cp)
+            if wp.abs(old_angle - new_angle) > angle:
+                return False
+    if max_deviation_sq < F32_LARGE:
+        if _segments_dist_sq_d(ap, cp, bp, dp) > wp.float64(max_deviation_sq):
+            return False
+    return is_unfold_quadrangle_convex(ap, bp, cp, dp)
+
+
 @wp.kernel
 def delone_flip_candidates(
     round_state: wp.array[wp.int32],
@@ -1882,6 +1979,7 @@ def delone_flip_candidates(
     max_angle_change: wp.float32,
     max_deviation_sq: wp.float32,
     critical_aspect: wp.float32,
+    settled: wp.array[wp.int32],
     out_flip: wp.array[wp.bool],
     out_quad: wp.array2d[wp.int32],
 ) -> None:
@@ -1889,6 +1987,8 @@ def delone_flip_candidates(
     if flip_round_idle(round_state):
         return
     out_flip[k] = wp.bool(False)
+    if flip_row_settled(round_state, settled, adjacency, k):
+        return
     a, b, c, d = _resolve_flip_quad_in_region(
         faces,
         adjacency,
@@ -1902,35 +2002,29 @@ def delone_flip_candidates(
         k,
         out_quad,
     )
-    if a < 0:
-        return
-    ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
-    n_abc = triangle_normal(ap, bp, cp)
-    n_acd = triangle_normal(ap, cp, dp)
-    n_abd = triangle_normal(ap, bp, dp)
-    n_dbc = triangle_normal(dp, bp, cp)
-    # The gates below are pure tests a flip must pass, so they run after the verdict, only for a
-    # flip it wants: the same mask in any order.
-    verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
-    if verdict == DELONE_KEEP:
-        return
-    if verdict == DELONE_FLIP_UNLESS_TURNED:
-        angle = wp.float64(max_angle_change)
-        if critical_aspect < F32_LARGE and angle < NO_ANGLE_CHANGE_LIMIT:
-            max_aspect = wp.max(
-                triangle_aspect_ratio(ap, cp, dp), triangle_aspect_ratio(cp, ap, bp)
-            )
-            if max_aspect > wp.float64(critical_aspect):
-                angle = NO_ANGLE_CHANGE_LIMIT
-        if angle < NO_ANGLE_CHANGE_LIMIT:
-            old_angle = dihedral_angle(n_abd, n_dbc, dp - bp)
-            new_angle = dihedral_angle(n_abc, n_acd, ap - cp)
-            if wp.abs(old_angle - new_angle) > angle:
-                return
-    if max_deviation_sq < F32_LARGE:
-        if _segments_dist_sq_d(ap, cp, bp, dp) > wp.float64(max_deviation_sq):
-            return
-    out_flip[k] = is_unfold_quadrangle_convex(ap, bp, cp, dp)
+    wanted = wp.bool(False)
+    if a >= 0:
+        wanted = _delone_flip_wanted(
+            vertices, a, b, c, d, max_angle_change, max_deviation_sq, critical_aspect
+        )
+    out_flip[k] = wanted
+    settle_flip_row(round_state, settled, adjacency, a, wanted, k)
+
+
+@wp.func
+def _incircle_flip_wanted(
+    points: wp.array[wp.vec2], a: wp.int32, b: wp.int32, c: wp.int32, d: wp.int32
+) -> wp.bool:
+    # ``incircle_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``.
+    ap = to_vec2d(points[a])
+    bp = to_vec2d(points[b])
+    cp = to_vec2d(points[c])
+    dp = to_vec2d(points[d])
+    # Post-flip triangles (a, b, d) and (d, b, c) must both be positively oriented (convex quad).
+    if orient2d(ap, bp, dp) <= wp.float64(0.0) or orient2d(dp, bp, cp) <= wp.float64(0.0):
+        return False
+    # f0 = (a, c, d) is CCW; flip iff the opposite apex b lies inside its circumcircle.
+    return _incircle_d(ap, cp, dp, bp) > wp.float64(0.0)
 
 
 @wp.kernel
@@ -1945,6 +2039,7 @@ def incircle_flip_candidates(
     edge_set: wp.array[wp.uint64],
     edge_set_mask: wp.int32,
     key_base: wp.uint64,
+    settled: wp.array[wp.int32],
     out_flip: wp.array[wp.bool],
     out_quad: wp.array2d[wp.int32],
 ) -> None:
@@ -1952,6 +2047,8 @@ def incircle_flip_candidates(
     if flip_round_idle(round_state):
         return
     out_flip[k] = wp.bool(False)
+    if flip_row_settled(round_state, settled, adjacency, k):
+        return
     f0 = adjacency[k, 0]
     a, b, c, d = _resolve_flip_quad_guarded(
         faces,
@@ -1965,17 +2062,11 @@ def incircle_flip_candidates(
         f0,
         out_quad,
     )
-    if a < 0:
-        return
-    ap = to_vec2d(points[a])
-    bp = to_vec2d(points[b])
-    cp = to_vec2d(points[c])
-    dp = to_vec2d(points[d])
-    # Post-flip triangles (a, b, d) and (d, b, c) must both be positively oriented (convex quad).
-    if orient2d(ap, bp, dp) <= wp.float64(0.0) or orient2d(dp, bp, cp) <= wp.float64(0.0):
-        return
-    # f0 = (a, c, d) is CCW; flip iff the opposite apex b lies inside its circumcircle.
-    out_flip[k] = _incircle_d(ap, cp, dp, bp) > wp.float64(0.0)
+    wanted = wp.bool(False)
+    if a >= 0:
+        wanted = _incircle_flip_wanted(points, a, b, c, d)
+    out_flip[k] = wanted
+    settle_flip_row(round_state, settled, adjacency, a, wanted, k)
 
 
 @wp.func
@@ -2129,6 +2220,19 @@ def move_row_halfedge(
 
 
 @wp.func
+def stamp_flipped_faces(
+    settled: wp.array[wp.int32], m: wp.int32, f0: wp.int32, f1: wp.int32, slot: wp.int32
+) -> None:
+    # Mark the two faces a flip rewrote as rewritten at flip total ``slot + 1`` (``slot`` is the
+    # flip's place in the running total), in the face half of ``settled`` past its ``m`` rows; see
+    # ``flip_row_settled``. Empty, nothing is stamped.
+    if settled.shape[0] == 0:
+        return
+    settled[m + f0] = slot + 1
+    settled[m + f1] = slot + 1
+
+
+@wp.func
 def commit_flips_at(
     flip: wp.array[wp.bool],
     quad: wp.array2d[wp.int32],
@@ -2144,6 +2248,7 @@ def commit_flips_at(
     edge_set: wp.array[wp.uint64],
     valence: wp.array[wp.int32],
     k: wp.int32,
+    settled: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_count: wp.array[wp.int32],
 ):
@@ -2160,7 +2265,8 @@ def commit_flips_at(
     # them into ``(a, b, d)`` and ``(c, d, b)``. Each side edge keeps its row but changes halfedge:
     # ``a-b`` and ``b-c`` were ``f1``'s, ``c-d`` and ``d-a`` ``f0``'s, and afterwards ``a-b`` and
     # ``d-a`` are ``f0``'s, ``c-d`` and ``b-c`` ``f1``'s. Shared by ``commit_flips`` (a thread a
-    # row) and ``claim_and_commit_flips``.
+    # row) and ``claim_and_commit_flips``. Both faces are stamped in ``settled`` with the flip's
+    # place in the running total (``stamp_flipped_faces``).
     f0, f1, won = flip_claim_won(
         flip, quad, adjacency, adjacency_edges, face_claim, edge_claim, edge_claim_mask, key_base, k
     )
@@ -2173,7 +2279,7 @@ def commit_flips_at(
     if halfedge_row.shape[0] == 0:
         # No halfedge maps to keep: the caller regroups.
         write_flipped_quad(out_faces, f0, f1, a, b, c, d)
-        append_slot(out_count, 0)
+        stamp_flipped_faces(settled, adjacency.shape[0], f0, f1, append_slot(out_count, 0))
         return
     j = local_directed_edge(out_faces, f0, a, c)
     i = local_directed_edge(out_faces, f1, c, a)
@@ -2210,7 +2316,7 @@ def commit_flips_at(
         wp.atomic_sub(valence, c, 1)
         wp.atomic_add(valence, b, 1)
         wp.atomic_add(valence, d, 1)
-    append_slot(out_count, 0)
+    stamp_flipped_faces(settled, adjacency.shape[0], f0, f1, append_slot(out_count, 0))
 
 
 @wp.kernel
@@ -2228,6 +2334,7 @@ def commit_flips(
     halfedge_row: wp.array[wp.int32],
     edge_set: wp.array[wp.uint64],
     valence: wp.array[wp.int32],
+    settled: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_count: wp.array[wp.int32],
 ) -> None:
@@ -2248,6 +2355,7 @@ def commit_flips(
         edge_set,
         valence,
         k,
+        settled,
         out_faces,
         out_count,
     )
@@ -2269,6 +2377,7 @@ def claim_and_commit_flips(
     halfedge_row: wp.array[wp.int32],
     edge_set: wp.array[wp.uint64],
     valence: wp.array[wp.int32],
+    settled: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_count: wp.array[wp.int32],
 ) -> None:
@@ -2304,6 +2413,7 @@ def claim_and_commit_flips(
             edge_set,
             valence,
             k,
+            settled,
             out_faces,
             out_count,
         )
@@ -4890,53 +5000,19 @@ OBJECTIVE_T_VERTEX = wp.int32(2)  # break up a sliver whose apex sits on the far
 OBJECTIVE_EPS = wp.float32(1e-6)
 
 
-@wp.kernel
-def objective_flip_candidates(
-    round_state: wp.array[wp.int32],
+@wp.func
+def _objective_flip_wanted(
     vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    adjacency: wp.array2d[wp.int32],
-    adjacency_edges: wp.array2d[wp.int32],
-    unshared: wp.array2d[wp.int32],
-    region_flags: wp.array[wp.int32],
-    sorted_edge_keys: wp.array[wp.uint64],
-    edge_set: wp.array[wp.uint64],
-    edge_set_mask: wp.int32,
-    key_base: wp.uint64,
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    d: wp.int32,
     objective: wp.int32,
     metric: wp.int32,
     planar_cos: wp.float32,
     aspect_threshold: wp.float32,
-    out_flip: wp.array[wp.bool],
-    out_quad: wp.array2d[wp.int32],
-) -> None:
-    # Quad convention (shared with ``delone_flip_candidates``): the current diagonal is a-c, with
-    # faces (a, b, c) and (a, c, d); the flip replaces it with b-d, giving (a, b, d) and (d, b, c).
-    #
-    # Fourteen arguments and **deliberately not bundled into a ``@wp.struct``**, unlike
-    # ``holes.stitch_dp_diag`` and ``holes.fill_dp_span``, which have the same width. Those launch
-    # hundreds of times with nothing else in the loop; this one launches once per *flip round*, and
-    # a round rebuilds the whole face adjacency around it, so a bundle would save a fraction of a
-    # percent. The width alone is not the criterion; the launch count around it is.
-    k = wp.int32(wp.tid())
-    if flip_round_idle(round_state):
-        return
-    out_flip[k] = wp.bool(False)
-    a, b, c, d = _resolve_flip_quad_in_region(
-        faces,
-        adjacency,
-        adjacency_edges,
-        unshared,
-        region_flags,
-        sorted_edge_keys,
-        edge_set,
-        edge_set_mask,
-        key_base,
-        k,
-        out_quad,
-    )
-    if a < 0:
-        return
+) -> wp.bool:
+    # ``objective_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``.
     ap = vertices[a]
     bp = vertices[b]
     cp = vertices[c]
@@ -4957,17 +5033,17 @@ def objective_flip_candidates(
             acd_longest and quality_acd < sliver_quality
         )
         if not sliver:
-            return
+            return False
         old_worst = wp.min(quality_abc, quality_acd)
         new_worst = wp.min(triangle_area_max_side(ap, bp, dp), triangle_area_max_side(dp, bp, cp))
         if not (new_worst > old_worst):
-            return
+            return False
     else:
         # Planarity: only rewrite a quad that is flat enough for the rewrite not to change the
         # surface. The gate is on the *cosine* of the dihedral so the kernel needs no inverse
         # trigonometry.
         if wp.dot(triangle_normal(ap, bp, cp), triangle_normal(ap, cp, dp)) < planar_cos:
-            return
+            return False
         old_score = wp.min(
             triangle_quality(ap, bp, cp, metric), triangle_quality(ap, cp, dp, metric)
         )
@@ -4975,14 +5051,71 @@ def objective_flip_candidates(
             triangle_quality(ap, bp, dp, metric), triangle_quality(dp, bp, cp, metric)
         )
         if not (new_score > old_score * (1.0 + OBJECTIVE_EPS)):
-            return
+            return False
 
     # A non-convex quad has no valid flip: the new diagonal would fall outside it. The objective
     # above stays in float32, and only this test needs the promoted corners, which is what
     # ``flip_quad_positions_d`` names; it is a pure test a flip must also pass, so it runs only for
     # a flip the objective wants: the same mask in either order.
     apd, bpd, cpd, dpd = flip_quad_positions_d(vertices, a, b, c, d)
-    out_flip[k] = is_unfold_quadrangle_convex(apd, bpd, cpd, dpd)
+    return is_unfold_quadrangle_convex(apd, bpd, cpd, dpd)
+
+
+@wp.kernel
+def objective_flip_candidates(
+    round_state: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    unshared: wp.array2d[wp.int32],
+    region_flags: wp.array[wp.int32],
+    sorted_edge_keys: wp.array[wp.uint64],
+    edge_set: wp.array[wp.uint64],
+    edge_set_mask: wp.int32,
+    key_base: wp.uint64,
+    objective: wp.int32,
+    metric: wp.int32,
+    planar_cos: wp.float32,
+    aspect_threshold: wp.float32,
+    settled: wp.array[wp.int32],
+    out_flip: wp.array[wp.bool],
+    out_quad: wp.array2d[wp.int32],
+) -> None:
+    # Quad convention (shared with ``delone_flip_candidates``): the current diagonal is a-c, with
+    # faces (a, b, c) and (a, c, d); the flip replaces it with b-d, giving (a, b, d) and (d, b, c).
+    #
+    # Fifteen arguments and **deliberately not bundled into a ``@wp.struct``**, unlike
+    # ``holes.stitch_dp_diag`` and ``holes.fill_dp_span``, which have the same width. Those launch
+    # hundreds of times with nothing else in the loop; this one launches once per *flip round*, and
+    # a round rebuilds the whole face adjacency around it, so a bundle would save a fraction of a
+    # percent. The width alone is not the criterion; the launch count around it is.
+    k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
+    out_flip[k] = wp.bool(False)
+    if flip_row_settled(round_state, settled, adjacency, k):
+        return
+    a, b, c, d = _resolve_flip_quad_in_region(
+        faces,
+        adjacency,
+        adjacency_edges,
+        unshared,
+        region_flags,
+        sorted_edge_keys,
+        edge_set,
+        edge_set_mask,
+        key_base,
+        k,
+        out_quad,
+    )
+    wanted = wp.bool(False)
+    if a >= 0:
+        wanted = _objective_flip_wanted(
+            vertices, a, b, c, d, objective, metric, planar_cos, aspect_threshold
+        )
+    out_flip[k] = wanted
+    settle_flip_row(round_state, settled, adjacency, a, wanted, k)
 
 
 # ---------------------------------------------------------------------------
