@@ -1301,41 +1301,48 @@ def _segments_dist_sq_d(p1: wp.vec3d, q1: wp.vec3d, p2: wp.vec3d, q2: wp.vec3d) 
     return wp.length_sq(cp1 - cp2)
 
 
-@wp.func
-def _check_delone_quadrangle_d(
-    a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d, max_angle_change: wp.float64
-) -> wp.bool:
-    # Returns True to KEEP the current diagonal (a-c), False to flip to (b-d). Exact port of
-    # checkDeloneQuadrangle(Vector3d, ...).
-    n_abc = triangle_normal(a, b, c)
-    n_acd = triangle_normal(a, c, d)
-    old_pocket = wp.dot(n_abc, n_acd) < DELONE_CRITICAL_DOT
+# ``_delone_quadrangle_verdict_d``'s answers. ``DELONE_FLIP_UNLESS_TURNED`` is a flip the metric
+# wants that the dihedral-angle gate may still veto.
+DELONE_KEEP = wp.int32(0)
+DELONE_FLIP = wp.int32(1)
+DELONE_FLIP_UNLESS_TURNED = wp.int32(2)
 
-    n_abd = triangle_normal(a, b, d)
-    n_dbc = triangle_normal(d, b, c)
+
+@wp.func
+def _delone_quadrangle_verdict_d(
+    a: wp.vec3d,
+    b: wp.vec3d,
+    c: wp.vec3d,
+    d: wp.vec3d,
+    n_abc: wp.vec3d,
+    n_acd: wp.vec3d,
+    n_abd: wp.vec3d,
+    n_dbc: wp.vec3d,
+) -> wp.int32:
+    # Whether to keep the current diagonal (a-c) or flip to (b-d): checkDeloneQuadrangle(Vector3d,
+    # ...) with its dihedral-angle gate left to the caller, over the four triangles' unit normals.
+    # The port keeps the diagonal when the gate trips *or* the metric says keep, so the metric is
+    # read first and the gate's two ``float64`` ``atan2``s, and the aspect ratios that pick its
+    # limit, run only for a flip the metric wants: the same answers, and most edges of a mesh near
+    # its fixpoint never reach them.
+    old_pocket = wp.dot(n_abc, n_acd) < DELONE_CRITICAL_DOT
     new_pocket = wp.dot(n_abd, n_dbc) < DELONE_CRITICAL_DOT
 
     if old_pocket != new_pocket:
-        return new_pocket
+        return wp.where(new_pocket, DELONE_KEEP, DELONE_FLIP)
 
     if old_pocket:
         metric_ac = wp.max(mincircle_diameter_sq(a, c, d), mincircle_diameter_sq(c, a, b))
         metric_bd = wp.max(mincircle_diameter_sq(b, d, a), mincircle_diameter_sq(d, b, c))
-        return metric_ac <= metric_bd + DELONE_EPS * (metric_ac + metric_bd)
-
-    if max_angle_change < NO_ANGLE_CHANGE_LIMIT:
-        old_angle = dihedral_angle(n_abd, n_dbc, d - b)
-        new_angle = dihedral_angle(n_abc, n_acd, a - c)
-        if wp.abs(old_angle - new_angle) > max_angle_change:
-            return True
+        keep = metric_ac <= metric_bd + DELONE_EPS * (metric_ac + metric_bd)
+        return wp.where(keep, DELONE_KEEP, DELONE_FLIP)
 
     metric_ac, metric_bd = delone_metrics(a, b, c, d)
 
+    keep = metric_ac <= metric_bd + DELONE_EPS * (metric_ac + metric_bd)
     if wp.isinf(metric_ac):
-        if wp.isinf(metric_bd):
-            return wp.length_sq(a - c) <= wp.length_sq(b - d)
-        return False
-    return metric_ac <= metric_bd + DELONE_EPS * (metric_ac + metric_bd)
+        keep = wp.isinf(metric_bd) and wp.length_sq(a - c) <= wp.length_sq(b - d)
+    return wp.where(keep, DELONE_KEEP, DELONE_FLIP_UNLESS_TURNED)
 
 
 # ---------------------------------------------------------------------------
@@ -1773,17 +1780,32 @@ def delone_flip_candidates(
     if a < 0:
         return
     ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
+    n_abc = triangle_normal(ap, bp, cp)
+    n_acd = triangle_normal(ap, cp, dp)
+    n_abd = triangle_normal(ap, bp, dp)
+    n_dbc = triangle_normal(dp, bp, cp)
+    # The gates below are pure tests a flip must pass, so they run after the verdict, only for a
+    # flip it wants: the same mask in any order.
+    verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
+    if verdict == DELONE_KEEP:
+        return
+    if verdict == DELONE_FLIP_UNLESS_TURNED:
+        angle = wp.float64(max_angle_change)
+        if critical_aspect < F32_LARGE and angle < NO_ANGLE_CHANGE_LIMIT:
+            max_aspect = wp.max(
+                triangle_aspect_ratio(ap, cp, dp), triangle_aspect_ratio(cp, ap, bp)
+            )
+            if max_aspect > wp.float64(critical_aspect):
+                angle = NO_ANGLE_CHANGE_LIMIT
+        if angle < NO_ANGLE_CHANGE_LIMIT:
+            old_angle = dihedral_angle(n_abd, n_dbc, dp - bp)
+            new_angle = dihedral_angle(n_abc, n_acd, ap - cp)
+            if wp.abs(old_angle - new_angle) > angle:
+                return
     if max_deviation_sq < F32_LARGE:
         if _segments_dist_sq_d(ap, cp, bp, dp) > wp.float64(max_deviation_sq):
             return
-    if not is_unfold_quadrangle_convex(ap, bp, cp, dp):
-        return
-    angle = wp.float64(max_angle_change)
-    if critical_aspect < F32_LARGE and angle < NO_ANGLE_CHANGE_LIMIT:
-        max_aspect = wp.max(triangle_aspect_ratio(ap, cp, dp), triangle_aspect_ratio(cp, ap, bp))
-        if max_aspect > wp.float64(critical_aspect):
-            angle = NO_ANGLE_CHANGE_LIMIT
-    out_flip[k] = not _check_delone_quadrangle_d(ap, bp, cp, dp, angle)
+    out_flip[k] = is_unfold_quadrangle_convex(ap, bp, cp, dp)
 
 
 @wp.kernel
@@ -3302,6 +3324,11 @@ def valence_flip_candidates(
     )
     if a < 0:
         return
+    # **Deciding on the integer valence objective first** and running the ``float64`` convexity
+    # and shape guards only for a flip it wants (the reordering that halved the Delone and
+    # objective kernels) is measured and declined: the same mask, 0.97-1.03x this kernel's device
+    # time over ``isotropic_remesh`` on ``saddle_graded`` and ``bunny_decimated`` (2026-11-11).
+    # Its cost is the quad's loads, not the guards.
     ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
     if not is_unfold_quadrangle_convex(ap, bp, cp, dp):
         return
@@ -4790,13 +4817,6 @@ def objective_flip_candidates(
     cp = vertices[c]
     dp = vertices[d]
 
-    # A non-convex quad has no valid flip: the new diagonal would fall outside it. The rest of this
-    # kernel stays in float32 -- only the convexity branch needs the promoted corners, which is what
-    # ``flip_quad_positions_d`` names.
-    apd, bpd, cpd, dpd = flip_quad_positions_d(vertices, a, b, c, d)
-    if not is_unfold_quadrangle_convex(apd, bpd, cpd, dpd):
-        return
-
     if objective == OBJECTIVE_T_VERTEX:
         # A T-vertex shows up as a sliver whose apex sits (nearly) on its longest edge: the edge
         # flipped is that longest edge, and the sliver is judged by its longest edge over the height
@@ -4815,16 +4835,29 @@ def objective_flip_candidates(
             return
         old_worst = wp.min(quality_abc, quality_acd)
         new_worst = wp.min(triangle_area_max_side(ap, bp, dp), triangle_area_max_side(dp, bp, cp))
-        out_flip[k] = new_worst > old_worst
-        return
+        if not (new_worst > old_worst):
+            return
+    else:
+        # Planarity: only rewrite a quad that is flat enough for the rewrite not to change the
+        # surface. The gate is on the *cosine* of the dihedral so the kernel needs no inverse
+        # trigonometry.
+        if wp.dot(triangle_normal(ap, bp, cp), triangle_normal(ap, cp, dp)) < planar_cos:
+            return
+        old_score = wp.min(
+            triangle_quality(ap, bp, cp, metric), triangle_quality(ap, cp, dp, metric)
+        )
+        new_score = wp.min(
+            triangle_quality(ap, bp, dp, metric), triangle_quality(dp, bp, cp, metric)
+        )
+        if not (new_score > old_score * (1.0 + OBJECTIVE_EPS)):
+            return
 
-    # Planarity: only rewrite a quad that is flat enough for the rewrite not to change the surface.
-    # The gate is on the *cosine* of the dihedral so the kernel needs no inverse trigonometry.
-    if wp.dot(triangle_normal(ap, bp, cp), triangle_normal(ap, cp, dp)) < planar_cos:
-        return
-    old_score = wp.min(triangle_quality(ap, bp, cp, metric), triangle_quality(ap, cp, dp, metric))
-    new_score = wp.min(triangle_quality(ap, bp, dp, metric), triangle_quality(dp, bp, cp, metric))
-    out_flip[k] = new_score > old_score * (1.0 + OBJECTIVE_EPS)
+    # A non-convex quad has no valid flip: the new diagonal would fall outside it. The objective
+    # above stays in float32, and only this test needs the promoted corners, which is what
+    # ``flip_quad_positions_d`` names; it is a pure test a flip must also pass, so it runs only for
+    # a flip the objective wants: the same mask in either order.
+    apd, bpd, cpd, dpd = flip_quad_positions_d(vertices, a, b, c, d)
+    out_flip[k] = is_unfold_quadrangle_convex(apd, bpd, cpd, dpd)
 
 
 # ---------------------------------------------------------------------------
