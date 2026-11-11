@@ -30,10 +30,9 @@ def intersects_location(
     carrying the same set of hits as the dense output of
     [`intersects_first`][ordito.ray.intersects_first].
 
-    The three returned arrays share one allocation, so any one of them keeps all three alive.
-    With [`is_deterministic`][ordito.config.is_deterministic] off (the default) they are prefix
-    views of buffers sized for every ray, so they keep that storage alive for as long as they are
-    held, and **row order is unspecified**: each hitting ray claims its
+    With [`is_deterministic`][ordito.config.is_deterministic] off (the default) the returned
+    arrays are prefix views of buffers sized for every ray, so they keep that storage alive for
+    as long as they are held, and **row order is unspecified**: each hitting ray claims its
     output slot from an atomic counter, so rows arrive in the order the rays completed rather than
     in ray order, and two runs over the same input may order them differently. With it on, the
     rows come back in ascending ray order, from a scan of the hit flags.
@@ -99,11 +98,10 @@ def intersects_location(
 
     if is_deterministic():
         return _intersects_location_ordered(mesh, ray_origins, ray_directions, max_t)
-    # One allocation for the counter and the per-ray buffers, which are returned together.
-    counter, index_ray, index_tri, locations = _launch.carve_typed(
-        ((wp.int32, 1), (wp.int32, n), (wp.int32, n), (wp.vec3, n)), device
-    )
-    _launch.zero_(counter)
+    index_ray = _launch.empty(n, dtype=wp.int32, device=device)
+    index_tri = _launch.empty(n, dtype=wp.int32, device=device)
+    locations = _launch.empty(n, dtype=wp.vec3, device=device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_ray.first_hit_append,
         dim=n,
@@ -119,8 +117,8 @@ def intersects_location(
         ],
         device=device,
     )
-    # Prefix views of the per-ray buffers rather than exact-size copies: three copies fewer, at
-    # the price of the returned arrays keeping the ``n``-long storage alive.
+    # Prefix views of the per-ray buffers rather than exact-size copies: three allocations and
+    # three copies fewer, at the price of the returned arrays keeping ``n``-long storage alive.
     n_hits = int(read_scalar(counter, 0))
     if n_hits == 0:
         empty_int = _launch.empty(0, dtype=wp.int32, device=device)
@@ -156,10 +154,9 @@ def _intersects_location_ordered(
     )
     # The hit count sizes the outputs.
     n_hits = scan_count(inclusive)
-    # The outputs are returned together, so they share one allocation too.
-    index_ray, index_tri, locations = _launch.carve_typed(
-        ((wp.int32, n_hits), (wp.int32, n_hits), (wp.vec3, n_hits)), device
-    )
+    locations = _launch.empty(n_hits, dtype=wp.vec3, device=device)
+    index_ray = _launch.empty(n_hits, dtype=wp.int32, device=device)
+    index_tri = _launch.empty(n_hits, dtype=wp.int32, device=device)
     if n_hits > 0:
         _launch.launch(
             kernel_ray.compact_scanned_hits,
