@@ -7241,11 +7241,7 @@ vertex, and every angle stays below a full turn:</p>
 <span class="normal">359</span>
 <span class="normal">360</span>
 <span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
-<span class="normal">365</span>
-<span class="normal">366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
+<span class="normal">362</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7315,39 +7311,35 @@ vertex, and every angle stays below a full turn:</p>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
-    <span class="n">angles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">angles</span>
+        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">rings</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">rings</span> <span class="o">=</span> <span class="n">vertex_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
     <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span> <span class="o">=</span> <span class="n">rings</span>
 
     <span class="k">if</span> <span class="n">face_angles</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># The ring walk forms each corner angle itself, as ``triangles.face_angles`` would; the</span>
-        <span class="c1"># long rings ``vertex_one_rings`` listed have theirs formed across the device first.</span>
-        <span class="n">listed</span> <span class="o">=</span> <span class="n">long_rings</span><span class="p">(</span><span class="n">ring_offsets</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">park_long_ring_angles</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">listed</span><span class="o">.</span><span class="n">size</span>
-                <span class="o">*</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_PARK_BLOCKS</span>
-                <span class="o">*</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">listed</span><span class="p">],</span>
-                <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
+        <span class="c1"># Each face's corner angles are formed once, in ``float64``, and parked in the output</span>
+        <span class="c1"># slots the ring walk then reads and overwrites; the parking writes every slot.</span>
+        <span class="n">angles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">park_corner_angles</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span> <span class="o">//</span> <span class="mi">3</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="n">block_dim</span><span class="o">=</span><span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">PARK_LANES</span><span class="p">,</span>
+        <span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_from_positions</span>
-            <span class="k">if</span> <span class="n">listed</span> <span class="ow">is</span> <span class="kc">None</span>
-            <span class="k">else</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_parked</span><span class="p">,</span>
+            <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles_parked</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=-</span><span class="p">(</span><span class="o">-</span><span class="n">n</span> <span class="o">//</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
             <span class="n">block_dim</span><span class="o">=</span><span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">angles</span>
+    <span class="n">angles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=-</span><span class="p">(</span><span class="o">-</span><span class="n">n</span> <span class="o">//</span> <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">TANGENT_ROWS_PER_BLOCK</span><span class="p">),</span>
@@ -7566,7 +7558,11 @@ modulo a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">369</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">365</span>
+<span class="normal">366</span>
+<span class="normal">367</span>
+<span class="normal">368</span>
+<span class="normal">369</span>
 <span class="normal">370</span>
 <span class="normal">371</span>
 <span class="normal">372</span>
@@ -7665,11 +7661,7 @@ modulo a full turn:</p>
 <span class="normal">465</span>
 <span class="normal">466</span>
 <span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
+<span class="normal">468</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
