@@ -1176,7 +1176,15 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   2026-11-11, answers identical): where the gate orders, CUDA ray 0.54-0.80x, inward spheres
   0.59-0.98x, reach spheres 0.95-0.99x on dragon and lucy; CPU dragon 2**18 0.76x / 0.79x; below
   it 0.98-1.03x. The bundle kernels (a block a point) were not tried.
-- **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
+- **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x. The owner pass deals a face's raster window to `S` lanes on CUDA (2026-11-11,
+  `kernels/texture.rasterize_owner_sliced`), `S` about two estimated window widths,
+  `2 * resolution / sqrt(n_faces)`, as a power of two up to 64: few faces on a large image starve
+  a thread a face (`sphere_small` at 2048: 5 120 threads of ~3 500 pixels). Owner pass 528 -> 35 us
+  there, bunny 485 -> 109 us at 4096, dragon 0.66x at 4096; whole calls 0.21x / 0.61x at 2048.
+  The one-thread form stays its own kernel (the sliced walk inside it cost it 1.1-1.2x), and a
+  read before the `atomic_min` lost 1.1-1.8x (the bare atomic is not waited on). The two kernels
+  differ in rim pixels within rounding of a near-degenerate face's edge (nvcc contracts the
+  barycentric products by loop shape), as the CPU and CUDA builds of one kernel already do.
 - **A sort that only groups rows under a small key is a ring compare** (2026-11-11,
   `repair._exact_value_classes`): rows sharing a primary key (a vertex's corners) take atomic
   slots in a CSR ring (`kernels/repair.count_primary_slots`, `place_ring_rows`), and each row finds
@@ -1331,6 +1339,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
+- **Texture coverage rounds by build** (2026-11-11): `kernels/texture._claim_pixel`'s
+  barycentric test is contracted by nvcc per loop shape, so the one-thread and sliced owner passes
+  part on ~1 in 3 000 rim pixels of an edge-on projection, and the CPU and CUDA builds of one
+  kernel on ~1 in 900. Open: an explicitly rounded (`__fmaf_rn`, §12.3) or exact edge test would
+  make coverage the same on both devices and every launch shape (it moves those pixels once).
+- **A one-slot flag carved from a 1-D output's tail** (2026-11-11, `texture`'s discrete sampler,
+  0.92-0.95x a 25 us call) fits two more sites, not priced: `heat._pinned_system` and
+  `ray.intersects_location` (about 1.7 us a call each). A rank-2 output loses (the reshape costs
+  more than the allocation).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
