@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, FLOAT64_INF_CONSTANT
-from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left
+from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left, ordered_item
 from ordito.kernels.neighbors import bvh_nearest_point
 from ordito.kernels.predicates import normalize_or_zero
 from ordito.kernels.proximity import closest_offset_d, closest_point_query, nearest_offset_within
@@ -589,9 +589,25 @@ def icp_match(
     return closest_point_query(index_id, q, query_max)
 
 
+# Both ICP loops' correspondence searches take a large source in ``_common.search_order``'s Hilbert
+# order (``registration._icp_order``, ``ordered_item``), chosen once a call: a rigid map keeps a
+# patch of the source a patch in every round. CUDA calls new/old, ten rounds, answers
+# bit-identical: scrambled sources of 2^18 points onto a point cloud 0.36-0.55x (sphere_large,
+# dragon), of 2^20 points 0.21-0.56x onto a cloud and 0.30-0.64x onto a mesh (sphere_large,
+# dragon, lucy); lucy's scan-order 2^20 prefix 0.66-0.91x. A mesh target loses at the sampled
+# test's sizes (scrambled 2^16-2^18 points onto dragon and lucy 0.95-1.71x), so on CUDA it takes
+# the order only from the always-gate (``sampled_on_cuda=False``), as ``proximity``'s normal and
+# edge searches do. Below 2^18 points nothing is ordered (scrambled 20 000 points 0.97-1.44x when
+# forced). CPU, 2^18 scrambled points: dragon 0.57-0.70x, mesh targets 0.86-0.92x from
+# sphere_small up, a scan order at par (the test declines it); a point-cloud target under
+# ``ORDER_MIN_CLOUD_TARGET_CPU`` points sits in the cache and only pays the sort (sphere_small's
+# 2 562 points 1.07-1.13x, sphere_med's 40 962 0.91-0.94x), so the CPU orders none.
+ORDER_MIN_CLOUD_TARGET_CPU = 1 << 14
+
+
 @wp.func
 def point_to_plane_correspondence_at(
-    tid: wp.int32,
+    item: wp.int32,
     index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     points: wp.array[wp.vec3],
@@ -615,12 +631,12 @@ def point_to_plane_correspondence_at(
     # The step is ``apply_transform_mat44``'s own ``transform_point_mat44`` on the same operands,
     # so ``out_points`` holds the bits that kernel wrote when it ran as its own launch at the tail
     # of the previous iteration; the loop now applies the last step once after it exits instead.
-    q = transform_point_mat44(points[tid], step[0])
-    out_points[tid] = q
+    q = transform_point_mat44(points[item], step[0])
+    out_points[item] = q
     closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
-    out_closest[tid] = closest
-    out_distance[tid] = distance
-    out_index[tid] = index
+    out_closest[item] = closest
+    out_distance[item] = distance
+    out_index[item] = index
 
 
 @wp.kernel
@@ -631,15 +647,16 @@ def point_to_plane_correspondence_pass(
     step: wp.array[wp.mat44],
     cloud: wp.bool,
     query_max: wp.float32,
+    order: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
     out_closest: wp.array[wp.vec3],
     out_distance: wp.array[wp.float32],
     out_index: wp.array[wp.int32],
 ) -> None:
-    # ``point_to_plane_correspondence_at`` at this thread.
+    # ``point_to_plane_correspondence_at`` at this thread's point (``ordered_item``).
     tid = wp.int32(wp.tid())
     point_to_plane_correspondence_at(
-        tid,
+        ordered_item(order, tid),
         index_id,
         target_points,
         points,
@@ -655,7 +672,7 @@ def point_to_plane_correspondence_pass(
 
 @wp.func
 def point_to_point_correspondence_at(
-    tid: wp.int32,
+    item: wp.int32,
     index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     source: wp.array[wp.vec3],
@@ -673,11 +690,11 @@ def point_to_point_correspondence_at(
     #
     # The move is ``transform_point_mat44`` on the operands the host loop's fit applied when it
     # published the points this search then read, so the query sees the same bits.
-    q = transform_point_mat44(source[tid], total[0])
+    q = transform_point_mat44(source[item], total[0])
     closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
-    out_closest[tid] = closest
+    out_closest[item] = closest
     if out_weights.shape[0] > 0:
-        out_weights[tid] = distance_threshold_weight(distance, index, max_distance)
+        out_weights[item] = distance_threshold_weight(distance, index, max_distance)
 
 
 @wp.kernel
@@ -689,13 +706,14 @@ def point_to_point_correspondence_pass(
     cloud: wp.bool,
     query_max: wp.float32,
     max_distance: wp.float32,
+    order: wp.array[wp.int32],
     out_closest: wp.array[wp.vec3],
     out_weights: wp.array[wp.float32],
 ) -> None:
-    # ``point_to_point_correspondence_at`` at this thread.
+    # ``point_to_point_correspondence_at`` at this thread's point (``ordered_item``).
     tid = wp.int32(wp.tid())
     point_to_point_correspondence_at(
-        tid,
+        ordered_item(order, tid),
         index_id,
         target_points,
         source,
@@ -717,6 +735,7 @@ def point_to_point_round_serial(
     cloud: wp.bool,
     query_max: wp.float32,
     max_distance: wp.float32,
+    order: wp.array[wp.int32],
     use_reflection: wp.bool,
     use_translation: wp.bool,
     use_scale: wp.bool,
@@ -737,8 +756,8 @@ def point_to_point_round_serial(
     # ``accumulate_procrustes_moments``, ``fit_transform_and_accumulate_cost``.
     for tid in range(source.shape[0]):
         point_to_point_correspondence_at(
-            tid, index_id, target_points, source, total, cloud, query_max, max_distance, closest,
-            weights,
+            ordered_item(order, tid), index_id, target_points, source, total, cloud, query_max,
+            max_distance, closest, weights,
         )  # fmt: skip
     for chunk in range(n_blocks):
         accumulate_procrustes_moments_block(
@@ -761,6 +780,7 @@ def icp_point_to_point_serial(
     cloud: wp.bool,
     query_max: wp.float32,
     max_distance: wp.float32,
+    order: wp.array[wp.int32],
     use_reflection: wp.bool,
     use_translation: wp.bool,
     use_scale: wp.bool,
@@ -783,14 +803,14 @@ def icp_point_to_point_serial(
     # ``weights``, ``acc``, ``fitted``, ``total``, ``state`` and ``ticket`` are the loop's state,
     # rewritten in place every round.
     point_to_point_round_serial(
-        n_blocks, index_id, target_points, source, cloud, query_max, max_distance, use_reflection,
-        use_translation, use_scale, stride, threshold, max_iterations, no_points, closest, weights,
-        acc, fitted, total, state, ticket,
+        n_blocks, index_id, target_points, source, cloud, query_max, max_distance, order,
+        use_reflection, use_translation, use_scale, stride, threshold, max_iterations, no_points,
+        closest, weights, acc, fitted, total, state, ticket,
     )  # fmt: skip
     if loop != 0:
         while state[LOOP_CONDITION] != 0:
             point_to_point_round_serial(
-                n_blocks, index_id, target_points, source, cloud, query_max, max_distance,
+                n_blocks, index_id, target_points, source, cloud, query_max, max_distance, order,
                 use_reflection, use_translation, use_scale, stride, threshold, max_iterations,
                 no_points, closest, weights, acc, fitted, total, state, ticket,
             )  # fmt: skip
@@ -1548,6 +1568,7 @@ def icp_point_to_plane_rounds_serial(
     target_points: wp.array[wp.vec3],
     cloud: wp.bool,
     query_max: wp.float32,
+    order: wp.array[wp.int32],
     normals: wp.array[wp.vec3],
     max_distance: wp.float32,
     robust_kind: wp.int32,
@@ -1575,8 +1596,8 @@ def icp_point_to_plane_rounds_serial(
     while state[LOOP_CONDITION] != 0:
         for tid in range(current.shape[0]):
             point_to_plane_correspondence_at(
-                tid, index_id, target_points, current, step, cloud, query_max, current, closest,
-                distance, triangle_id,
+                ordered_item(order, tid), index_id, target_points, current, step, cloud, query_max,
+                current, closest, distance, triangle_id,
             )  # fmt: skip
         for block in range(n_blocks):
             accumulate_point_to_plane_block(

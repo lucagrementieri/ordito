@@ -1452,7 +1452,8 @@ def test_icp_point_to_plane_accepts_non_unit_target_normals(
     assert np.isclose(cost_scaled, cost_unit, rtol=1e-4, atol=1e-8)
 
 
-def test_correspondence_pass_matches_query_nearest(device: str) -> None:
+@pytest.mark.parametrize("ordered", [False, True], ids=["index_order", "ordered"])
+def test_correspondence_pass_matches_query_nearest(device: str, ordered: bool) -> None:
     """
     Ordito against ordito: the ICP loops' cloud correspondence search against ``query_nearest``.
 
@@ -1462,7 +1463,8 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     the oracle in ``tests/test_neighbors.py``. The distances must also equal a radius-deepening
     walk over a caller's ``wp.Bvh`` to the bit. The queries sit both on and well off the cloud so
     that walk takes more than its first radius on some rows, and the point-to-plane pass moves
-    them by a step first, which is checked against moving them and searching from there.
+    them by a step first, which is checked against moving them and searching from there. Under a
+    scrambled ``order`` a thread answers another query, and every row must be the same.
     """
     rng = np.random.default_rng(21)
     target_np = rng.standard_normal((400, 3)).astype(np.float32)
@@ -1472,6 +1474,10 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     target_wp = points_to_warp(target_np, device)
     queries_wp = points_to_warp(queries_np, device)
     target_tree = od.registration._target_tree(target_wp)  # pyright: ignore[reportPrivateUsage]
+    # A thread takes the query ``order`` names; an empty order is index order.
+    order_wp = wp.array(rng.permutation(200).astype(np.int32), dtype=wp.int32, device=device)
+    if not ordered:
+        order_wp = warp_empty(0, wp.int32, device)
 
     def search(
         step_np: np.ndarray,
@@ -1486,7 +1492,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
         wp.launch(
             kernel_registration.point_to_plane_correspondence_pass,
             dim=200,
-            inputs=[target_tree.id, target_wp, queries_wp, step_wp, True, 0.0],
+            inputs=[target_tree.id, target_wp, queries_wp, step_wp, True, 0.0, order_wp],
             outputs=list(outputs),
             device=device,
         )
@@ -1515,6 +1521,70 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     )
     assert np.array_equal(index_wp.numpy(), nearest_wp.numpy())
     assert np.array_equal(distance_wp.numpy(), nearest_distance_wp.numpy())
+
+
+@pytest.mark.parametrize("target", ["mesh", "cloud"])
+@pytest.mark.parametrize("loop", ["point_to_point", "point_to_plane"])
+def test_icp_search_order_does_not_change_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    loop: str,
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: both ICP loops with their searches in Hilbert order and in index order.
+
+    A large source takes its correspondence searches in ``_common.search_order``'s order; this cloud
+    is under those gates, so they are patched to order it, and the transform, the moved points and
+    the cost must equal the index-order call's to the bit (the deterministic setting is on). Each
+    round's moments are summed by point, not by thread, which is what keeps them equal.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    device = str(_mesh_wp.device)
+    target_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    rng = np.random.default_rng(5)
+    rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
+    source_np = target_np[rng.permutation(target_np.shape[0])] @ rotation_np.T + translation_np
+    source_wp = points_to_warp(source_np.astype(np.float32), device)
+    target_wp = points_to_warp(target_np, device)
+    faces_wp = (
+        wp.array(np.asarray(mesh_tm.faces, dtype=np.int32).ravel(), dtype=wp.int32, device=device)
+        if target == "mesh"
+        else None
+    )
+    normals_wp = points_to_warp(np.asarray(mesh_tm.vertex_normals, dtype=np.float32), device)
+
+    def register() -> tuple[np.ndarray, np.ndarray, float]:
+        if loop == "point_to_point":
+            matrix_wp, moved_wp, cost = od.registration.icp(
+                source_wp, target_wp, faces_wp, max_iterations=6, threshold=-np.inf
+            )
+        else:
+            matrix_wp, moved_wp, cost = od.registration.icp_point_to_plane(
+                source_wp,
+                target_wp,
+                faces_wp,
+                target_normals=None if faces_wp is not None else normals_wp,
+                max_iterations=6,
+                threshold=-np.inf,
+            )
+        return matrix_wp.numpy(), moved_wp.numpy(), cost
+
+    calls: list[int] = []
+
+    def every_order(queries: wp.array[wp.vec3], **_: object) -> wp.array[wp.int32]:
+        calls.append(queries.size)
+        return od.points.space_filling_order(queries)
+
+    matrix_index_np, moved_index_np, cost_index = register()
+    monkeypatch.setattr(od.registration, "search_order", every_order)
+    monkeypatch.setattr(kernel_registration, "ORDER_MIN_CLOUD_TARGET_CPU", 0)
+    matrix_ordered_np, moved_ordered_np, cost_ordered = register()
+    assert calls == [source_np.shape[0]]  # the order was taken, once for every round
+    assert np.array_equal(matrix_ordered_np, matrix_index_np)
+    assert np.array_equal(moved_ordered_np, moved_index_np)
+    assert cost_ordered == cost_index
+    assert not np.allclose(matrix_index_np[0], np.eye(4), atol=1e-3)  # the fit moved the source
 
 
 @pytest.mark.parametrize(

@@ -1127,7 +1127,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   test finds a scrambled order and always from 2^18 on CUDA: scrambled 0.67-0.78x at 64 k,
   0.17-0.57x from 128 k to 655 k, 0.08-0.24x on lucy; a scan's own order 0.73-0.90x from 2^18;
   coherent 64-256 k 1.00-1.04x (the test); CPU scrambled 0.74-0.95x, coherent at par; answers
-  bit-identical.
+  bit-identical. Both ICP loops' fused correspondence searches take one order a call, since a
+  rigid map keeps a patch a patch every round (2026-11-11, `registration._icp_order`, ten rounds,
+  answers bit-identical): scrambled 2^18 sources onto a cloud 0.36-0.55x, 2^20 sources 0.21-0.56x
+  onto a cloud and 0.30-0.64x onto a mesh, lucy's scan prefix 0.66-0.91x; a mesh target loses at
+  the sampled test's sizes (0.95-1.71x from 2^16 to 2^18 on dragon and lucy) and takes the order
+  from the always-gate only, and the CPU orders no cloud target small enough to sit in cache
+  (2 562 points 1.07-1.13x, 40 962 0.91-0.94x).
 - **Rays take a Hilbert order of their origins only when they leave the surface** (2026-11-11,
   CUDA, sort included, answers identical): from 2**18 rays cast along jittered normals, 0.73-0.87x
   (0.46-0.59x at 2**20) on `sphere_med` to `lucy`; rays fired from a shell around the mesh lose at

@@ -17,6 +17,7 @@ from ordito._common import (
     record_device_loop,
     require_nonempty_mesh,
     require_same_device,
+    search_order,
 )
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -499,6 +500,7 @@ def icp(
     state = _launch.view(state_and_ticket, 0, words)
     ticket = _launch.view(state_and_ticket, words, words + 1)
 
+    order = _icp_order(a, target_vertices, mesh is not None)
     search_inputs = [
         search_index.id,
         target_vertices,
@@ -507,6 +509,7 @@ def icp(
         mesh is None,
         wp.float32(query_max),
         wp.float32(max_distance if max_distance is not None else 0.0),
+        order,
         closest,
         weights,
     ]
@@ -546,6 +549,7 @@ def icp(
                 mesh is None,
                 wp.float32(query_max),
                 wp.float32(max_distance if max_distance is not None else 0.0),
+                order,
                 reflection,
                 translation,
                 scale,
@@ -618,6 +622,29 @@ def icp(
 
 # ``vtkIterativeClosestPointTransform``'s ``MaximumNumberOfLandmarks`` at ``pyvista``'s default.
 _PYVISTA_MAX_LANDMARKS = 100
+
+
+def _icp_order(
+    a: wp.array[wp.vec3], target_vertices: wp.array[wp.vec3], mesh_target: bool
+) -> wp.array[wp.int32]:
+    """
+    Return the order the correspondence searches take *a*'s points in, empty for index order.
+
+    ``_common.search_order`` of *a*, chosen once a call: every round moves *a* by one rigid map,
+    which keeps a Hilbert patch of *a* a patch, so the one order serves every round. A mesh
+    target takes it on CUDA only from the always-gate, a point cloud from the sampled test too;
+    on the CPU a point cloud too small to leave the cache takes none
+    (``kernel_registration.ORDER_MIN_CLOUD_TARGET_CPU``).
+    """
+    no_order = _zero_length(wp.int32, a.device)
+    if (
+        not mesh_target
+        and wp.get_device(a.device).is_cpu
+        and target_vertices.size < kernel_registration.ORDER_MIN_CLOUD_TARGET_CPU
+    ):
+        return no_order
+    order = search_order(a, sampled_on_cuda=not mesh_target)
+    return order if order is not None else no_order
 
 
 def _landmark_icp(
@@ -913,7 +940,11 @@ def icp_point_to_plane(
     search_index = mesh if mesh is not None else cloud_tree
     assert search_index is not None
     search_target = [search_index.id, target_vertices]
-    search_options = [mesh is None, wp.float32(query_max)]
+    search_options = [
+        mesh is None,
+        wp.float32(query_max),
+        _icp_order(a, target_vertices, mesh is not None),
+    ]
     search_outputs = [current, closest, distance, triangle_id]
 
     def search(stepped: bool) -> None:
