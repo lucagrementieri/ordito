@@ -181,6 +181,13 @@ def mis_ball_max(
     # pays no extra allocation and ``theta = 0`` is bit-exactly the unfiltered aggregation. Shared
     # by the round's two kernels below, which differ in where a neighbour's key comes from
     # (``mis_entry_key``) and in what the second does with the maximum.
+    #
+    # Declined (2026-11-11): the walk four entries a step (``array.row_chunk_slots``, every gather
+    # of a step issued together, the strength test masking them) took the round kernels 0.80x on
+    # bunny but cost the wide fine level 1.07x on dragon (the unconditional key loads), and
+    # ``multigrid_preconditioner`` calls read par (0.98-1.01x) on sphere_med to dragon; pooling the
+    # undecided and root counts (``reduce.peer_counted_add``) was 0.96-0.97x on the decide kernel
+    # and par on the call too.
     best = mis_entry_key(i, from_state, key, state, priority)
     for k in range(offsets[i], offsets[i + 1]):
         j = columns[k]
