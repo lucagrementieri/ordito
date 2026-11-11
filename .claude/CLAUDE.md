@@ -875,7 +875,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 
 ### 12.6 Warp builtins: adoption verdicts
 
-- **Adopted:** `mesh_query_point_sign_winding_number` (exact on holes; silently returns parity unless the mesh was built with `support_winding_number=True`); `bvh_query_sphere` (wins when the radius is large against a BVH, equals `length_sq <= r*r`, still beats a box walk on 1.18 though slower there; not for a radius equal to the grid cell); BVH leaf size 1 for ball queries and size-gated for k-NN; `mesh_get_bvh`; `volume_index_to_world`; `delaunay_edge_flip` as the flip start above 2**19 points; `sparse_marching_cubes` above a lattice-size gate on closed, consistently wound input.
+- **Adopted:** `mesh_query_point_sign_winding_number` (exact on holes; silently returns parity unless the mesh was built with `support_winding_number=True`; its Barnes-Hut test approximates a BVH node only from two node radii, so on long thin triangles every node is large and a query costs O(faces): an open unit cylinder of 1e-4-wide, full-height strips (`rim_long`, 131 k faces) 5 us a query against 23 ns at 1 k faces, 2026-11-11. `signed_distance_level_set`'s winding path must take this sign within 0.1 of 1/2, ~99 k of 262 k nodes there, so it costs 0.7 s on either path); `bvh_query_sphere` (wins when the radius is large against a BVH, equals `length_sq <= r*r`, still beats a box walk on 1.18 though slower there; not for a radius equal to the grid cell); BVH leaf size 1 for ball queries and size-gated for k-NN; `mesh_get_bvh`; `volume_index_to_world`; `delaunay_edge_flip` as the flip start above 2**19 points; `sparse_marching_cubes` above a lattice-size gate on closed, consistently wound input.
 - **Rejected:** `intersect_tri_tri` (not scale-invariant); `closest_point_edge_edge` (float32, worse); `sample_unit_hemisphere_surface` (variance); `norm_huber` (norm, not weight); `tile_arange`; `volume_voxel_count` (capacity); `dense_chol` family (hidden, 2x loss); `tri_tri_adjacency` for `halfedge_twins` (cannot carry validation, quadratic on hubs; test oracle only); `swept_volume_mesh` (no caller).
 
 ### 12.7 Upgrade discipline
@@ -1335,5 +1335,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   single-use edges' vertices a slot a thread; the counts are each sorted run's length, so the mark
   could ride in the grouping's emit (the `selection` sweep's emit off run ranks,
   `reference/component-status.md`). Not tried: that module was being edited at the time.
-- **`signed_distance_level_set(sign_mode="winding")` on `rim_long`** (2026-11-11): 0.69 s at a
-  `64**3` lattice, against 5 ms on `rim_short`; not attributed. The cone kernels do not run there.
