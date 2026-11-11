@@ -551,6 +551,13 @@ def target_unit_normal(normals: wp.array[wp.vec3], index: wp.int32) -> wp.vec3:
     for a degenerate face -- a plain ``wp.normalize`` there is ``0/0``,
     and one poisoned lane's NaN would spread to a whole block through a tile reduction. Same guard,
     same zero tolerance, as ``transform.transform_normal_mat33``'s identical hazard.
+
+    Declined (2026-11-11, CUDA, 20 000 points, ten rounds, bit-identical): with no caller face
+    normals, forming the matched face's normal here from ``wp.mesh_get`` and
+    ``triangles.face_normal`` instead of reading a ``face_normals_and_areas`` table. It saves that
+    pass, its two allocations and the table (16 bytes a face) but lengthens each lane's chain of
+    dependent loads in the accumulation's strided fold: 1.02-1.06x from sphere_small to dragon,
+    0.99x on lucy (a caller-table control arm 1.00x).
     """
     return normalize_or_zero(normals[index], wp.float32(0.0))
 
@@ -1046,13 +1053,14 @@ def abs_deviation(value: wp.float32, center: wp.float32) -> wp.float32:
 # --- The robust scale's median absolute deviation, on the device ------------------------------
 #
 # ``registration._robust_scale_from_residuals`` needs the median of the in-range point-to-plane
-# residuals and the median of their absolute deviations from it. Each median is a radix sort of a
-# ``2n`` key buffer whose first ``n`` keys these kernels write: an out-of-range correspondence
+# residuals and the median of their absolute deviations from it: one radix sort of a ``2n`` key
+# buffer whose first ``n`` keys ``robust_residual_keys`` writes, both medians read off it by
+# ``robust_sigma`` (the deviations' without a second sort). An out-of-range correspondence
 # writes ``+inf``, which sorts last, so the in-range values are the sorted prefix and its length
 # is one search, where compacting them first took a scan, a count readback and a gather. The
 # medians are formed in ``float64`` exactly as the host formed them from the ``float32`` values it
 # read back -- the middle value, or the mean of the two middle values -- so the scale is the same
-# double; ``MAD_STATS`` is ``(center, then sigma; in-range count)``.
+# double; ``MAD_STATS`` is ``(sigma, in-range count)``.
 MAD_STATS_VALUE = wp.int32(0)
 MAD_STATS_COUNT = wp.int32(1)
 MAD_STATS_SIZE = 2
@@ -1147,38 +1155,75 @@ def residual_moment(
         store_sum_and_count(block, lane, total, kept, out_sums, stride)
 
 
+@wp.func
+def residual_deviation(
+    sorted_residuals: wp.array[wp.float32],
+    split: wp.int32,
+    center: wp.float32,
+    side: wp.int32,
+    k: wp.int32,
+) -> wp.float32:
+    # The ``k``-th absolute deviation from ``center`` of one side of the sorted residuals, in
+    # ascending order: below ``split`` (``side == 0``) read backwards from it, from ``split`` on
+    # read forwards. Rounding is monotone, so each side's ``abs_deviation`` is sorted.
+    index = wp.where(side == 0, split - 1 - k, split + k)
+    return abs_deviation(sorted_residuals[index], center)
+
+
+@wp.func
+def deviation_order_statistic(
+    sorted_residuals: wp.array[wp.float32],
+    split: wp.int32,
+    count: wp.int32,
+    center: wp.float32,
+    k: wp.int32,
+) -> wp.float32:
+    # The ``k``-th smallest (0-based) absolute deviation from ``center`` of
+    # ``sorted_residuals[:count]``: the two sorted sides of ``residual_deviation`` merged by a
+    # binary search for how many of the ``k + 1`` smallest come from the lower one, the smallest
+    # share ``a`` whose next lower value is no smaller than the upper side's last taken. The same
+    # value a sort of every deviation puts at ``k``: the two sides hold exactly those deviations.
+    lower_count = split
+    upper_count = count - split
+    lo = wp.max(wp.int32(0), k + 1 - upper_count)
+    hi = wp.min(k + 1, lower_count)
+    while lo < hi:
+        a = (lo + hi) // 2
+        if residual_deviation(sorted_residuals, split, center, 0, a) < residual_deviation(
+            sorted_residuals, split, center, 1, k - a
+        ):
+            lo = a + 1
+        else:
+            hi = a
+    taken = wp.float32(-FLOAT32_INF_CONSTANT)
+    if lo > 0:
+        taken = residual_deviation(sorted_residuals, split, center, 0, lo - 1)
+    if k + 1 - lo > 0:
+        taken = wp.max(taken, residual_deviation(sorted_residuals, split, center, 1, k - lo))
+    return taken
+
+
 @wp.kernel
-def robust_residual_center(
+def robust_sigma(
     sorted_residuals: wp.array[wp.float32], n: wp.int32, out_stats: wp.array[wp.float64]
 ) -> None:
-    # ``dim=1``: the in-range count, and the median of the in-range residuals.
+    # ``dim=1``: the in-range count, and ``1.4826 * MAD`` -- the normal-consistent scale -- over the
+    # value slot. The median of the absolute deviations is taken off the sorted residuals by
+    # ``deviation_order_statistic``, not by sorting the deviations: the same middle values, so the
+    # same double, ``sorted_prefix_median``'s ``numpy.median`` form.
     count = binary_search_index_left(sorted_residuals[:n], FLOAT32_INF_CONSTANT)
     out_stats[MAD_STATS_COUNT] = wp.float64(count)
     if count > 0:
-        out_stats[MAD_STATS_VALUE] = sorted_prefix_median(sorted_residuals, count)
-
-
-@wp.kernel
-def robust_deviation_keys(stats: wp.array[wp.float64], out_keys: wp.array[wp.float32]) -> None:
-    # In place over the sorted residuals, each thread reading and rewriting its own slot: each
-    # in-range residual's absolute deviation from the median, which ``abs_deviation`` takes as the
-    # ``float32`` the host used to marshal; ``+inf`` past the in-range prefix. The next sort is the
-    # only reader, which is why the buffer wears the ``out_`` prefix although it is also read.
-    i = wp.int32(wp.tid())
-    count = wp.int32(stats[MAD_STATS_COUNT])
-    out_keys[i] = wp.where(
-        i < count,
-        abs_deviation(out_keys[i], wp.float32(stats[MAD_STATS_VALUE])),
-        FLOAT32_INF_CONSTANT,
-    )
-
-
-@wp.kernel
-def robust_sigma(sorted_deviations: wp.array[wp.float32], out_stats: wp.array[wp.float64]) -> None:
-    # ``dim=1``: ``1.4826 * MAD``, the normal-consistent scale, over the value slot.
-    count = wp.int32(out_stats[MAD_STATS_COUNT])
-    if count > 0:
-        mad = sorted_prefix_median(sorted_deviations, count)
+        center = wp.float32(sorted_prefix_median(sorted_residuals, count))
+        split = binary_search_index_left(sorted_residuals[:count], center)
+        mad = wp.float64(
+            deviation_order_statistic(sorted_residuals, split, count, center, count // 2)
+        )
+        if count % 2 == 0:
+            lower = deviation_order_statistic(
+                sorted_residuals, split, count, center, count // 2 - 1
+            )
+            mad = (wp.float64(lower) + mad) / wp.float64(2.0)
         out_stats[MAD_STATS_VALUE] = wp.float64(1.4826) * mad
 
 

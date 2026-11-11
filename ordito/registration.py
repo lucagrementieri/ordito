@@ -1112,11 +1112,11 @@ def _robust_scale_from_residuals(
     ``normals`` is the target's normal table -- per face or per vertex -- read at each
     correspondence's index.
 
-    Both medians are taken on the device, over the sorted prefix of in-range residuals
-    (``kernel_registration.robust_residual_keys``), so the whole estimate is one readback of the
-    in-range count and ``1.4826 * MAD``. A zero MAD falls back to the standard deviation, on the
-    host path the medians used to take too, since its means must sum the in-range residuals in
-    their original order.
+    Both medians are taken on the device off one sort of the in-range residuals
+    (``kernel_registration.robust_residual_keys``, ``robust_sigma``), so the whole estimate is one
+    readback of the in-range count and ``1.4826 * MAD``. A zero MAD falls back to the standard
+    deviation, on the host path the medians used to take too, since its means must sum the
+    in-range residuals in their original order.
     """
     device = current.device
     n = current.size
@@ -1135,22 +1135,11 @@ def _robust_scale_from_residuals(
     )
     _launch.radix_sort_pairs(keys, payload, n)
     _launch.launch(
-        kernel_registration.robust_residual_center,
+        kernel_registration.robust_sigma,
         dim=1,
         inputs=[keys, wp.int32(n)],
         outputs=[stats],
         device=device,
-    )
-    _launch.launch(
-        kernel_registration.robust_deviation_keys,
-        dim=n,
-        inputs=[stats],
-        outputs=[keys],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, payload, n)
-    _launch.launch(
-        kernel_registration.robust_sigma, dim=1, inputs=[keys], outputs=[stats], device=device
     )
     # The estimate's one readback: the in-range count and the scale.
     stats_values = read_values(stats, 0, kernel_registration.MAD_STATS_SIZE)

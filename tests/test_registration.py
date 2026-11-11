@@ -1298,12 +1298,21 @@ def _host_prefix_median(values: np.ndarray) -> float:
 
 
 @pytest.mark.parametrize(
-    ("seed", "n_valid", "n_tied"),
-    [(31, 201, 0), (31, 200, 0), (31, 1, 0), (41, 201, 151)],
-    ids=["odd", "even", "single", "zero_mad"],
+    ("seed", "n_valid", "n_tied", "skewed"),
+    [
+        (31, 201, 0, False),
+        (31, 200, 0, False),
+        (31, 1, 0, False),
+        (31, 2, 0, False),
+        (32, 3, 0, False),
+        (33, 200, 0, True),
+        (34, 201, 60, False),
+        (41, 201, 151, False),
+    ],
+    ids=["odd", "even", "single", "pair", "triple", "skewed", "ties", "zero_mad"],
 )
 def test_robust_scale_matches_the_host_mad(
-    device: str, seed: int, n_valid: int, n_tied: int
+    device: str, seed: int, n_valid: int, n_tied: int, skewed: bool
 ) -> None:
     """
     Not a library comparison: the device MAD scale against the host arithmetic it replaced.
@@ -1318,6 +1327,13 @@ def test_robust_scale_matches_the_host_mad(
     value alone for an even count fails the even arm, and counting the prefix one short fails
     both many-inlier arms (a lone inlier's scale is zero either way).
 
+    The deviations' median is selected from the sorted residuals, the two sides of the centre
+    merged, rather than sorted again; the ``skewed`` arm (a heavy right tail, so one side is much
+    the longer), the ``ties`` arm (a quarter of the inliers equal) and the two- and three-inlier
+    arms hold that selection to the sort's answer; the ties land on the centre, so the deviations
+    open with a run of zeros at the split. Mutation probe: a selection that ignores the lower
+    side's last taken value fails the ``triple`` and ``skewed`` arms, which the others pass.
+
     The ``zero_mad`` arm ties over half the in-range residuals to one value, so both medians land
     on it and the MAD is zero; the scale then falls back to ``1.345`` times the population standard
     deviation of the in-range residuals, checked against NumPy's in ``float64``. Counting the
@@ -1329,6 +1345,8 @@ def test_robust_scale_matches_the_host_mad(
     closest_np = np.zeros((n, 3), dtype=np.float32)
     closest_np[:, :2] = rng.standard_normal((n, 2))
     residual_np = rng.standard_normal(n).astype(np.float32)
+    if skewed:
+        residual_np = (np.abs(residual_np) ** 3).astype(np.float32)
     order = rng.permutation(n)
     residual_np[order[:n_tied]] = 0.25
     current_np = closest_np.copy()
@@ -1350,7 +1368,7 @@ def test_robust_scale_matches_the_host_mad(
         1.0,
         1,
     )
-    if n_tied:
+    if 2 * n_tied > n_valid:
         kept = residual_np[valid].astype(np.float64)
         assert np.median(np.abs(kept - np.median(kept))) == 0.0
         expected = 1.345 * float(np.std(kept))

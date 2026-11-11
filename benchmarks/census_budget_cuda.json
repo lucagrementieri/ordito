@@ -6364,12 +6364,12 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 11,
+   "launch": 9,
    "alloc": 6,
    "memset": 1,
    "h2d": 1,
    "d2h": 3,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cuda]": {
