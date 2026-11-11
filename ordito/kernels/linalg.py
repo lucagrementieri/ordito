@@ -34,7 +34,13 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
-from ordito.kernels.array import OverloadTable, csr_row_long, inverse_or_one
+from ordito.kernels.array import (
+    OverloadTable,
+    csr_row_long,
+    device_is_cpu,
+    inverse_or_one,
+    row_chunk_slots,
+)
 from ordito.kernels.reduce import block_chunk, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
@@ -739,9 +745,35 @@ def csr_row_dot(
     # values may be narrower than ``x`` -- the heat diffusions' ``float32`` copy of their operator
     # (``linalg._BatchedCg``'s ``narrow_values``) -- and are widened as they are read; at one
     # precision the cast is the identity and the arithmetic is unchanged.
+    #
+    # Four entries a step on CUDA (``array.row_chunk_slots``): the column, value and gathered ``x``
+    # loads of a step are in flight together, where an entry a step waited on each gather before
+    # the next column's load (``solve_spd`` 0.91x on dragon, ``min_quad_with_fixed`` 0.93-0.97x
+    # on bunny and dragon, bit-identical). The CPU device, with no load latency to hide, keeps an
+    # entry a step (chunked 1.01-1.06x there). Either sum adds in row order.
     total = x.dtype(0.0)
-    for k in range(offsets[row], offsets[row + 1]):
-        total += x.dtype(values[k]) * x[x_offset + columns[k]]
+    end = offsets[row + 1]
+    if device_is_cpu() != 0:
+        for k in range(offsets[row], end):
+            total += x.dtype(values[k]) * x[x_offset + columns[k]]
+        return total
+    for k in range(offsets[row], end, 4):
+        slots = row_chunk_slots(k, end)
+        x0 = x[x_offset + columns[slots[0]]]
+        x1 = x[x_offset + columns[slots[1]]]
+        x2 = x[x_offset + columns[slots[2]]]
+        x3 = x[x_offset + columns[slots[3]]]
+        v0 = x.dtype(values[slots[0]])
+        v1 = x.dtype(values[slots[1]])
+        v2 = x.dtype(values[slots[2]])
+        v3 = x.dtype(values[slots[3]])
+        total += v0 * x0
+        if k + 1 < end:
+            total += v1 * x1
+        if k + 2 < end:
+            total += v2 * x2
+        if k + 3 < end:
+            total += v3 * x3
     return total
 
 

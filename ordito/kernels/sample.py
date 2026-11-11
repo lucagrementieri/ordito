@@ -9,6 +9,8 @@ from ordito.kernels.array import (
     device_is_cpu,
     float_from_ordered_bits,
     ordered_float_bits,
+    row_chunk_entries,
+    row_chunk_slots,
     scanned_count,
 )
 from ordito.kernels.reduce import (
@@ -226,33 +228,15 @@ def _poisson_edge_weight(
 
 
 @wp.func
-def neighbour_chunk(nbr_indices: wp.array[wp.int32], k: wp.int32, end: wp.int32) -> wp.vec4i:
-    # Entries ``k`` to ``k + 3`` of a neighbour row ending at ``end``, every address clamped to the
-    # row's last entry, so the four loads (and the four the caller issues through them) are in
-    # flight together; the caller masks the slots past ``end``. Every pass of the elimination walks
-    # a row of ~19 neighbours in one thread, a chain of dependent loads that set its CUDA device
-    # time (``find_local_maxima`` 18 us a round on a 10 k pool, an entry at a time); taken four at
-    # a time the walks ran 0.29-0.94x (maxima) and 0.50-0.73x (deletions) from 10 k to 1 M pool
-    # points, and eight at a time no faster. The CPU's deletions took 0.83x too. Each sum still
-    # adds in row order.
-    last = end - 1
-    return wp.vec4i(
-        nbr_indices[wp.min(k, last)],
-        nbr_indices[wp.min(k + 1, last)],
-        nbr_indices[wp.min(k + 2, last)],
-        nbr_indices[wp.min(k + 3, last)],
-    )
-
-
-@wp.func
 def neighbour_chunk_dists(nbr_dists: wp.array[wp.float32], k: wp.int32, end: wp.int32) -> wp.vec4:
-    # The distances of the four entries ``neighbour_chunk`` names, at the same clamped addresses.
-    last = end - 1
+    # The distances of the four entries ``array.row_chunk_entries`` names, at the same slots. Every
+    # pass of the elimination walks a row of ~19 neighbours in one thread, a chain of dependent
+    # loads that set its CUDA device time (``find_local_maxima`` 18 us a round on a 10 k pool, an
+    # entry at a time); taken four at a time the walks ran 0.29-0.94x (maxima) and 0.50-0.73x
+    # (deletions) from 10 k to 1 M pool points. The CPU's deletions took 0.83x too.
+    slots = row_chunk_slots(k, end)
     return wp.vec4(
-        nbr_dists[wp.min(k, last)],
-        nbr_dists[wp.min(k + 1, last)],
-        nbr_dists[wp.min(k + 2, last)],
-        nbr_dists[wp.min(k + 3, last)],
+        nbr_dists[slots[0]], nbr_dists[slots[1]], nbr_dists[slots[2]], nbr_dists[slots[3]]
     )
 
 
@@ -275,7 +259,7 @@ def compute_poisson_weights(
     end = offsets[i + 1]
     w = wp.float32(0.0)
     for k in range(start, end, 4):
-        js = neighbour_chunk(nbr_indices, k, end)
+        js = row_chunk_entries(nbr_indices, k, end)
         dists = neighbour_chunk_dists(nbr_dists, k, end)
         alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
         for s in range(4):
@@ -471,11 +455,11 @@ def find_local_maxima(
     # the *last* point elimination should reach -- not a vacuous maximum. Flagging it deleted the
     # sole survivor of every isolated patch, wiping small far components off the result entirely.
     #
-    # On CUDA the row is walked a ``neighbour_chunk`` at a time, so the decision cannot depend on
-    # the order within one: ``seen`` rises at any alive neighbour and ``beaten`` at any heavier
-    # one, and the walk stops after the chunk that beats it. The CPU device walks an entry at a
-    # time: it has no load latency to hide, and a chunk's later entries cost it 1.18x the kernel
-    # (a 100 k pool) where the first already beats the point.
+    # On CUDA the row is walked four entries a step (``array.row_chunk_entries``), so the decision
+    # cannot depend on the order within one: ``seen`` rises at any alive neighbour and ``beaten`` at
+    # any heavier one, and the walk stops after the chunk that beats it. The CPU device walks an
+    # entry at a time: it has no load latency to hide, and a chunk's later entries cost it 1.18x the
+    # kernel (a 100 k pool) where the first already beats the point.
     seen = wp.int32(0)
     beaten = wp.int32(0)
     if device_is_cpu() != 0:
@@ -488,7 +472,7 @@ def find_local_maxima(
                     break
     else:
         for k in range(start, end, 4):
-            js = neighbour_chunk(nbr_indices, k, end)
+            js = row_chunk_entries(nbr_indices, k, end)
             weights_j = wp.vec4(weights[js[0]], weights[js[1]], weights[js[2]], weights[js[3]])
             alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
             for s in range(4):
@@ -592,7 +576,7 @@ def apply_deletions(
     start = offsets[i]
     end = offsets[i + 1]
     for k in range(start, end, 4):
-        js = neighbour_chunk(nbr_indices, k, end)
+        js = row_chunk_entries(nbr_indices, k, end)
         dists = neighbour_chunk_dists(nbr_dists, k, end)
         alive_j = wp.vec4i(alive[js[0]], alive[js[1]], alive[js[2]], alive[js[3]])
         deleted_j = wp.vec4i(
@@ -644,7 +628,7 @@ def gather_deletions(
     w = weights[i]
     end = offsets[i + 1]
     for k in range(offsets[i], end, 4):
-        js = neighbour_chunk(nbr_indices, k, end)
+        js = row_chunk_entries(nbr_indices, k, end)
         dists = neighbour_chunk_dists(nbr_dists, k, end)
         deleted_j = wp.vec4i(
             deleted_mask[js[0]], deleted_mask[js[1]], deleted_mask[js[2]], deleted_mask[js[3]]

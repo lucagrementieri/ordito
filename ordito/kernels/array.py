@@ -317,6 +317,25 @@ def scanned_count(inclusive: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32,
     return start, inclusive[i] - start
 
 
+@wp.func
+def row_chunk_slots(k: wp.int32, end: wp.int32) -> wp.vec4i:
+    # Entries ``k`` to ``k + 3`` of a row ending at ``end``, each clamped to the row's last entry:
+    # a thread walking a row four entries a step issues every load of a step (and the gathers
+    # through them) together, where an entry a step waited on each in turn, and masks the slots
+    # past ``end`` (``k + s < end``). The Poisson-disk elimination's neighbour walks ran 0.29-0.94x
+    # this way (``kernels/sample``), eight a step no faster; a sum over the slots in order adds in
+    # row order, so the result is the entry-a-step one bit for bit.
+    last = end - 1
+    return wp.vec4i(k, wp.min(k + 1, last), wp.min(k + 2, last), wp.min(k + 3, last))
+
+
+@wp.func
+def row_chunk_entries(entries: wp.array[wp.int32], k: wp.int32, end: wp.int32) -> wp.vec4i:
+    # ``entries`` at the four ``row_chunk_slots`` from ``k``.
+    slots = row_chunk_slots(k, end)
+    return wp.vec4i(entries[slots[0]], entries[slots[1]], entries[slots[2]], entries[slots[3]])
+
+
 @wp.kernel
 def flag_wrapped_scan(inclusive: wp.array[wp.int32], out_flag: wp.array[wp.int32]) -> None:
     # Set ``out_flag[0]`` when an ``int32`` inclusive scan of non-negative counts wrapped. The
