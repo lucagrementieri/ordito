@@ -1313,8 +1313,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
   `cholesky.breadth_first_level`, `smoothing.ring_push` / `pushed_keeping_volume`,
-  `umbrella_diffuse_pass`, `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s
-  device time). Counts: `reconstruction.count_live_margin` (a few margin
+  `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s device time). Counts: `reconstruction.count_live_margin` (a few margin
   bins in a one-block loop; its class-list slot needs a multi-bin peer allocator, not
   `peer_counted_add`), `cholesky.emit_structure_rows` (sorted keys: the count is the run length,
   no atomic needed), `cholesky.dissection_crossings` (1-16 bins at shallow depths),

@@ -1536,6 +1536,11 @@ def umbrella_diffuse_pass(
     # to ``float32``, as the assembly read its ``float32`` copy, and each entry is formed twice --
     # once for the row's sum, once to apply it -- in the same order, so every entry and the step
     # are the assembled operator's to the bit.
+    #
+    # Declined (2026-11-11): both walks four entries a step on CUDA (``array.row_chunk_entries``,
+    # the step's gathers issued before its masked entries), as ``laplacian.operator_row`` takes
+    # past L2. Calls new/old: dragon 1.00x, bunny 0.97-0.98x, ``sphere_small`` / ``sphere_med``
+    # par; each entry's length and division, not its gather, bound the walk.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
