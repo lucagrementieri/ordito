@@ -159,7 +159,9 @@ def _faces_with_duplicates_wp(bench_case: BenchCase, fraction: float) -> wp.arra
 @pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
 def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> None:
     """
-    Sort-based grouping with a signed-count rule: nothing to do, against a tenth of the mesh.
+    Grouping with a signed-count rule: nothing to do, against a tenth of the mesh.
+
+    The faces group in vertex rings on CUDA, with no sort, and by a radix sort on the CPU.
 
     ``igl.resolve_duplicated_faces`` is the same rule and the same output, face for face, so it is
     the like-for-like row. Open3D's and MeshLab's first-occurrence rules are timed under their own

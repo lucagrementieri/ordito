@@ -7052,58 +7052,56 @@
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cuda-clean]": {
   "counts": {
-   "launch": 3,
+   "launch": 5,
    "alloc": 4,
    "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cuda-dup10pct]": {
   "counts": {
-   "launch": 3,
+   "launch": 5,
    "alloc": 4,
    "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces_meshlab[sphere_med-ordito-cuda-clean]": {
   "counts": {
-   "launch": 3,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces_meshlab[sphere_med-ordito-cuda-dup10pct]": {
   "counts": {
-   "launch": 3,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces_open3d[sphere_med-ordito-cuda-clean]": {
   "counts": {
-   "launch": 3,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_resolve_duplicated_faces_open3d[sphere_med-ordito-cuda-dup10pct]": {
   "counts": {
-   "launch": 3,
-   "alloc": 3,
+   "launch": 4,
+   "alloc": 4,
+   "memset": 1,
    "d2h": 1,
-   "scan": 1,
-   "sort": 1
+   "scan": 2
   }
  },
  "benchmarks/test_repair.py::test_reverse_winding[sphere_small-ordito-cuda]": {

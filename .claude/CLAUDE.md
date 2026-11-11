@@ -1179,7 +1179,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   corners) CUDA 0.29x on `lucy` (34.4 -> 10.0 ms, peak 3.6 -> 1.4 GiB), 0.33x `dragon`, 0.51-0.57x
   small; CPU 0.56-0.80x. A ring past `VALUE_RING_LONG` (64) rows is quadratic in a thread, so a
   hub sends the call to the sort: CUDA learns it with the class total (`fan_hub` 1.37x, +0.11 ms),
-  the CPU reads it after the count launch (par).
+  the CPU reads it after the count launch (par). `resolve_duplicated_faces` rings each face at its
+  smallest corner and compares the other two (`kernels/repair.face_ring_key`); the cancelling
+  rule's first face decides its group and a second pass ranks kept groups within the ring for the
+  sorted order. CUDA, every method: 0.75-0.82x `sphere_small`, 0.64-0.74x `sphere_med`, 0.48-0.61x
+  `dragon`, 0.62-0.65x `lucy`, byte-identical (a non-orientable group re-runs the sort, which
+  raises). The CPU keeps its sort: the ring walks cost it 1.1-1.5x (first occurrence) and 2.2-2.9x
+  (cancelling), its radix sort of a 48-bit key being cheap there.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
 - **Readback cadence in idempotent loops:** rounds past a fixpoint are no-ops (but not free on the device: see CUDA graph capture), so read the stop count every few rounds: the MIS undecided count after round 7 and then every 2 (multigrid setup readbacks halved), flip rounds `min(4, (budget - flips_since_build) // (n_faces / 2) + 1)` per read behind the idle gate (`delaunay_triangulation` 39 to 21). A deterministic composite skips a stage while the mesh is still that idempotent stage's own last output (`make_solid`).
@@ -1312,12 +1318,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **Face dedup as a ring compare** (2026-11-11, est.): `resolve_duplicated_faces` and its
-  first-occurrence methods sort a 48-bit sorted-triple key of every face to group duplicates; the
-  ring compare of `repair._exact_value_classes` (faces keyed by their lowest corner, `(b, c)`
-  compared within the ring) would drop the sort for two launches and a scan. Host-bound and about
-  par at the benchmarked `sphere_med` (0.15 ms); pays only on large meshes, which no row times.
-  The `igl` / `all` error path reads the sorted keys and would need its own recovery.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
@@ -1325,3 +1325,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **Techniques of the `selection` sweep not yet tried elsewhere** (2026-11-11, unpriced; results
+  in `reference/component-status.md`, "`selection` sweep"): a prehook storing a per-face bit the
+  hook reads instead of repeating a search (`seams.corner_union_prehook` / `corner_union_hook`
+  both run `corner_union`'s binary search in the marked keys); a unique emit specialised off the
+  run ranks instead of an inverse plus later scatters (`reconstruction`'s octree `unique_1d` at
+  ~`:1604` feeding two `_octree_group_sums` through the inverse; `homology` and
+  `remesh._edge_incidence`'s `scatter_edge_incidence` over an `edges_unique` inverse, which
+  `remesh.emit_edge_topology` already folds; `smoothing`'s single-use edge vertices); a block a
+  segment, lanes striding independent steps, for few long segments walked a thread each
+  (`boundary.emit_pinch_cycles`' rotated copy, 11 % of dragon's `delete_region_keep_boundary`
+  device time; `holes.fan_faces`, the cone half of `holes.cone_fill`, `levelset.cone_bounds`).
+  `kernels/array.segment_owner_labels` has no launcher left.

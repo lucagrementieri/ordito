@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Sequence
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import igl
 import numpy as np
@@ -1069,6 +1069,53 @@ def test_resolve_duplicated_faces_meshlab_method_matches_pymeshlab(
     assert np.array_equal(
         np.unique(sorted_wp, axis=0), np.unique(np.sort(faces_pml, axis=1), axis=0)
     )
+
+
+_DedupMethod = Literal["cancel", "igl", "open3d", "meshlab"]
+
+
+@pytest.mark.parametrize("method", ["cancel", "igl", "open3d", "meshlab"])
+@pytest.mark.parametrize("hub", [False, True], ids=["rings", "hub"])
+def test_resolve_duplicated_faces_rings_match_the_sort(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], method: _DedupMethod, hub: bool
+) -> None:
+    """
+    Ordito against ordito: CUDA's ring grouping returns what the CPU's sort does, bit for bit.
+
+    The references above fix each rule; this pins the two groupings to each other, on mixed
+    duplicates (reversed and rotated copies, a surplus of either winding, cancelled pairs, and
+    for ``"igl"`` dropped non-orientable groups) in scrambled order, and with a hub whose ring
+    passes ``VALUE_RING_LONG``, where CUDA falls back to the sort.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rows_np = np.asarray(mesh_tm.faces, dtype=np.int32)
+    rng = np.random.default_rng(23)
+    picked = rows_np[rng.choice(rows_np.shape[0], 120, replace=False)]
+    # Cancelled pairs; a rotated copy and a reversed one (net +1); two reversed copies (net -1).
+    parts = [rows_np, picked[:60, ::-1], np.roll(picked[60:90], 1, axis=1)]
+    parts += [picked[60:90, ::-1], picked[90:, ::-1], picked[90:, ::-1]]
+    if method != "cancel":
+        parts += [picked[:5], picked[:5]]  # net +2: non-orientable, dropped under "igl"
+    if hub:
+        n = 100
+        rim = rows_np.max() + 1 + np.arange(n)
+        fan = np.stack([np.zeros(n, dtype=np.int32), rim, np.roll(rim, -1)], axis=1)
+        parts += [fan, fan[:10, ::-1]]
+    faces_np = np.concatenate(parts).astype(np.int32)
+    faces_np = faces_np[rng.permutation(faces_np.shape[0])]
+    n_vertices = int(faces_np.max()) + 1
+    results = [
+        od.repair.resolve_duplicated_faces(
+            wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device),
+            n_vertices=n_vertices,
+            method=method,
+        )
+        for device in (mesh_wp.device, "cpu")
+    ]
+    (faces_wp, kept_wp), (faces_cpu, kept_cpu) = results
+    assert 0 < kept_cpu.size < faces_np.shape[0]  # something resolved, something kept
+    assert np.array_equal(faces_wp.numpy(), faces_cpu.numpy())
+    assert np.array_equal(kept_wp.numpy(), kept_cpu.numpy())
 
 
 def _faces_2d(faces_wp: wp.array[wp.int32]) -> np.ndarray:

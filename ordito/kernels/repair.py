@@ -224,6 +224,34 @@ def compare_value_words(
     return order
 
 
+@wp.func
+def claim_ring_slot(
+    ring_offsets: wp.array[wp.int32],
+    p: wp.int32,
+    long_counts: wp.array[wp.int32],
+    long_index: wp.int32,
+) -> wp.int32:
+    # A row's slot in the ring of primary key ``p``, counted into the zeroed ring offsets at
+    # ``p + 1`` for the in-place scan; the slots' arrival order decides nothing a ring kernel
+    # computes. A ring reaching ``VALUE_RING_LONG`` rows counts once into
+    # ``long_counts[long_index]``, which the host reads with its total. Shared by the value rings
+    # (``count_primary_slots``) and the face rings (``count_face_ring_slots``), which differ by how
+    # a row names its key.
+    slot = wp.atomic_add(ring_offsets, p + 1, 1)
+    if slot == VALUE_RING_LONG:
+        wp.atomic_add(long_counts, long_index, 1)
+    return slot
+
+
+@wp.func
+def ring_span(ring_offsets: wp.array[wp.int32], p: wp.int32) -> wp.vec2i:
+    # The ring of primary key ``p`` in ``ring``, or an empty span when it is long
+    # (``VALUE_RING_LONG``): those rows go to the sort instead and nothing is read for them.
+    start = ring_offsets[p]
+    stop = ring_offsets[p + 1]
+    return wp.where(stop - start > VALUE_RING_LONG, wp.vec2i(0, 0), wp.vec2i(start, stop))
+
+
 @wp.kernel
 def count_primary_slots(
     primary: wp.array[wp.int32],
@@ -231,16 +259,12 @@ def count_primary_slots(
     out_slots: wp.array[wp.int32],
     out_class_offsets: wp.array[wp.int32],
 ) -> None:
-    # Row ``i``'s slot in its primary key's ring, counted into the zeroed ``(n_primary + 1,)`` ring
-    # offsets at ``primary + 1`` for the in-place scan; the arrival order of the slots decides
-    # nothing below. A ring reaching ``VALUE_RING_LONG`` rows counts once into the trailing slot of
-    # the ``(n_primary + 2,)`` class offsets, which the host reads with the class total.
+    # Row ``i``'s slot in its primary key's ring (``claim_ring_slot``); a long ring counts into the
+    # trailing slot of the ``(n_primary + 2,)`` class offsets, read with the class total.
     i = wp.int32(wp.tid())
-    p = primary[i]
-    slot = wp.atomic_add(out_ring_offsets, p + 1, 1)
-    out_slots[i] = slot
-    if slot == VALUE_RING_LONG:
-        wp.atomic_add(out_class_offsets, out_class_offsets.shape[0] - 1, 1)
+    out_slots[i] = claim_ring_slot(
+        out_ring_offsets, primary[i], out_class_offsets, out_class_offsets.shape[0] - 1
+    )
 
 
 @wp.kernel
@@ -259,12 +283,8 @@ def place_ring_rows(
 def value_ring_span(
     primary: wp.array[wp.int32], ring_offsets: wp.array[wp.int32], i: wp.int32
 ) -> wp.vec2i:
-    # Row ``i``'s ring in ``ring``, or an empty span when the ring is long (``VALUE_RING_LONG``):
-    # those rows are grouped by the sort instead and nothing below is read for them.
-    p = primary[i]
-    start = ring_offsets[p]
-    stop = ring_offsets[p + 1]
-    return wp.where(stop - start > VALUE_RING_LONG, wp.vec2i(0, 0), wp.vec2i(start, stop))
+    # Row ``i``'s ring in ``ring`` (``ring_span``).
+    return ring_span(ring_offsets, primary[i])
 
 
 @wp.kernel
@@ -588,6 +608,179 @@ def compact_scanned_faces_and_indices(
     row = compact_scanned_face(inclusive, f, faces, out_faces)
     if row >= 0:
         out_kept[row] = f
+
+
+# Duplicate faces grouped in rings, no sort: a face's ring is its smallest corner's, and two faces
+# of one ring are one group when their other two corners agree in the key the rule groups by.
+# ``resolve_duplicated_faces`` takes these unless a ring is long, then the sorted forms above.
+
+
+@wp.func
+def face_ring_key(faces: wp.array[wp.int32], f: wp.int32, oriented: wp.int32) -> wp.vec2i:
+    # Face ``f``'s key within its ring, the corners after its smallest: in winding order
+    # (``rotate_min_first``, Open3D's key) or sorted (every other rule's); with the ring, the same
+    # triple ``pack_face_keys_and_order`` and ``pack_lexicographic_face_keys_and_order`` pack.
+    a, b, c = corner_triple(faces, f)
+    _k0, k1, k2 = sort3(a, b, c)
+    if oriented != 0:
+        _k0, k1, k2 = rotate_min_first(a, b, c)
+    return wp.vec2i(k1, k2)
+
+
+@wp.func
+def face_ring(faces: wp.array[wp.int32], f: wp.int32) -> wp.int32:
+    # Face ``f``'s ring: its smallest corner.
+    a, b, c = corner_triple(faces, f)
+    return wp.min(a, wp.min(b, c))
+
+
+@wp.kernel
+def count_face_ring_slots(
+    faces: wp.array[wp.int32],
+    long_index: wp.int32,
+    out_ring_offsets: wp.array[wp.int32],
+    out_slots: wp.array[wp.int32],
+    out_long: wp.array[wp.int32],
+) -> None:
+    # Face ``f``'s slot in its ring (``claim_ring_slot``), a long ring counted at ``long_index``.
+    f = wp.int32(wp.tid())
+    out_slots[f] = claim_ring_slot(out_ring_offsets, face_ring(faces, f), out_long, long_index)
+
+
+@wp.kernel
+def place_face_ring_rows(
+    faces: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    out_ring: wp.array[wp.int32],
+) -> None:
+    # Face ``f`` placed in its ring at the slot ``count_face_ring_slots`` gave it.
+    f = wp.int32(wp.tid())
+    out_ring[ring_offsets[face_ring(faces, f)] + slots[f]] = f
+
+
+@wp.kernel
+def flag_first_face_occurrences(
+    faces: wp.array[wp.int32],
+    oriented: wp.int32,
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # 1 at each group's first face, the lowest-numbered of its ring with an equal key, 0 at every
+    # other: ``flag_first_sorted_members``' flags, indexed by input face, with no sort.
+    f = wp.int32(wp.tid())
+    span = ring_span(ring_offsets, face_ring(faces, f))
+    key = face_ring_key(faces, f, oriented)
+    first = wp.int32(1)
+    for j in range(span[0], span[1]):
+        g = ring[j]
+        if g < f:
+            if face_ring_key(faces, g, oriented) == key:
+                first = 0
+    out_flags[f] = first
+
+
+@wp.kernel
+def decide_face_ring_groups(
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    drop_unorientable: wp.int32,
+    error_index: wp.int32,
+    out_keep: wp.array[wp.int32],
+    out_error: wp.array[wp.int32],
+) -> None:
+    # ``resolve_duplicate_runs``' decision, taken by each group's first face over its ring: the
+    # members' counts and the lowest member of each sign do not depend on the walk's order, and the
+    # first face is itself the first positive one. ``out_keep`` is the kept face at a kept group's
+    # first face and -1 at every other face; a non-orientable group, unless dropped, counts into
+    # ``out_error[error_index]``, and the host then re-runs the sorted form, which names the group.
+    f = wp.int32(wp.tid())
+    span = ring_span(ring_offsets, face_ring(faces, f))
+    if span[0] == span[1]:
+        return
+    key = face_ring_key(faces, f, 0)
+    r0, r1, r2 = corner_triple(faces, f)
+    member_count = wp.int32(0)
+    signed_count = wp.int32(0)
+    first_negative = wp.int32(-1)
+    representative = wp.bool(True)
+    for j in range(span[0], span[1]):
+        g = ring[j]
+        if face_ring_key(faces, g, 0) == key:
+            if g < f:
+                representative = False
+            a, b, c = corner_triple(faces, g)
+            member_count += 1
+            if cyclic_match(a, b, c, r0, r1, r2):
+                signed_count += 1
+            else:
+                signed_count -= 1
+                if first_negative < 0 or g < first_negative:
+                    first_negative = g
+    keep = wp.int32(-1)
+    if representative:
+        keep = duplicate_group_keep(member_count, signed_count, f, f, first_negative)
+        if keep == -2:
+            if drop_unorientable == 0:
+                wp.atomic_add(out_error, error_index, 1)
+            keep = wp.int32(-1)
+    out_keep[f] = keep
+
+
+@wp.kernel
+def rank_kept_face_groups(
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    keep: wp.array[wp.int32],
+    out_ranks: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # A kept group's rank within its ring, the number of kept groups whose sorted corners come
+    # before its own, and at the ring's first kept group the ring's kept count, written at
+    # ``ring + 1`` of the zeroed counts for the in-place scan: kept groups number in ascending
+    # sorted-corner order, as the sorted runs' flags scan them.
+    f = wp.int32(wp.tid())
+    if keep[f] < 0:
+        return
+    p = face_ring(faces, f)
+    span = ring_span(ring_offsets, p)
+    key = face_ring_key(faces, f, 0)
+    before = wp.int32(0)
+    kept = wp.int32(0)
+    for j in range(span[0], span[1]):
+        g = ring[j]
+        if keep[g] >= 0:
+            kept += 1
+            other = face_ring_key(faces, g, 0)
+            if other[0] < key[0] or (other[0] == key[0] and other[1] < key[1]):
+                before += 1
+    out_ranks[f] = before
+    if before == 0:
+        out_counts[p + 1] = kept
+
+
+@wp.kernel
+def compact_kept_face_groups(
+    faces: wp.array[wp.int32],
+    keep: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_kept: wp.array[wp.int32],
+) -> None:
+    # Each kept group's face at its row, its ring's first row plus its rank: what
+    # ``compact_kept_duplicate_runs`` writes, with the row from the ring scan.
+    f = wp.int32(wp.tid())
+    kept_face = keep[f]
+    if kept_face < 0:
+        return
+    row = counts[face_ring(faces, f)] + ranks[f]
+    out_kept[row] = kept_face
+    a, b, c = corner_triple(faces, kept_face)
+    write_corner_triple(out_faces, row, a, b, c)
 
 
 @wp.kernel

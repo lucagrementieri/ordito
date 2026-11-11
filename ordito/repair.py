@@ -1245,8 +1245,21 @@ def resolve_duplicated_faces(
     if n_vertices is None:
         # The range check and the key radix ``grouping.unique_faces`` takes without a bound.
         n_vertices = checked_index_bound(*index_extrema(faces), "faces")
+    # CUDA groups the faces in rings, with no sort; the CPU sorts, its radix sort cheaper there
+    # than the ring walks (rings 1.1-1.5x the sort's time for the first occurrence, 2.2-2.9x for
+    # the cancelling rule, sphere_small to dragon).
+    rings = not wp.get_device(device).is_cpu
     if method in ("open3d", "meshlab"):
-        return _first_occurrence_faces(faces, n_vertices, oriented=method == "open3d")
+        oriented = method == "open3d"
+        if rings:
+            ringed = _first_occurrence_faces_in_rings(faces, n_vertices, oriented=oriented)
+            if ringed is not None:
+                return ringed
+        return _first_occurrence_faces(faces, n_vertices, oriented=oriented)
+    if rings:
+        ringed = _resolved_faces_in_rings(faces, n_vertices, drop_unorientable=method == "igl")
+        if ringed is not None:
+            return ringed
     # Orientation-free keys ordered as the sorted rows are lexicographically, with the identity
     # payload, sorted, and then each run of equal keys -- one duplicate group, its faces in
     # ascending index -- decided by the thread at its start: no unique table, inverse or per-group
@@ -1294,6 +1307,129 @@ def resolve_duplicated_faces(
             device=device,
         )
     return resolved, kept_wp
+
+
+def _first_occurrence_faces_in_rings(
+    faces: wp.array[wp.int32], n_vertices: int, *, oriented: bool
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
+    """
+    [`_first_occurrence_faces`][ordito.repair._first_occurrence_faces] by ring, or ``None``.
+
+    A face is kept when no lower-numbered face of its ring has its key; ``None`` when a ring is
+    long, for the sorted form.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    # The flags, then the long-ring count behind them, read with the kept total.
+    ring_offsets, flags, ring, _slots = _face_rings(faces, n_vertices, n_faces + 1, n_faces, 1)
+    _launch.launch(
+        kernel_repair.flag_first_face_occurrences,
+        dim=n_faces,
+        inputs=[faces, int(oriented), ring_offsets, ring],
+        outputs=[flags],
+        device=device,
+    )
+    ranks = _launch.view(flags, 0, n_faces)
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # Readback: the kept count sizes both outputs, and a long ring sends the faces to the sort.
+    n_kept, n_long = (int(x) for x in read_values(flags, n_faces - 1, 2))
+    if n_long > 0:
+        return None
+    resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.compact_scanned_faces_and_indices,
+        dim=n_faces,
+        inputs=[ranks, faces],
+        outputs=[resolved, kept],
+        device=device,
+    )
+    return resolved, kept
+
+
+def _resolved_faces_in_rings(
+    faces: wp.array[wp.int32], n_vertices: int, *, drop_unorientable: bool
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
+    """
+    ``resolve_duplicated_faces``' cancelling rule by ring, or ``None`` for the sorted form.
+
+    Each group's first face decides it over its ring, and the kept groups number by ring, then by
+    sorted corners within it: the sorted runs' order. ``None`` when a ring is long, or when a group
+    is not orientable and not dropped: the sorted form then raises, naming the group.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    # The kept counts by ring, then the long-ring and non-orientable counts, read with the total.
+    ring_offsets, counts, ring, spares = _face_rings(
+        faces, n_vertices, n_vertices + 3, n_vertices + 1, 2
+    )
+    keep, ranks = spares
+    _launch.launch(
+        kernel_repair.decide_face_ring_groups,
+        dim=n_faces,
+        inputs=[faces, ring_offsets, ring, int(drop_unorientable), n_vertices + 2],
+        outputs=[keep, counts],
+        device=device,
+    )
+    _launch.launch(
+        kernel_repair.rank_kept_face_groups,
+        dim=n_faces,
+        inputs=[faces, ring_offsets, ring, keep],
+        outputs=[ranks, counts],
+        device=device,
+    )
+    scanned = _launch.view(counts, 0, n_vertices + 1)
+    _launch.array_scan(scanned, scanned, inclusive=True)
+    # Readback: the kept count sizes both outputs; a long ring or a non-orientable group sends the
+    # faces to the sorted form.
+    n_kept, n_long, n_unorientable = (int(x) for x in read_values(counts, n_vertices, 3))
+    if n_long > 0 or n_unorientable > 0:
+        return None
+    resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    if n_kept > 0:
+        _launch.launch(
+            kernel_repair.compact_kept_face_groups,
+            dim=n_faces,
+            inputs=[faces, keep, ranks, counts],
+            outputs=[resolved, kept],
+            device=device,
+        )
+    return resolved, kept
+
+
+def _face_rings(
+    faces: wp.array[wp.int32], n_vertices: int, tail_size: int, long_index: int, n_spare: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32], list[wp.array[wp.int32]]]:
+    """
+    Each face's ring, its smallest corner's: ``(ring_offsets, tail, ring, spares)``.
+
+    ``tail`` is the caller's zeroed ``(tail_size,)`` table, carved with the ring offsets; a ring
+    longer than ``VALUE_RING_LONG`` faces counts into ``tail[long_index]``, which the caller reads
+    with its total and then takes its sorted form. ``spares`` are ``n_spare`` uninitialized
+    ``(n_faces,)`` tables carved with the ring, the first free once the ring is placed.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    ring_offsets, tail = _launch.carve(wp.int32, [n_vertices + 1, tail_size], device, zeroed=True)
+    ring, *spares = _launch.carve(wp.int32, [n_faces] * (1 + n_spare), device)
+    slots = spares[0]
+    _launch.launch(
+        kernel_repair.count_face_ring_slots,
+        dim=n_faces,
+        inputs=[faces, long_index],
+        outputs=[ring_offsets, slots, tail],
+        device=device,
+    )
+    _launch.array_scan(ring_offsets, ring_offsets, inclusive=True)
+    _launch.launch(
+        kernel_repair.place_face_ring_rows,
+        dim=n_faces,
+        inputs=[faces, slots, ring_offsets],
+        outputs=[ring],
+        device=device,
+    )
+    return ring_offsets, tail, ring, spares
 
 
 def _first_occurrence_faces(
