@@ -3998,6 +3998,31 @@ def box_gap_exceeds(
 
 
 @wp.func
+def plane_gap_exceeds(
+    p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, bound: wp.float32, slack: wp.float32
+) -> wp.bool:
+    # Whether face ``(a, b, c)``'s plane is certainly farther than ``bound`` from the ``float64``
+    # point ``p`` was rounded from, so MeshLab's point-face distance is too: that distance is the
+    # plane's where the projection falls inside and an edge point's, never nearer, where it does
+    # not. Its ``float32`` plane distance less a rounding bound and ``slack`` (``p``'s rounding, as
+    # in ``box_gap_exceeds``). The bound is ``32`` units in the last place of ``|p - a|`` on each
+    # step, scaled by ``|b - a| |c - a| / |n|``: the normal's rounding relative to its length,
+    # which grows without bound on a needle, so a needle is never skipped, and neither is a face
+    # of zero ``float64`` area, which MeshLab measures across its box instead (its ``float32``
+    # normal is then rounding alone, under the same scale).
+    e1 = b - a
+    e2 = c - a
+    n = wp.cross(e1, e2)
+    area = wp.length(n)
+    if area == wp.float32(0.0):
+        return False
+    v = p - a
+    gap = wp.abs(wp.dot(n, v)) / area
+    rounding = wp.float32(4e-6) * wp.length(v) * (wp.length(e1) * wp.length(e2) / area + 1.0)
+    return gap - rounding - slack > bound
+
+
+@wp.func
 def nearest_meshlab_face(
     mesh: wp.uint64, p: wp.vec3d, reach: wp.float64
 ) -> tuple[wp.int32, wp.float64, wp.vec3d]:
@@ -4037,6 +4062,8 @@ def nearest_meshlab_face(
                     wp.float32(best),
                     slack,
                 ):
+                    continue
+                if plane_gap_exceeds(q, a32, b32, c32, wp.float32(best), slack):
                     continue
                 a = wp.vec3d(a32)
                 b = wp.vec3d(b32)
