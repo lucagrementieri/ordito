@@ -1059,6 +1059,9 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `kernels/laplacian.operator_row`, every explicit and implicit smoothing pass, from `2**18`
   rows): lucy 0.91-0.96x, dragon 0.95-0.98x; ungated, `sphere_small` / `sphere_med` passes
   1.04-1.19x device time.
+  The relax-keeping-volume rings paid ungated (dragon 0.77x, `ring_push_forces` 0.62x device), and
+  on the CPU a folded `device_is_cpu` branch in a one-thread serial kernel still cost 1.03-1.13x:
+  bind the CPU's plain walk per kernel (a `wp.Function` argument), not behind that branch.
 - **An order statistic is a radix select, not a sort, on CUDA** (2026-11-11,
   `kernels/sample.floor_digit`): digit passes of 11, 11 and 10 bits of the ordered keys, each a
   histogram (`scatter.peer_counted_add`: the coarse first digit crowds a few bins) whose last
@@ -1319,8 +1322,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
-  `cholesky.breadth_first_level`, `smoothing.ring_push` / `pushed_keeping_volume`,
-  `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s device time). Counts: `reconstruction.count_live_margin` (a few margin
+  `cholesky.breadth_first_level`, `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s device time). Counts: `reconstruction.count_live_margin` (a few margin
   bins in a one-block loop; its class-list slot needs a multi-bin peer allocator, not
   `peer_counted_add`), `cholesky.emit_structure_rows` (sorted keys: the count is the run length,
   no atomic needed), `cholesky.dissection_crossings` (1-16 bins at shallow depths),

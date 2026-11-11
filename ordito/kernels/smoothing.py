@@ -3430,6 +3430,41 @@ def equalize_area_steps_serial(
 
 
 @wp.func
+def ring_position_sum(
+    positions: wp.array[wp.vec3], columns: wp.array[wp.int32], begin: wp.int32, end: wp.int32
+) -> wp.vec3d:
+    # The ring's positions summed in ``float64`` in ring order, an entry a step: ``ring_push``'s sum
+    # on the CPU device.
+    total = wp.vec3d()
+    for slot in range(begin, end):
+        total += to_vec3d(positions[columns[slot]])
+    return total
+
+
+@wp.func
+def ring_position_sum_chunked(
+    positions: wp.array[wp.vec3], columns: wp.array[wp.int32], begin: wp.int32, end: wp.int32
+) -> wp.vec3d:
+    # ``ring_position_sum`` four entries a step (``array.row_chunk_entries``), a step's gathers
+    # issued together: ``ring_push``'s sum on CUDA, the same terms in the same order.
+    total = wp.vec3d()
+    for k in range(begin, end, 4):
+        ring = row_chunk_entries(columns, k, end)
+        p0 = positions[ring[0]]
+        p1 = positions[ring[1]]
+        p2 = positions[ring[2]]
+        p3 = positions[ring[3]]
+        total += to_vec3d(p0)
+        if k + 1 < end:
+            total += to_vec3d(p1)
+        if k + 2 < end:
+            total += to_vec3d(p2)
+        if k + 3 < end:
+            total += to_vec3d(p3)
+    return total
+
+
+@wp.func
 def ring_push(
     positions: wp.array[wp.vec3],
     offsets: wp.array[wp.int32],
@@ -3437,18 +3472,25 @@ def ring_push(
     region: wp.array[wp.bool],
     force: wp.float32,
     vertex: wp.int32,
+    ring_sum: wp.Function,
 ) -> wp.vec3:
-    # Vertex ``vertex``'s entry of ``ring_push_forces``.
+    # Vertex ``vertex``'s entry of ``ring_push_forces``, its ring summed by ``ring_sum``
+    # (``ring_position_sum`` or ``ring_position_sum_chunked``).
     begin = offsets[vertex]
     end = offsets[vertex + 1]
     if not in_region(region, vertex) or begin == end:
         return wp.vec3(0.0, 0.0, 0.0)
-    total = wp.vec3d()
-    for slot in range(begin, end):
-        total += to_vec3d(positions[columns[slot]])
-    mean = total / wp.float64(end - begin)
+    mean = ring_sum(positions, columns, begin, end) / wp.float64(end - begin)
     average = to_vec3(mean)
     return (average - positions[vertex]) * force
+
+
+# On CUDA the two relax-keeping-volume passes walk a ring four entries a step, its gathers issued
+# together (2026-11-11, ``relax_keep_volume`` 10 passes, calls new/old: dragon 0.77x, lucy 0.82x,
+# with a region 0.89-0.92x, small meshes 0.93-0.96x; ``ring_push_forces`` 0.62x and
+# ``apply_push_keeping_volume`` 0.89x device time on dragon). The CPU keeps an entry a step, and not
+# behind a branch on ``device_is_cpu``: in its one-thread kernel that branch, though folded, cost
+# 1.03-1.13x, so the sum is bound per kernel (a ``wp.Function`` argument).
 
 
 @wp.kernel
@@ -3463,7 +3505,66 @@ def ring_push_forces(
     # The plain uniform-relax displacement each in-region vertex would take on its own. Kept as a
     # field rather than applied, because the volume correction below is its ring average.
     vertex = wp.int32(wp.tid())
-    out_push[vertex] = ring_push(positions, offsets, columns, region, force, vertex)
+    if device_is_cpu() != 0:
+        out_push[vertex] = ring_push(
+            positions, offsets, columns, region, force, vertex, ring_position_sum
+        )
+    else:
+        out_push[vertex] = ring_push(
+            positions, offsets, columns, region, force, vertex, ring_position_sum_chunked
+        )
+
+
+@wp.func
+def region_push_sum(
+    region: wp.array[wp.bool],
+    push: wp.array[wp.vec3],
+    columns: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+) -> wp.vec3:
+    # The in-region neighbours' pushes summed in ring order, an entry a step:
+    # ``pushed_keeping_volume``'s sum on the CPU device.
+    total = wp.vec3()
+    for slot in range(begin, end):
+        neighbor = columns[slot]
+        if in_region(region, neighbor):
+            total += push[neighbor]
+    return total
+
+
+@wp.func
+def region_push_term(total: wp.vec3, push: wp.vec3, counted: wp.bool) -> wp.vec3:
+    # ``total`` plus a neighbour's push when it is in the region, selected rather than added as a
+    # zero, so a ``-0.0`` total stays one as ``region_push_sum``'s branch leaves it.
+    return wp.where(counted, total + push, total)
+
+
+@wp.func
+def region_push_sum_chunked(
+    region: wp.array[wp.bool],
+    push: wp.array[wp.vec3],
+    columns: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+) -> wp.vec3:
+    # ``region_push_sum`` four entries a step, every push loaded and the region test selecting:
+    # ``pushed_keeping_volume``'s sum on CUDA, the same terms in the same order.
+    total = wp.vec3()
+    for k in range(begin, end, 4):
+        ring = row_chunk_entries(columns, k, end)
+        q0 = push[ring[0]]
+        q1 = push[ring[1]]
+        q2 = push[ring[2]]
+        q3 = push[ring[3]]
+        total = region_push_term(total, q0, in_region(region, ring[0]))
+        if k + 1 < end:
+            total = region_push_term(total, q1, in_region(region, ring[1]))
+        if k + 2 < end:
+            total = region_push_term(total, q2, in_region(region, ring[2]))
+        if k + 3 < end:
+            total = region_push_term(total, q3, in_region(region, ring[3]))
+    return total
 
 
 @wp.func
@@ -3476,18 +3577,16 @@ def pushed_keeping_volume(
     initial: wp.array[wp.vec3],
     max_displacement: wp.float32,
     vertex: wp.int32,
+    push_sum: wp.Function,
 ) -> wp.vec3:
-    # Vertex ``vertex``'s entry of ``apply_push_keeping_volume``.
+    # Vertex ``vertex``'s entry of ``apply_push_keeping_volume``, its neighbours' pushes summed by
+    # ``push_sum`` (``region_push_sum`` or ``region_push_sum_chunked``).
     current = positions[vertex]
     begin = offsets[vertex]
     end = offsets[vertex + 1]
     if not in_region(region, vertex) or begin == end:
         return current
-    total = wp.vec3()
-    for slot in range(begin, end):
-        neighbor = columns[slot]
-        if in_region(region, neighbor):
-            total += push[neighbor]
+    total = push_sum(region, push, columns, begin, end)
     moved = current + push[vertex] - total / wp.float32(end - begin)
     return limit_near_initial(moved, initial[vertex], max_displacement)
 
@@ -3509,9 +3608,16 @@ def apply_push_keeping_volume(
     # The divisor is the full degree while the sum runs over in-region neighbours only, so a vertex
     # on the region's edge is corrected by less than one that is surrounded.
     vertex = wp.int32(wp.tid())
-    out_positions[vertex] = pushed_keeping_volume(
-        positions, offsets, columns, region, push, initial, max_displacement, vertex
-    )
+    if device_is_cpu() != 0:
+        out_positions[vertex] = pushed_keeping_volume(
+            positions, offsets, columns, region, push, initial, max_displacement, vertex,
+            region_push_sum,
+        )  # fmt: skip
+    else:
+        out_positions[vertex] = pushed_keeping_volume(
+            positions, offsets, columns, region, push, initial, max_displacement, vertex,
+            region_push_sum_chunked,
+        )  # fmt: skip
 
 
 @wp.kernel
@@ -3535,11 +3641,14 @@ def relax_keeping_volume_serial(
         source = rotation_input(initial, out_positions_0, out_positions_1, index)
         target = rotation_buffer(out_positions_0, out_positions_1, index)
         for vertex in range(n):
-            out_push[vertex] = ring_push(source, offsets, columns, region, force, vertex)
+            out_push[vertex] = ring_push(
+                source, offsets, columns, region, force, vertex, ring_position_sum
+            )
         for vertex in range(n):
             target[vertex] = pushed_keeping_volume(
-                source, offsets, columns, region, out_push, initial, max_displacement, vertex
-            )
+                source, offsets, columns, region, out_push, initial, max_displacement, vertex,
+                region_push_sum,
+            )  # fmt: skip
 
 
 @wp.func
