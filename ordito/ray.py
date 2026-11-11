@@ -238,7 +238,8 @@ def intersects_first(
     # ``first_hit`` returns ``(face, location)`` and ``wp.map`` wants one ``out=`` per returned
     # value, so the location is written and dropped. Kept rather than given a face-only
     # ``@wp.func`` of its own: that would generate a second ``map_*`` module to save one
-    # allocation and an (n,) vec3 store, well under a percent of a call this size.
+    # allocation and an (n,) vec3 store, well under a percent of a call this size. Not carved
+    # with the output: the returned faces would keep the scratch alive, four times their bytes.
     locations_scratch = _launch.empty(n, dtype=wp.vec3, device=ray_origins.device)
     _launch.map(
         kernel_ray.first_hit,
