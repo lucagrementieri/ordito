@@ -5922,7 +5922,7 @@
  "benchmarks/test_proximity.py::test_winding_number[sphere_small-ordito-cuda-100000]": {
   "counts": {
    "launch": 10,
-   "alloc": 7,
+   "alloc": 8,
    "memset": 2,
    "d2h": 1,
    "scan": 1,

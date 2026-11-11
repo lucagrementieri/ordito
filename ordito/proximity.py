@@ -1391,9 +1391,9 @@ def _winding_number_tree(
     """
     ``(m,)`` exact winding numbers through the patch hierarchy (``kernels/proximity.py``).
 
-    Builds the implicit Morton tree over the faces (corners in Morton order, per-node 14-DOP, face
-    range and corner sum, bottom up one level a launch), the boundary of every node that keeps a
-    cap, then walks it with one block per query.
+    Builds the implicit tree over the faces (corners in Hilbert order, per-node 14-DOP, face range
+    and corner sum, every node in one launch), the boundary of every node that keeps a cap, then
+    walks it with one block per query.
     """
     device = points.device
     n_faces = faces.size // 3
@@ -1409,37 +1409,30 @@ def _winding_number_tree(
         inputs=[vertices, corners_box],
         device=device,
     )
-    # The build's tables in one allocation and the two zeroed edge counters in another: they all
-    # live exactly as long as this call.
-    (
-        keys,
-        order,
-        rank,
-        count,
-        first,
-        cap_offsets,
-        corners,
-        lower,
-        upper,
-        slab_lower,
-        slab_upper,
-        corner_sum,
-    ) = _launch.carve_typed(
-        (
-            (wp.int32, 2 * n_faces),
-            (wp.int32, 2 * n_faces),
-            (wp.int32, n_faces),
-            (wp.int32, n_nodes),
-            (wp.int32, n_nodes),
-            (wp.int32, n_nodes + 1),
-            (wp.vec3, 3 * n_faces),
-            (wp.vec3, n_nodes),
-            (wp.vec3, n_nodes),
-            (wp.vec4, n_nodes),
-            (wp.vec4, n_nodes),
-            (wp.vec3d, n_nodes),
-        ),
-        device,
+    # The halfedge pairing first: the scratch it frees on return goes back to the memory pool,
+    # where the tables below take it up again. Allocated after it, the tables would grow the pool,
+    # and the readback below, which synchronizes, would hand that scratch back to the driver.
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    # The sort's keys and payload in an allocation of their own, kept past that readback and then
+    # dropped, so the cap buffers sized by it reuse their memory; the build's other tables in one
+    # allocation and the two zeroed edge counters in another, all living as long as this call.
+    keys, order = _launch.carve(wp.int32, [2 * n_faces, 2 * n_faces], device)
+    (rank, count, first, cap_offsets, corners, lower, upper, slab_lower, slab_upper, corner_sum) = (
+        _launch.carve_typed(
+            (
+                (wp.int32, n_faces),
+                (wp.int32, n_nodes),
+                (wp.int32, n_nodes),
+                (wp.int32, n_nodes + 1),
+                (wp.vec3, 3 * n_faces),
+                (wp.vec3, n_nodes),
+                (wp.vec3, n_nodes),
+                (wp.vec4, n_nodes),
+                (wp.vec4, n_nodes),
+                (wp.vec3d, n_nodes),
+            ),
+            device,
+        )
     )
     perimeter, fill = _launch.carve(wp.int32, [n_nodes, n_nodes], device, zeroed=True)
     _launch.launch(
@@ -1465,7 +1458,6 @@ def _winding_number_tree(
         device=device,
     )
 
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
     cap_levels = [mates, rank, wp.int32(leaf_faces), wp.int32(depth)]
     _launch.launch(
         kernel_proximity.count_cap_edges,
@@ -1481,6 +1473,7 @@ def _winding_number_tree(
     )
     # One readback: the cap edges' total sizes their buffers, and only the device knows it.
     n_cap_edges = scan_count(_launch.view(cap_offsets, 1, cap_offsets.size))
+    del keys, order
     cap_start, cap_end = _launch.carve(wp.vec3, [max(n_cap_edges, 1), max(n_cap_edges, 1)], device)
     _launch.launch(
         kernel_proximity.fill_cap_edges,
