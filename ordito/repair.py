@@ -907,10 +907,15 @@ def _exact_value_classes(
     Group the rows ``(primary[i], values[i])`` by exact equality: ``(inverse, first)``.
 
     ``primary`` is non-negative and below ``primary_bound``. Classes are numbered in the order of
-    their sorted rows, ``primary`` first, and ``first`` is each class's lowest-numbered row. A
-    least-significant-digit radix sort over the rows' 32-bit words, two a pass, every pass stable
-    -- so equal rows keep index order -- and nothing is hashed, so two different rows never share
-    a class.
+    their sorted rows, ``primary`` first and then the values' 32-bit words as unsigned integers,
+    and ``first`` is each class's lowest-numbered row. Nothing is hashed, so two different rows
+    never share a class.
+
+    The rows sharing a primary key (a vertex's corners) form a ring, and each row finds its class
+    by comparing values within its ring: no sort over the rows. A ring of more than
+    ``VALUE_RING_LONG`` rows would make that quadratic in one thread, so when any exists the rows
+    are grouped by ``_sorted_value_classes`` instead, which
+    numbers them identically.
     """
     device = primary.device
     n = primary.size
@@ -921,12 +926,87 @@ def _exact_value_classes(
         empty = _launch.empty(0, dtype=wp.int32, device=device)
         return empty, empty
     n_words = wp.types.type_size_in_bytes(values.dtype) // 4
-    rows = odt.empty_2d((n, n_words + 1), wp.int32, device=device)
     words = _launch.alias(values, wp.int32, 0, n * n_words)
+    is_float = scalar == wp.float32
+    # The class offsets carry one trailing slot past the scanned ``primary_bound + 1``: the count of
+    # long rings, read back with the class total.
+    ring_offsets, class_offsets = _launch.carve(
+        wp.int32, [primary_bound + 1, primary_bound + 2], device, zeroed=True
+    )
+    representatives, ring, ranks = _launch.carve(wp.int32, [n, n, n], device)
+    # The slots ``count_primary_slots`` hands out are spent once ``place_ring_rows`` has read them,
+    # so the representatives take their table.
+    slots = representatives
+    _launch.launch(
+        kernel_repair.count_primary_slots,
+        dim=n,
+        inputs=[primary],
+        outputs=[ring_offsets, slots, class_offsets],
+        device=device,
+    )
+    _launch.array_scan(ring_offsets, ring_offsets, inclusive=True)
+    _launch.launch(
+        kernel_repair.place_ring_rows,
+        dim=n,
+        inputs=[primary, slots, ring_offsets],
+        outputs=[ring],
+        device=device,
+    )
+    ring_inputs = [primary, words, n_words, is_float, ring_offsets, ring]
+    _launch.launch(
+        kernel_repair.value_ring_representatives,
+        dim=n,
+        inputs=ring_inputs,
+        outputs=[representatives],
+        device=device,
+    )
+    _launch.launch(
+        kernel_repair.value_ring_ranks,
+        dim=n,
+        inputs=[*ring_inputs, representatives],
+        outputs=[ranks, class_offsets],
+        device=device,
+    )
+    counted = _launch.view(class_offsets, 0, primary_bound + 1)
+    _launch.array_scan(counted, counted, inclusive=True)
+    # Readback: the class count sizes the representatives, and a long ring sends the rows to the
+    # sorted grouping; one copy reads both.
+    n_classes, n_long = (int(x) for x in read_values(class_offsets, primary_bound, 2))
+    if n_long > 0:
+        del ring_offsets, class_offsets, representatives, ring, ranks, counted
+        return _sorted_value_classes(primary, words, n_words, is_float, primary_bound)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    first = _launch.empty(n_classes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.write_value_ring_classes,
+        dim=n,
+        inputs=[primary, representatives, ranks, class_offsets],
+        outputs=[inverse, first],
+        device=device,
+    )
+    return inverse, first
+
+
+def _sorted_value_classes(
+    primary: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    n_words: int,
+    is_float: bool,
+    primary_bound: int,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``_exact_value_classes`` by sorting the rows.
+
+    A least-significant-digit radix sort over the rows' 32-bit words, two a pass, every pass
+    stable -- so equal rows keep index order and a run's first row is its class's lowest.
+    """
+    device = primary.device
+    n = primary.size
+    rows = odt.empty_2d((n, n_words + 1), wp.int32, device=device)
     _launch.launch(
         kernel_repair.value_word_rows,
         dim=n,
-        inputs=[primary, words, n_words, scalar == wp.float32],
+        inputs=[primary, words, n_words, is_float],
         outputs=[rows],
         device=device,
     )

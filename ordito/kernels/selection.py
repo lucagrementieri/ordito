@@ -20,7 +20,7 @@ from ordito.kernels.array import (
     store_counted_ballot_bit,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge, mate_halfedge
-from ordito.kernels.reduce import GroupSumPass, read_group_sum
+from ordito.kernels.reduce import GroupSumPass, block_max, read_group_sum
 from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, mark_corners, scatter_add
 from ordito.kernels.triangles import corner_triple, face_normals_and_area, write_corner_triple
 
@@ -963,29 +963,32 @@ def loops_are_input_rims(
     # guarantee on pinched and non-manifold rims. A kept-face count per loop edge would make it
     # checked here too, and measured as costly as the mesh-sized table this replaces.
     #
-    # One thread per *loop*, walking its own rim, rather than one per rim vertex with a segment
-    # label: boundary loops are few and short, which is the regime
-    # ``kernels/array.segment_owner_labels`` names as the one where the per-segment shape wins --
-    # and it needs no owner array. The
-    # early exit is what makes it cheap in the common case, since a loop the deletion opened
-    # usually fails on one of its first edges.
-    ell = wp.int32(wp.tid())
+    # One block per *loop*, its lanes striding the loop's edges by ``wp.block_dim()`` (one lane
+    # on the CPU), rather than one thread per rim vertex with a segment label: boundary loops are
+    # few, so they alone would starve the device, and the block needs no owner array. A loop the
+    # deletion opened has every edge in the deleted table, so each lane stops at its first search;
+    # an input rim has none, and its whole length of searches is the cost. One thread a loop
+    # walked that alone: dragon's 142 input rims (up to 590 edges, a 19-step search each into
+    # 520 k keys) held the launch at 180 us.
+    ell, lane = wp.tid()
     start = loop_offsets[ell]
     size = loop_offsets[ell + 1] - start
-    is_rim = wp.int32(1)
-    for k in range(size):
+    opened = wp.int32(0)
+    for k in range(lane, size, wp.block_dim()):
         a = to_input[flat_loops[start + k]]
         b = to_input[flat_loops[start + (k + 1) % size]]
         if binary_search_sorted_contains(deleted_edge_keys, pack_edge_key(a, b, base)):
-            is_rim = wp.int32(0)
+            opened = wp.int32(1)
             break
+    opened = block_max(opened)
+    if lane != 0:
+        return
     # ``(1, size, start)`` for a loop the deletion opened and ``(0, 0, start)`` for the input's
     # own rim. Read as it is, that is every kept loop's extent in ``flat_loops``, which is all the
     # list form needs to cut its views; scanned in place, the first two components give every kept
     # loop its rank and the end of its run in the packed output (``compact_kept_loops``), and the
     # tail sizes it. The scanned third component is never read.
-    kept = 1 - is_rim
-    out_kept_counts[ell] = wp.vec3i(kept, kept * size, start)
+    out_kept_counts[ell] = wp.vec3i(opened, opened * size, start)
 
 
 @wp.kernel

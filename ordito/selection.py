@@ -1434,9 +1434,9 @@ def _delete_region_loops(
     deleted_keys = odt.as_dense(key_buffer[:n_deleted_keys])
 
     kept_counts = _launch.empty(n_loops, dtype=wp.vec3i, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_selection.loops_are_input_rims,
-        dim=n_loops,
+        dim=[n_loops],
         inputs=[flat_loops, loop_offsets, vertex_index, deleted_keys, base, kept_counts],
         device=device,
     )

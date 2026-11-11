@@ -123,6 +123,19 @@ def bucket_vertex_keys_and_identity(
     out_order[i] = i
 
 
+@wp.func
+def value_word(
+    words: wp.array[wp.int32], i: wp.int32, n_words: wp.int32, c: wp.int32, is_float: wp.bool
+) -> wp.int32:
+    # Word ``c`` of value ``i`` as an exact grouping compares it: a float's ``-0.0`` is read as
+    # ``+0.0``, the one pair of distinct bit patterns IEEE-754 calls equal. Shared by the sorted
+    # rows (``value_word_rows``) and the ring comparison (``compare_value_words``).
+    word = words[i * n_words + c]
+    if is_float and word == wp.int32(-2147483648):
+        word = wp.int32(0)
+    return word
+
+
 @wp.kernel
 def value_word_rows(
     primary: wp.array[wp.int32],
@@ -132,15 +145,11 @@ def value_word_rows(
     out_rows: wp.array2d[wp.int32],
 ) -> None:
     # Row ``i`` of an exact grouping key: the primary key, then the ``n_words`` 32-bit words of
-    # value ``i``. A float's ``-0.0`` is written as ``+0.0``, the one pair of distinct bit patterns
-    # IEEE-754 calls equal.
+    # value ``i`` (``value_word``).
     i = wp.int32(wp.tid())
     out_rows[i, 0] = primary[i]
     for c in range(n_words):
-        word = words[i * n_words + c]
-        if is_float and word == wp.int32(-2147483648):
-            word = wp.int32(0)
-        out_rows[i, c + 1] = word
+        out_rows[i, c + 1] = value_word(words, i, n_words, c, is_float)
 
 
 @wp.kernel
@@ -190,6 +199,149 @@ def write_row_classes(
     out_inverse[order[i]] = label
     if i == 0 or ranks[i - 1] != ranks[i]:
         out_first[label] = order[i]
+
+
+# A ring longer than this is left to the sorted grouping: the ring kernels compare every pair of
+# its rows, which a hub's ring of thousands would make quadratic in one thread a row.
+VALUE_RING_LONG = 64
+
+
+@wp.func
+def compare_value_words(
+    words: wp.array[wp.int32], a: wp.int32, b: wp.int32, n_words: wp.int32, is_float: wp.bool
+) -> wp.int32:
+    # -1, 0 or 1 as value ``a`` sorts before, with or after value ``b`` in the sorted grouping's
+    # order: its words as unsigned integers, the first word most significant.
+    order = wp.int32(0)
+    for c in range(n_words):
+        if order == 0:
+            wa = wp.uint32(value_word(words, a, n_words, c, is_float))
+            wb = wp.uint32(value_word(words, b, n_words, c, is_float))
+            if wa < wb:
+                order = -1
+            elif wa > wb:
+                order = 1
+    return order
+
+
+@wp.kernel
+def count_primary_slots(
+    primary: wp.array[wp.int32],
+    out_ring_offsets: wp.array[wp.int32],
+    out_slots: wp.array[wp.int32],
+    out_class_offsets: wp.array[wp.int32],
+) -> None:
+    # Row ``i``'s slot in its primary key's ring, counted into the zeroed ``(n_primary + 1,)`` ring
+    # offsets at ``primary + 1`` for the in-place scan; the arrival order of the slots decides
+    # nothing below. A ring reaching ``VALUE_RING_LONG`` rows counts once into the trailing slot of
+    # the ``(n_primary + 2,)`` class offsets, which the host reads with the class total.
+    i = wp.int32(wp.tid())
+    p = primary[i]
+    slot = wp.atomic_add(out_ring_offsets, p + 1, 1)
+    out_slots[i] = slot
+    if slot == VALUE_RING_LONG:
+        wp.atomic_add(out_class_offsets, out_class_offsets.shape[0] - 1, 1)
+
+
+@wp.kernel
+def place_ring_rows(
+    primary: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    out_ring: wp.array[wp.int32],
+) -> None:
+    # Row ``i`` placed in its primary key's ring at the slot ``count_primary_slots`` gave it.
+    i = wp.int32(wp.tid())
+    out_ring[ring_offsets[primary[i]] + slots[i]] = i
+
+
+@wp.func
+def value_ring_span(
+    primary: wp.array[wp.int32], ring_offsets: wp.array[wp.int32], i: wp.int32
+) -> wp.vec2i:
+    # Row ``i``'s ring in ``ring``, or an empty span when the ring is long (``VALUE_RING_LONG``):
+    # those rows are grouped by the sort instead and nothing below is read for them.
+    p = primary[i]
+    start = ring_offsets[p]
+    stop = ring_offsets[p + 1]
+    return wp.where(stop - start > VALUE_RING_LONG, wp.vec2i(0, 0), wp.vec2i(start, stop))
+
+
+@wp.kernel
+def value_ring_representatives(
+    primary: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    n_words: wp.int32,
+    is_float: wp.bool,
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    out_representatives: wp.array[wp.int32],
+) -> None:
+    # Row ``i``'s class representative: the lowest-numbered row of its ring with an equal value,
+    # the row the stable sort would put first in its run.
+    i = wp.int32(wp.tid())
+    span = value_ring_span(primary, ring_offsets, i)
+    if span[0] == span[1]:
+        return
+    representative = i
+    for j in range(span[0], span[1]):
+        r = ring[j]
+        if r < representative:
+            if compare_value_words(words, r, i, n_words, is_float) == 0:
+                representative = r
+    out_representatives[i] = representative
+
+
+@wp.kernel
+def value_ring_ranks(
+    primary: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    n_words: wp.int32,
+    is_float: wp.bool,
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    representatives: wp.array[wp.int32],
+    out_ranks: wp.array[wp.int32],
+    out_class_offsets: wp.array[wp.int32],
+) -> None:
+    # A representative's class rank within its ring, the number of its ring's distinct values that
+    # sort before its own, and at the ring's smallest value its distinct-value count, written at
+    # ``primary + 1`` of the zeroed class offsets for the in-place scan: classes numbered primary
+    # first and by value within it, as the sorted runs number them.
+    i = wp.int32(wp.tid())
+    span = value_ring_span(primary, ring_offsets, i)
+    if span[0] == span[1] or representatives[i] != i:
+        return
+    before = wp.int32(0)
+    distinct = wp.int32(0)
+    for j in range(span[0], span[1]):
+        r = ring[j]
+        if representatives[r] == r:
+            distinct += 1
+            if compare_value_words(words, r, i, n_words, is_float) < 0:
+                before += 1
+    out_ranks[i] = before
+    if before == 0:
+        out_class_offsets[primary[i] + 1] = distinct
+
+
+@wp.kernel
+def write_value_ring_classes(
+    primary: wp.array[wp.int32],
+    representatives: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    class_offsets: wp.array[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # Each row's class, its primary key's first class plus its representative's rank, and each
+    # class's first row, the representative itself: ``write_row_classes``' outputs, bit for bit.
+    i = wp.int32(wp.tid())
+    representative = representatives[i]
+    label = class_offsets[primary[i]] + ranks[representative]
+    out_inverse[i] = label
+    if representative == i:
+        out_first[label] = i
 
 
 @wp.kernel
