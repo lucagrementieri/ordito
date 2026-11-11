@@ -1262,6 +1262,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   the identity seed's upload (a native fill is ~3 us cheaper, §13.1) are each about 1-2 % of a
   `sphere_small` call; folding the image into the kept fit's round would need the fit to write
   the points every replayed round. Price before building.
+- **`ball_pivoting`'s late seeding waves** (2026-11-11): after the front dies, ~25 seeding waves
+  of 90-150 us remain on `bunny` (~10 % of the call), each a few points a failure has released
+  testing all 2 016 pairs of their neighbourhood and failing (63 steps of a rank a lane, nearly
+  every step waiting on one lane's grid walk). Unbuilt lever: compact the pairs that pass the
+  cheap tests first, then run their empty-ball walks a lane each. Declined on the way: runs of
+  ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
+  component-status.md`, `ball_pivoting`).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

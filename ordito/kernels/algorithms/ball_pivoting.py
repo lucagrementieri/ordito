@@ -715,7 +715,11 @@ def seed_triangles_block(
     # tries a subset of the pairs that already failed and fails again. Such a point skips its walk
     # for the rest of the run. A walk cut short by the ``MAX_SEED_NEIGHBORS`` break is not
     # remembered: once stored neighbours are used, the next walk reaches past the break and can
-    # store a neighbour the failed one never tried.
+    # store a neighbour the failed one never tried. Declined: remembering it by the neighbour it
+    # was cut at, which is exact (the walk's order is fixed and the orphans only shrink, so a full
+    # list ending at that neighbour is the same list) and skips the repeated pair search, but
+    # measured at par on the bunnies (1.00-1.05x, CUDA): the late seeding waves are points a
+    # failure releases, each failing afresh, not the same points failing again.
     #
     # A block takes every ``blocks``-th point rather than a run of them: the points that walk in a
     # wave are local minima of the index, which cluster at low indices (the first wave of an
