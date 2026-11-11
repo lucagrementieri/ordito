@@ -925,8 +925,8 @@
  },
  "benchmarks/test_combine.py::test_split[parts_1024-ordito-cuda]": {
   "counts": {
-   "launch": 12,
-   "alloc": 11,
+   "launch": 10,
+   "alloc": 7,
    "d2h": 3,
    "scan": 2,
    "sort": 3
@@ -934,8 +934,8 @@
  },
  "benchmarks/test_combine.py::test_split[parts_64-ordito-cuda]": {
   "counts": {
-   "launch": 12,
-   "alloc": 11,
+   "launch": 10,
+   "alloc": 7,
    "d2h": 3,
    "scan": 2,
    "sort": 3
@@ -954,8 +954,8 @@
  },
  "benchmarks/test_combine.py::test_split_with_offsets[parts_1024-ordito-cuda]": {
   "counts": {
-   "launch": 12,
-   "alloc": 10,
+   "launch": 10,
+   "alloc": 6,
    "d2h": 2,
    "scan": 2,
    "sort": 3
@@ -963,8 +963,8 @@
  },
  "benchmarks/test_combine.py::test_split_with_offsets[parts_64-ordito-cuda]": {
   "counts": {
-   "launch": 12,
-   "alloc": 10,
+   "launch": 10,
+   "alloc": 6,
    "d2h": 2,
    "scan": 2,
    "sort": 3
@@ -7479,8 +7479,8 @@
  },
  "benchmarks/test_selection.py::test_submeshes_from_face_groups[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 5,
-   "alloc": 8,
+   "launch": 3,
+   "alloc": 4,
    "d2h": 1,
    "scan": 1,
    "sort": 1

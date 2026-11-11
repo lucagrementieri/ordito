@@ -10,7 +10,6 @@ from ordito.kernels.algorithms.connected_components import (
 )
 from ordito.kernels.array import (
     binary_search_index,
-    binary_search_index_left,
     binary_search_sorted_contains,
     launched_set_bit,
     masked_at,
@@ -18,6 +17,7 @@ from ordito.kernels.array import (
     pack_edge_key,
     pack_ranked_key,
     scanned_count,
+    sorted_run_start,
     store_counted_ballot_bit,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge, mate_halfedge
@@ -95,49 +95,42 @@ def pack_group_vertex_keys(
 
 
 @wp.kernel
-def decode_group_vertex_keys(
-    unique_keys: wp.array[wp.int64],
+def emit_group_submeshes(
+    sorted_keys: wp.array[wp.int64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    group_offsets: wp.array[wp.int32],
     radix: wp.int64,
     vertices: wp.array[wp.vec3],
-    out_slot_groups: wp.array[wp.int32],
     out_vertex_offsets: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
     out_vertex_index: wp.array[wp.int32],
 ) -> None:
-    # One launch over ``max(n_slots, k + 1)`` threads. Slot ``t`` of the sorted unique
-    # ``(group, vertex)`` keys records its group and gathers the source position it names -- the
-    # two things the slot's key is needed for, read off one decode; the vertex id itself is stored
-    # only into the optional ``out_vertex_index`` (``None`` unless a caller reports provenance),
-    # since otherwise the position gather is its only consumer. Thread ``t <= k`` writes group
-    # ``t``'s start: the keys ascend by group, so it is the first slot whose key reaches
-    # ``t * radix``, which also gives an empty group its zero-length entry and ``k`` the slot
-    # count: the total-terminated vertex offsets, every entry written.
+    # One thread a sorted corner key, reading its run rank (``ranks[t] - 1`` is its slot among
+    # the unique ``(group, vertex)`` keys). The keys ascend by group and every group is
+    # non-empty, so group ``g``'s keys sit at sorted positions ``[3 offsets[g], 3 offsets[g + 1])``
+    # and its first slot is ``ranks[3 offsets[g]] - 1``: a corner's zero-based index within its
+    # group's vertices is the difference of two ranks, written at the corner the sort carried
+    # (``order``). A run's first thread decodes its key once: the source position it gathers,
+    # and the vertex id itself only into the optional ``out_vertex_index`` (``None`` unless a
+    # caller reports provenance). Thread ``t <= k`` writes group ``t``'s first slot, and ``k`` the
+    # slot count: the total-terminated vertex offsets, every entry written.
     t = wp.int32(wp.tid())
-    if t < unique_keys.shape[0]:
-        key = unique_keys[t]
-        # The inverse of ``pack_group_vertex_keys``: one divmod.
-        out_slot_groups[t] = wp.int32(key // radix)
-        vertex = wp.int32(key % radix)
-        out_vertices[t] = vertices[vertex]
-        if out_vertex_index.shape[0] > 0:
-            out_vertex_index[t] = vertex
+    n = ranks.shape[0]
+    if t < n:
+        key = sorted_keys[t]
+        group = wp.int32(key // radix)
+        rank = ranks[t]
+        out_faces[order[t]] = rank - ranks[wp.int32(3) * group_offsets[group]]
+        if sorted_run_start(sorted_keys, t):
+            vertex = wp.int32(key - wp.int64(group) * radix)
+            out_vertices[rank - 1] = vertices[vertex]
+            if out_vertex_index.shape[0] > 0:
+                out_vertex_index[rank - 1] = vertex
     if t < out_vertex_offsets.shape[0]:
-        out_vertex_offsets[t] = binary_search_index_left(unique_keys, wp.int64(t) * radix)
-
-
-@wp.kernel
-def local_corner_indices(
-    inverse: wp.array[wp.int32],
-    slot_groups: wp.array[wp.int32],
-    vertex_offsets: wp.array[wp.int32],
-    out_faces: wp.array[wp.int32],
-) -> None:
-    # The compacted, zero-based vertex index each selected corner refers to: its slot's rank within
-    # its own group. Resolved per corner through ``inverse`` rather than tabulated per slot and
-    # gathered, since the corner is the only reader of a slot's rank.
-    corner = wp.int32(wp.tid())
-    slot = inverse[corner]
-    out_faces[corner] = slot - vertex_offsets[slot_groups[slot]]
+        first = wp.int32(3) * group_offsets[t]
+        out_vertex_offsets[t] = wp.where(first < n, ranks[wp.min(first, n - 1)] - 1, ranks[n - 1])
 
 
 # The mask-driven submesh extraction shares one ``(n_faces + n_vertices,)`` rank buffer: the kept

@@ -11,7 +11,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import INDEX_RADIX_PAIR
-from ordito.grouping import _unique_sorted_runs  # pyright: ignore[reportPrivateUsage]
+from ordito.grouping import _sorted_run_ranks  # pyright: ignore[reportPrivateUsage]
 from ordito.halfedge import halfedge_twins, require_matching_twins
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
@@ -946,8 +946,9 @@ def _submeshes_from_face_groups(
     n_selected = group_face_indices.size
     radix = max(vertices.size, 1)
     n_corners = 3 * n_selected
-    keys = _launch.empty(2 * n_corners, dtype=wp.int64, device=device)
-    order = _launch.empty(2 * n_corners, dtype=wp.int32, device=device)
+    keys, order = _launch.carve_typed(
+        ((wp.int64, 2 * n_corners), (wp.int32, 2 * n_corners)), device
+    )
     _launch.launch(
         kernel_selection.pack_group_vertex_keys,
         dim=n_corners,
@@ -955,41 +956,20 @@ def _submeshes_from_face_groups(
         device=device,
     )
 
-    # ``unique_1d(return_inverse=True)``'s sorted path over the keys already in the sort's buffers.
-    # A key is ``group * radix + vertex``, below ``k * radix``: only those bits are sorted.
-    unique_keys, inverse, _counts, _first = _unique_sorted_runs(
-        keys, order, n_corners, True, True, False, False, _launch.key_bits(k * radix)
-    )
-    assert unique_keys is not None
-    assert inverse is not None
-    n_slots = unique_keys.size
-    # One decode per unique slot answers everything its key is needed for: the slot's group and
-    # the source position it names; the same launch searches each group's start in the sorted
-    # keys, so an empty group still gets a zero-length entry and no host synchronisation is needed
-    # to size it.
-    slot_groups = _launch.empty(n_slots, dtype=wp.int32, device=device)
+    # The sorted path of ``unique_1d(return_inverse=True)`` over the keys already in the sort's
+    # buffers, its emit specialised: each sorted key's run rank is all the output needs. A key is
+    # ``group * radix + vertex``, below ``k * radix``: only those bits are sorted.
+    ranks, n_slots = _sorted_run_ranks(keys, order, n_corners, _launch.key_bits(k * radix))
+    # One pass writes the vertex offsets, the gathered vertices and each corner's index within its
+    # group, with no host synchronisation beyond the slot count that sizes the vertices.
     vertices_all = _launch.empty(n_slots, dtype=wp.vec3, device=device)
     vertex_index = _launch.empty(n_slots, dtype=wp.int32, device=device) if with_index else None
-    _launch.launch(
-        kernel_selection.decode_group_vertex_keys,
-        dim=max(n_slots, k + 1),
-        inputs=[
-            unique_keys,
-            wp.int64(radix),
-            vertices,
-            slot_groups,
-            vertex_offsets,
-            vertices_all,
-            vertex_index,
-        ],
-        device=device,
-    )
-
     faces_all = _launch.empty(n_corners, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_selection.local_corner_indices,
+        kernel_selection.emit_group_submeshes,
         dim=n_corners,
-        inputs=[inverse, slot_groups, vertex_offsets, faces_all],
+        inputs=[keys, order, ranks, group_offsets, wp.int64(radix), vertices],
+        outputs=[vertex_offsets, vertices_all, faces_all, vertex_index],
         device=device,
     )
     return vertices_all, faces_all, vertex_index

@@ -265,9 +265,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "and one readback, as is_volume does; is_volume's public answer also needs the winding "
         "test, and is_edge_manifold plus measures.volume is a launch and a readback each"
     ),
-    ("selection", "grouping._unique_sorted_runs"): (
+    ("selection", "grouping._sorted_run_ranks"): (
         "submeshes_from_face_groups packs its (group, vertex) keys straight into the radix sort's "
-        "double-width buffers with the identity payload; unique_1d would copy them there first"
+        "double-width buffers with the identity payload and emits the submeshes off the run "
+        "ranks; unique_1d would copy the keys there first and emit tables nothing else reads"
     ),
     ("bounds", "selection._compact_marked_submesh"): (
         "crop_mesh decides each face's fate from the box in the marking pass, as repair's passes "
