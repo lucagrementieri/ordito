@@ -124,6 +124,39 @@ def _pixel_barycentric(
     return barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
 
 
+@wp.func
+def _claim_pixel(
+    q0: wp.vec2,
+    q1: wp.vec2,
+    q2: wp.vec2,
+    row: wp.int32,
+    col: wp.int32,
+    f: wp.int32,
+    out_owner: wp.array2d[wp.int32],
+) -> None:
+    """Bid face ``f`` for pixel ``(row, col)`` when its pixel-space triangle covers the centre."""
+    bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
+    if _covered(bary):
+        wp.atomic_min(out_owner, row, col, f)
+
+
+@wp.func
+def _check_vertex(
+    uv: wp.array[wp.vec2], labels: wp.array[wp.int32], v: wp.int32, out_flags: wp.array[wp.int32]
+) -> None:
+    """
+    Check vertex ``v`` for the rasterizers, lowering a flag below the owner sentinel.
+
+    ``out_flags[0]`` goes to ``0`` for an out-of-range finite UV and, given ``labels`` (empty for
+    the continuous rasterizer), ``out_flags[1]`` for a label below 0.
+    """
+    if _uv_out_of_range(uv[v]):
+        wp.atomic_min(out_flags, 0, wp.int32(0))
+    if labels.shape[0] > 0:
+        if labels[v] < 0:
+            wp.atomic_min(out_flags, 1, wp.int32(0))
+
+
 @wp.kernel
 def rasterize_owner(
     uv: wp.array[wp.vec2],
@@ -137,28 +170,78 @@ def rasterize_owner(
     Resolve per-pixel triangle ownership, and validate the vertices, over ``max(n_faces, n_uv)``.
 
     A face thread takes the pixels its triangle covers with ``wp.atomic_min``, so the lowest face
-    index covering each pixel wins. A vertex thread is the rasterizers' input check: it lowers
-    ``out_flags[0]`` to ``0`` for an out-of-range finite UV and, given ``labels`` (empty for the
-    continuous rasterizer), ``out_flags[1]`` for a label below 0. The flags are the two slots
-    behind the owner image in its allocation, so they arrive holding the owner sentinel and a flag
-    is raised when it no longer does. The two halves share a launch because neither reads what the
-    other writes: an out-of-range UV only lands its pixel window on the clamped image border, and
-    the wrapper reads the flags before anything reads the owners.
+    index covering each pixel wins. A vertex thread is the rasterizers' input check
+    (``_check_vertex``). The flags are the two slots behind the owner image in its allocation, so
+    they arrive holding the owner sentinel and a flag is raised when it no longer does. The two
+    halves share a launch because neither reads what the other writes: an out-of-range UV only
+    lands its pixel window on the clamped image border, and the wrapper reads the flags before
+    anything reads the owners.
+
+    ``rasterize_owner_sliced`` splits each face's window over several threads; it differs only in
+    how a face's pixels are dealt to threads. The two stay separate kernels because the sliced walk
+    in this one cost the one-thread form 1.1-1.2x (``dragon`` at 512, ``lucy`` at 2048: registers).
     """
     t = wp.int32(wp.tid())
     if t < faces.shape[0] // 3:
         q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, t, resolution)
         for row in range(row_lo, row_hi + 1):
             for col in range(col_lo, col_hi + 1):
-                bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
-                if _covered(bary):
-                    wp.atomic_min(out_owner, row, col, t)
+                _claim_pixel(q0, q1, q2, row, col, t, out_owner)
     if t < uv.shape[0]:
-        if _uv_out_of_range(uv[t]):
-            wp.atomic_min(out_flags, 0, wp.int32(0))
-        if labels.shape[0] > 0:
-            if labels[t] < 0:
-                wp.atomic_min(out_flags, 1, wp.int32(0))
+        _check_vertex(uv, labels, t, out_flags)
+
+
+# The owner pass's split (``texture._owner_slices``): about ``OWNER_SLICE_WIDTHS`` estimated
+# window widths, ``resolution / sqrt(n_faces)``, of threads a face, rounded to a power of two and
+# capped at ``2 ** OWNER_MAX_SLICES_LOG2``. Swept over 1-64 slices at resolutions 256-4096 on
+# ``sphere_small`` to ``lucy`` (vertex xy projected to the unit square), the optimum followed that
+# width: 2x it lands within 1.15x of the best slice count at every point from 512 up (1.25x on
+# ``sphere_small`` at 256, a 5 us launch). Many slices on many small faces idle the lanes past a
+# window: 64 cost ``dragon`` 2-20x the one-thread pass.
+OWNER_SLICE_WIDTHS = 2.0
+OWNER_MAX_SLICES_LOG2 = 6
+
+
+@wp.kernel
+def rasterize_owner_sliced(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    resolution: wp.int32,
+    slices: wp.int32,
+    out_owner: wp.array2d[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    """
+    ``rasterize_owner`` with each face's raster window dealt to ``slices`` threads.
+
+    Over ``max(n_faces * slices, n_uv)``: thread ``t`` takes face ``t // slices`` and tests every
+    ``slices``-th pixel of the window in row-major order from ``t % slices``, so a warp's lanes test
+    neighbouring pixels of one face and a face of many pixels no longer holds its warp alone. The
+    owners are ``rasterize_owner``'s up to rounding: ``wp.atomic_min`` keeps the lowest covering
+    face whatever the split, but nvcc contracts the barycentric products differently in this loop,
+    so a pixel centre within rounding of a near-degenerate face's edge can change sides (about 1 in
+    3 000 pixels on a projected sphere's edge-on rim, against 1 in 900 where the CPU and CUDA
+    builds of ``rasterize_owner`` already part).
+    """
+    t = wp.int32(wp.tid())
+    if t < (faces.shape[0] // 3) * slices:
+        f = t // slices
+        q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, f, resolution)
+        width = col_hi - col_lo + 1
+        lane = t - f * slices
+        # Stepping the pixel position beats a ``//`` and ``%`` of a running index a pixel (1.1-1.2x)
+        # and a lane grid of nested row and column loops (1.05-1.1x).
+        row = row_lo + lane // width
+        col = col_lo + lane % width
+        while row <= row_hi:
+            _claim_pixel(q0, q1, q2, row, col, f, out_owner)
+            col += slices
+            while col > col_hi:
+                col -= width
+                row += 1
+    if t < uv.shape[0]:
+        _check_vertex(uv, labels, t, out_flags)
 
 
 @wp.kernel

@@ -18,6 +18,7 @@ See [`rasterize_attribute`][ordito.texture.rasterize_attribute],
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import warp as wp
@@ -287,22 +288,26 @@ def _rasterize_owner(
     n_pixels = resolution * resolution
     owner_and_flags = _launch.full(n_pixels + 2, _OWNER_SENTINEL, dtype=wp.int32, device=device)
     owner = _launch.view(owner_and_flags, 0, n_pixels).reshape((resolution, resolution))
-    n_threads = max(faces.size // 3, uv.size)
-    if n_threads == 0:
-        return odt.as_array2d(owner, wp.int32)
-    _launch.launch(
-        kernel_texture.rasterize_owner,
-        dim=n_threads,
-        inputs=[
-            uv,
-            faces,
-            labels,
-            resolution,
-            owner,
-            _launch.view(owner_and_flags, n_pixels, n_pixels + 2),
-        ],
-        device=device,
-    )
+    n_faces = faces.size // 3
+    flags = _launch.view(owner_and_flags, n_pixels, n_pixels + 2)
+    slices = _owner_slices(n_faces, resolution, device)
+    if slices == 1:
+        n_threads = max(n_faces, uv.size)
+        if n_threads == 0:
+            return odt.as_array2d(owner, wp.int32)
+        _launch.launch(
+            kernel_texture.rasterize_owner,
+            dim=n_threads,
+            inputs=[uv, faces, labels, resolution, owner, flags],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_texture.rasterize_owner_sliced,
+            dim=max(n_faces * slices, uv.size),
+            inputs=[uv, faces, labels, resolution, slices, owner, flags],
+            device=device,
+        )
     # One readback of both flags: nothing can raise without bringing them to the host.
     uv_flag, label_flag = (int(flag) for flag in read_values(owner_and_flags, n_pixels, 2))
     if uv_flag != _OWNER_SENTINEL:
@@ -310,6 +315,23 @@ def _rasterize_owner(
     if label_flag != _OWNER_SENTINEL:
         raise ValueError("Attribute values must be greater than or equal to 0")
     return odt.as_array2d(owner, wp.int32)
+
+
+def _owner_slices(n_faces: int, resolution: int, device: wp.DeviceLike) -> int:
+    """
+    Threads the owner pass deals each face's raster window to: a power of two, ``1`` on the CPU.
+
+    A face of an atlas covers about ``resolution ** 2 / n_faces`` pixels, so its window is about
+    ``resolution / sqrt(n_faces)`` pixels wide; ``kernels/texture.OWNER_SLICE_WIDTHS`` such
+    widths a face, capped at ``2 ** kernels/texture.OWNER_MAX_SLICES_LOG2``. The CPU runs a
+    launch's threads one after another, where a split only adds work.
+    """
+    if n_faces == 0 or wp.get_device(device).is_cpu:
+        return 1
+    target = kernel_texture.OWNER_SLICE_WIDTHS * resolution / math.sqrt(n_faces)
+    if target < 1.0:
+        return 1
+    return 1 << min(round(math.log2(target)), kernel_texture.OWNER_MAX_SLICES_LOG2)
 
 
 def remap_attribute_from_uv(
