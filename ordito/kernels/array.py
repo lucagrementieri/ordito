@@ -609,7 +609,7 @@ def negated_gather_keys_and_identity(
 ) -> None:
     # ``keys_and_identity`` of ``-values[indices]``: ascending on the negated value is descending
     # on the value, so a stable radix sort of these keys ranks the gathered entries largest first
-    # (``remesh._keep_longest_edges``, ``sample._top_maxima_by_weight``).
+    # (``remesh._keep_longest_edges``).
     i = wp.int32(wp.tid())
     out_keys[i] = -values[indices[i]]
     out_order[i] = i

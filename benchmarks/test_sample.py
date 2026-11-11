@@ -347,8 +347,9 @@ def test_sample_surface_poisson_disk(bench_case: BenchCase) -> None:
     """
     Yuksel's weighted sample elimination down to ``_TARGET_SAMPLES``, from its default pool.
 
-    The rounds remove every local weight maximum above the global floor at once; the last round,
-    whose maxima outnumber what is left to delete, ranks them, so the row prices both kinds.
+    The rounds remove every local weight maximum above the global floor at once, as one device
+    loop on CUDA. Neither terminal branch (maxima outnumbering what is left, or none at all) is
+    reached at this target: the floor's ties are what reach them.
     """
     skip_larger_than(bench_case, "bunny")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp

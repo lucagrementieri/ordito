@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.array import append_slot, scanned_count
+from ordito.kernels.array import LOOP_CONDITION, append_slot, scanned_count
 from ordito.kernels.reduce import (
     fold_block_totals,
     last_ticket_vector,
@@ -239,6 +239,15 @@ def compute_poisson_weights(
     out_weights[i] = w
 
 
+# The elimination loop's device state, one ``int32`` table a call: the ``wp.capture_while``
+# condition at ``array.LOOP_CONDITION`` (slot 0 unused), the alive count, and the round's maxima
+# count. The alive count is stepped by the first launch of the *next* round, so the last round's
+# pair stays readable after the loop: whether it deleted is ``poisson_round_deletes`` of it.
+POISSON_ALIVE = wp.int32(2)
+POISSON_MAXIMA = wp.int32(3)
+POISSON_STATE_SIZE = 4
+
+
 @wp.func
 def alive_negated_weight(weight: wp.float32, alive: wp.int32) -> wp.float32:
     # The sort key of the round's weight floor: ascending order of ``-weight`` over the alive
@@ -250,12 +259,19 @@ def alive_negated_weight(weight: wp.float32, alive: wp.int32) -> wp.float32:
 def alive_negated_weight_keys(
     weights: wp.array[wp.float32],
     alive: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     out_keys: wp.array[wp.float32],
     out_order: wp.array[wp.int32],
 ) -> None:
     # The round's sort keys and the identity payload, written straight into the leading halves of
-    # the radix sort's double-width buffers (the upper halves are its scratch).
+    # the radix sort's double-width buffers (the upper halves are its scratch). Thread 0 closes the
+    # previous round's books first: its maxima, all deleted if it ran this far, leave the alive
+    # count, and the maxima count is re-armed for this round's ``find_local_maxima``. No other
+    # thread reads either slot.
     i = wp.int32(wp.tid())
+    if i == 0:
+        state[POISSON_ALIVE] = state[POISSON_ALIVE] - state[POISSON_MAXIMA]
+        state[POISSON_MAXIMA] = 0
     out_keys[i] = alive_negated_weight(weights[i], alive[i])
     out_order[i] = i
 
@@ -266,17 +282,19 @@ def find_local_maxima(
     alive: wp.array[wp.int32],
     nbr_indices: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
-    weight_floor: wp.array[wp.float32],
+    sorted_negated: wp.array[wp.float32],
+    count: wp.int32,
+    state: wp.array[wp.int32],
     out_is_max: wp.array[wp.int32],
-    out_count: wp.array[wp.int32],
 ) -> None:
-    # ``out_count[0]`` accumulates the number of flagged points -- the round's one host-visible
-    # quantity -- as a conditional append (``append_slot``, one atomic a warp) on the flag this
-    # thread already holds, rather than a device reduction re-reading the whole ``out_is_max``
-    # mask afterwards. The caller zeroes it before each round.
+    # ``state[POISSON_MAXIMA]`` accumulates the number of flagged points -- the round's one
+    # quantity the loop branches on -- as a conditional append (``append_slot``, one atomic a warp)
+    # on the flag this thread already holds, rather than a device reduction re-reading the whole
+    # ``out_is_max`` mask afterwards. ``alive_negated_weight_keys`` zeroes it before each round.
     #
-    # ``weight_floor[0]`` is minus the weight of the round's ``excess``-th heaviest alive point,
-    # and a point lighter than that is not flagged however it compares with its neighbours.
+    # The floor is minus ``sorted_negated[excess - 1]``, the weight of the round's ``excess``-th
+    # heaviest alive point (``excess`` = alive count - ``count``), and a point lighter than that is
+    # not flagged however it compares with its neighbours.
     # Sequential elimination deletes the *globally* heaviest point each time, so its budget of
     # deletions goes to the crowded regions and a locally heaviest point of a sparse region is
     # never reached; flagging every local maximum spent the budget thinning sparse regions and
@@ -284,7 +302,8 @@ def find_local_maxima(
     # 0.70. With the floor the rounds keep exactly the sequential set (100 of 100 on an
     # icosphere(2)).
     i = wp.int32(wp.tid())
-    if alive[i] == 0 or weights[i] < -weight_floor[0]:
+    excess = state[POISSON_ALIVE] - count
+    if alive[i] == 0 or weights[i] < -sorted_negated[excess - 1]:
         out_is_max[i] = 0
         return
     wi = wp.max(weights[i], wp.float32(0.0))
@@ -317,18 +336,60 @@ def find_local_maxima(
         is_max = 1
     out_is_max[i] = is_max
     if is_max != 0:
-        append_slot(out_count, 0)
+        append_slot(state, POISSON_MAXIMA)
 
 
 @wp.kernel
-def mark_ranked_flagged(
-    flagged: wp.array[wp.int32], order: wp.array[wp.int32], out_flags: wp.array[wp.int32]
-) -> None:
-    # One thread per kept rank ``k < excess``: flag the pool point the weight sort put at rank
-    # ``k`` among the ``flagged`` ones. The gather of the chosen indices, their bool mask and its
-    # ``int32`` cast in one launch over a zeroed ``out_flags``.
+def mark_sorted_prefix(order: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # One thread per rank ``k < excess`` of the round's weight sort: flag the point at rank ``k``.
+    # The terminal round in which no point is a local maximum deletes the ``excess`` heaviest alive
+    # points, which lead the sort (the deleted ones are keyed past the end).
     k = wp.int32(wp.tid())
-    out_flags[flagged[order[k]]] = wp.int32(1)
+    out_flags[order[k]] = wp.int32(1)
+
+
+@wp.kernel
+def sorted_flags(
+    flags: wp.array[wp.int32], order: wp.array[wp.int32], out_sorted: wp.array[wp.int32]
+) -> None:
+    # The round's maxima flags in the order of its weight sort, for the scan that ranks them.
+    k = wp.int32(wp.tid())
+    out_sorted[k] = flags[order[k]]
+
+
+@wp.kernel
+def unflag_past_rank(
+    ranks: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    excess: wp.int32,
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Clear every flagged point the inclusive scan of ``sorted_flags`` ranks past ``excess``, so
+    # the terminal round whose maxima outnumber what is left deletes exactly the ``excess``
+    # heaviest of them, ties to the smaller index (the stable sort's identity payload).
+    k = wp.int32(wp.tid())
+    rank, flagged = scanned_count(ranks, k)
+    if flagged != 0 and rank >= excess:
+        out_flags[order[k]] = 0
+
+
+@wp.func
+def poisson_round_deletes(state: wp.array[wp.int32], count: wp.int32) -> wp.bool:
+    # Whether the round deletes all of its maxima: some were flagged and they fit in what is left
+    # to delete. The other two outcomes end the loop and the host finishes the last round.
+    n_max = state[POISSON_MAXIMA]
+    return n_max > 0 and n_max <= state[POISSON_ALIVE] - count
+
+
+@wp.func
+def close_poisson_round(
+    i: wp.int32, deletes: wp.bool, count: wp.int32, state: wp.array[wp.int32]
+) -> None:
+    # Thread 0 of a deletion pass publishes whether another round runs: this one deleted and left
+    # more than ``count`` alive. No thread of the pass reads the condition slot.
+    if i == 0:
+        more = deletes and state[POISSON_ALIVE] - state[POISSON_MAXIMA] > count
+        state[LOOP_CONDITION] = wp.where(more, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
@@ -340,14 +401,17 @@ def apply_deletions(
     r_max: wp.float32,
     r_min: wp.float32,
     alpha: wp.float32,
+    count: wp.int32,
+    guarded: wp.int32,
     alive: wp.array[wp.int32],
     weights: wp.array[wp.float32],
-    out_max_count: wp.array[wp.int32],
+    state: wp.array[wp.int32],
 ) -> None:
     # Delete this round's flagged points and take their contributions off the survivors' weights,
-    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds. Thread 0
-    # also re-zeroes the maxima count the host has read this round, for the next round's
-    # ``find_local_maxima`` to accumulate into, so no memset runs between rounds.
+    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds. Inside the
+    # loop (``guarded``) the pass runs only when ``poisson_round_deletes`` says the round deletes
+    # its maxima, and thread 0 publishes the loop's condition (``close_poisson_round``); the host's
+    # terminal round passes ``guarded = 0`` with a mask cut to ``excess``.
     #
     # A deleted thread clears its own ``alive`` slot while its neighbours may be reading it. That
     # is benign because the skip below tests ``deleted_mask[j]`` as well: a neighbour this round
@@ -355,9 +419,9 @@ def apply_deletions(
     # not written this round at all. So the predicate -- and the set of contributions subtracted --
     # is exactly that of clearing every deleted slot first and subtracting after.
     i = wp.int32(wp.tid())
-    if i == 0:
-        out_max_count[0] = 0
-    if deleted_mask[i] == 0:
+    deletes = guarded == 0 or poisson_round_deletes(state, count)
+    close_poisson_round(i, deletes, count, state)
+    if not deletes or deleted_mask[i] == 0:
         return
     alive[i] = 0
     start = offsets[i]
@@ -379,9 +443,11 @@ def gather_deletions(
     r_max: wp.float32,
     r_min: wp.float32,
     alpha: wp.float32,
+    count: wp.int32,
+    guarded: wp.int32,
     alive: wp.array[wp.int32],
     weights: wp.array[wp.float32],
-    out_max_count: wp.array[wp.int32],
+    state: wp.array[wp.int32],
 ) -> None:
     # ``apply_deletions`` under the deterministic setting: the same deletions and contributions,
     # gathered by each survivor over its own row rather than scattered by the deleted points. Two
@@ -396,8 +462,10 @@ def gather_deletions(
     # call takes 1.10-1.27x on CUDA (bunny 20 k, dragon 200 k, lucy 2 M samples); the CPU device
     # keeps the scatter, whose threads run in a fixed order there.
     i = wp.int32(wp.tid())
-    if i == 0:
-        out_max_count[0] = 0
+    deletes = guarded == 0 or poisson_round_deletes(state, count)
+    close_poisson_round(i, deletes, count, state)
+    if not deletes:
+        return
     if deleted_mask[i] != 0:
         alive[i] = 0
         return

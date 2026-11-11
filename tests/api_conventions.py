@@ -880,7 +880,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("polyline", "rdp_split_spans"): frozenset({"state"}),
     # The Poisson-disk elimination round's carried state: the deletions clear ``alive`` and take
     # their contributions off ``weights`` in the same pass, both rewritten in place every round;
-    # ``gather_deletions`` is the same pass gathered, under the deterministic setting.
+    # ``gather_deletions`` is the same pass gathered, under the deterministic setting. ``state`` is
+    # the ``wp.capture_while`` loop's [unused, condition, alive count, maxima count] table, stepped
+    # by the keys pass (the maxima pass appends to it and the deletion passes close it through
+    # ``@wp.func`` helpers, which this check does not see).
+    ("sample", "alive_negated_weight_keys"): frozenset({"state"}),
     ("sample", "apply_deletions"): frozenset({"alive", "weights"}),
     ("sample", "gather_deletions"): frozenset({"alive", "weights"}),
     # ARAP's rotation right-hand side, scattered by the local step and cleared by the global

@@ -6573,11 +6573,11 @@
   "counts": {
    "launch": 102,
    "alloc": 14,
-   "readback": 35,
+   "h2h": 1,
+   "readback": 4,
    "scan": 3,
    "sort": 32
-  },
-  "exempt": "its elimination round count varies with the deterministic setting off, so its counts are not stable"
+  }
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cpu-n100k]": {
   "counts": {

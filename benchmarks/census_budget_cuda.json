@@ -7223,14 +7223,13 @@
  },
  "benchmarks/test_sample.py::test_sample_surface_poisson_disk[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 102,
+   "launch": 9,
    "alloc": 14,
-   "memset": 5,
-   "d2h": 35,
+   "memset": 3,
+   "d2h": 4,
    "scan": 3,
-   "sort": 32
-  },
-  "exempt": "its elimination round count varies with the deterministic setting off, so its counts are not stable"
+   "sort": 1
+  }
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cuda-n100k]": {
   "counts": {
