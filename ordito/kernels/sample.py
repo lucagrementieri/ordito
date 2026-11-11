@@ -3,14 +3,26 @@ import math
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.array import LOOP_CONDITION, append_slot, device_is_cpu, scanned_count
+from ordito.kernels.array import (
+    LOOP_CONDITION,
+    append_slot,
+    device_is_cpu,
+    float_from_ordered_bits,
+    ordered_float_bits,
+    scanned_count,
+)
 from ordito.kernels.reduce import (
+    block_chunk,
+    block_max,
+    block_running_sum,
     fold_block_totals,
+    last_atomic_block,
     last_ticket_vector,
     minmax_vec3_chunk,
     stage_block_total,
     write_block_value,
 )
+from ordito.kernels.scatter import peer_counted_add
 from ordito.kernels.triangles import (
     block_area_weighted_centroid_sum,
     face_area,
@@ -274,12 +286,29 @@ def compute_poisson_weights(
 
 
 # The elimination loop's device state, one ``int32`` table a call: the ``wp.capture_while``
-# condition at ``array.LOOP_CONDITION`` (slot 0 unused), the alive count, and the round's maxima
-# count. The alive count is stepped by the first launch of the *next* round, so the last round's
-# pair stays readable after the loop: whether it deleted is ``poisson_round_deletes`` of it.
+# condition at ``array.LOOP_CONDITION`` (slot 0 unused), the alive count, the round's maxima count,
+# then the weight floor's radix select: the ticket of its passes' last blocks, the floor key's
+# digits selected so far (after the last pass the whole key: ``array.ordered_float_bits`` of minus
+# the floor weight, as ``int32`` bits) and the rank still to find below them. The alive count is
+# stepped by the first launch of the *next* round, so the last round's pair stays readable after
+# the loop: whether it deleted is ``poisson_round_deletes`` of it.
 POISSON_ALIVE = wp.int32(2)
 POISSON_MAXIMA = wp.int32(3)
-POISSON_STATE_SIZE = 4
+POISSON_TICKET = 4
+POISSON_PREFIX = wp.int32(5)
+POISSON_RANK = wp.int32(6)
+POISSON_STATE_SIZE = 7
+
+# The floor is the ``excess``-th smallest of the alive points' ordered keys, selected a digit a
+# pass (``floor_digit``: 11, 11 and 10 bits from the top), each a histogram whose last block finds
+# the digit. A block owns ``FLOOR_ITEMS_PER_BLOCK`` points and launches at the default width, so
+# the module is built once. A full radix sort of every key a round found the same key in four
+# onesweep passes and their scans, ~50 of a round's ~60 us on a 10 k pool; two 16-bit passes cost
+# as much, their last block reading 65 536 bins alone (~7 us a pass at one SM's bandwidth).
+FLOOR_DIGIT_BINS = 1 << 11
+FLOOR_ITEMS_PER_BLOCK = 256
+# The ``(shift, width)`` of each pass's digit, from the top.
+FLOOR_PASSES = ((21, 11), (10, 11), (0, 10))
 
 
 @wp.func
@@ -293,21 +322,135 @@ def alive_negated_weight(weight: wp.float32, alive: wp.int32) -> wp.float32:
 def alive_negated_weight_keys(
     weights: wp.array[wp.float32],
     alive: wp.array[wp.int32],
-    state: wp.array[wp.int32],
     out_keys: wp.array[wp.float32],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # The round's sort keys and the identity payload, written straight into the leading halves of
-    # the radix sort's double-width buffers (the upper halves are its scratch). Thread 0 closes the
-    # previous round's books first: its maxima, all deleted if it ran this far, leave the alive
-    # count, and the maxima count is re-armed for this round's ``find_local_maxima``. No other
-    # thread reads either slot.
+    # A round's sort keys and the identity payload (the CPU device's floor, and the terminal
+    # round's order), written straight into the leading halves of the radix sort's double-width
+    # buffers (the upper halves are its scratch).
     i = wp.int32(wp.tid())
-    if i == 0:
-        state[POISSON_ALIVE] = state[POISSON_ALIVE] - state[POISSON_MAXIMA]
-        state[POISSON_MAXIMA] = 0
     out_keys[i] = alive_negated_weight(weights[i], alive[i])
     out_order[i] = i
+
+
+@wp.func
+def select_digit(
+    lane: wp.int32, rank: wp.int32, hist: wp.array[wp.int32]
+) -> tuple[wp.int32, wp.int32]:
+    # In a pass's last block, every lane: the digit whose bin of ``hist`` holds the ``rank``-th
+    # (0-based) counted key, and the rank within that bin, block-uniform. Each lane sums its
+    # contiguous share of the bins, one scan of the shares finds the owning lane, and that lane
+    # walks its share (eight bins at 256 lanes, all of them on the CPU device's one lane). Every
+    # lane then re-zeroes its share, so the next pass needs no fill.
+    span = FLOOR_DIGIT_BINS // wp.block_dim()
+    first = lane * span
+    share = wp.int32(0)
+    for m in range(first, first + span):
+        share += hist[m]
+    through, _total = block_running_sum(share, wp.int32(0))
+    digit = wp.int32(-1)
+    within = wp.int32(0)
+    if through - share <= rank and rank < through:
+        before = through - share
+        for m in range(first, first + span):
+            count_m = hist[m]
+            if digit < 0 and rank < before + count_m:
+                digit = m
+                within = rank - before
+            before += count_m
+    for m in range(first, first + span):
+        hist[m] = 0
+    return block_max(digit), block_max(within)
+
+
+@wp.func
+def close_poisson_books(state: wp.array[wp.int32]) -> None:
+    # The previous round's maxima, all deleted if it ran this far, leave the alive count, and the
+    # maxima count is re-armed for this round's ``find_local_maxima``.
+    state[POISSON_ALIVE] = state[POISSON_ALIVE] - state[POISSON_MAXIMA]
+    state[POISSON_MAXIMA] = 0
+
+
+@wp.func
+def floor_digit_bin(
+    weight: wp.float32, alive: wp.int32, prefix: wp.uint32, shift: wp.int32, width: wp.int32
+) -> wp.int32:
+    # The bin a point counts into in the floor pass taking ``width`` bits at ``shift`` of its
+    # ordered key, or ``-1``: a dead point (keyed past every alive one, and the rank sought is below
+    # the alive count), or one whose key lacks the digits selected so far (``prefix``; the first
+    # pass, ``shift + width == 32``, has none to match).
+    if alive == 0:
+        return -1
+    key = ordered_float_bits(-weight)
+    if shift + width != 32 and (key >> wp.uint32(shift + width)) != prefix:
+        return -1
+    return wp.int32((key >> wp.uint32(shift)) & ((wp.uint32(1) << wp.uint32(width)) - wp.uint32(1)))
+
+
+@wp.func
+def append_floor_digit(
+    lane: wp.int32,
+    count: wp.int32,
+    shift: wp.int32,
+    width: wp.int32,
+    hist: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+) -> None:
+    # A pass's last word, every lane of the block that counted last: the digit holding the rank
+    # still sought (the ``excess``-th smallest key's in the first pass, read off the stepped alive
+    # count), appended to the selected prefix, and the rank left within it.
+    first_pass = shift + width == 32
+    rank = wp.where(first_pass, state[POISSON_ALIVE] - count - 1, state[POISSON_RANK])
+    digit, within = select_digit(lane, rank, hist)
+    if lane == 0:
+        prefix = wp.uint32(state[POISSON_PREFIX])
+        above = wp.where(first_pass, wp.uint32(0), prefix << wp.uint32(width))
+        state[POISSON_PREFIX] = wp.cast(above | wp.uint32(digit), wp.int32)
+        state[POISSON_RANK] = within
+
+
+@wp.kernel
+def floor_digit(
+    weights: wp.array[wp.float32],
+    alive: wp.array[wp.int32],
+    count: wp.int32,
+    shift: wp.int32,
+    width: wp.int32,
+    hist: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+) -> None:
+    # One digit of the round's weight floor on CUDA, ``width`` bits at ``shift`` of the ordered
+    # key: every point ``floor_digit_bin`` counts goes into its bin (peers pooled: the keys crowd a
+    # few bins), and the last block, whose reads see every block's adds, appends the digit. Lane 0
+    # of block 0 of the first pass first closes the previous round's books, which the last block's
+    # rank reads.
+    block, lane = wp.tid()
+    if shift + width == 32 and block == 0 and lane == 0:
+        close_poisson_books(state)
+    prefix = wp.uint32(state[POISSON_PREFIX])
+    n = weights.shape[0]
+    offset, items = block_chunk(n, block, FLOOR_ITEMS_PER_BLOCK)
+    for t in range(offset + lane, offset + items, wp.block_dim()):
+        b = floor_digit_bin(weights[t], alive[t], prefix, shift, width)
+        if b >= 0:
+            peer_counted_add(hist, b)
+    n_blocks = (n + FLOOR_ITEMS_PER_BLOCK - 1) // FLOOR_ITEMS_PER_BLOCK
+    if last_atomic_block(lane, ticket, n_blocks) != 0:
+        append_floor_digit(lane, count, shift, width, hist, state)
+
+
+@wp.kernel
+def floor_from_sorted(
+    sorted_negated: wp.array[wp.float32], count: wp.int32, state: wp.array[wp.int32]
+) -> None:
+    # ``dim=1``: the round's weight floor on the CPU device, after ``alive_negated_weight_keys``
+    # and a radix sort: the previous round's books closed, then the ``excess``-th smallest key
+    # stored where the ``floor_digit`` passes leave it. Three histogram passes, even in one
+    # thread, cost the CPU's call 1.05-1.08x the sort they replace on CUDA.
+    close_poisson_books(state)
+    floor = sorted_negated[state[POISSON_ALIVE] - count - 1]
+    state[POISSON_PREFIX] = wp.cast(ordered_float_bits(floor), wp.int32)
 
 
 @wp.func
@@ -333,19 +476,18 @@ def find_local_maxima(
     alive: wp.array[wp.int32],
     nbr_indices: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
-    sorted_negated: wp.array[wp.float32],
-    count: wp.int32,
     state: wp.array[wp.int32],
     out_is_max: wp.array[wp.int32],
 ) -> None:
     # ``state[POISSON_MAXIMA]`` accumulates the number of flagged points -- the round's one
     # quantity the loop branches on -- as a conditional append (``append_slot``, one atomic a warp)
     # on the flag this thread already holds, rather than a device reduction re-reading the whole
-    # ``out_is_max`` mask afterwards. ``alive_negated_weight_keys`` zeroes it before each round.
+    # ``out_is_max`` mask afterwards. the first ``floor_digit`` pass zeroes it before each round.
     #
-    # The floor is minus ``sorted_negated[excess - 1]``, the weight of the round's ``excess``-th
-    # heaviest alive point (``excess`` = alive count - ``count``), and a point lighter than that is
-    # not flagged however it compares with its neighbours.
+    # The floor is the weight of the round's ``excess``-th heaviest alive point (``excess`` = alive
+    # count - ``count``), selected into ``state[POISSON_PREFIX]`` as an ordered key of minus the
+    # weight, and a point lighter than that is not flagged however it compares with its
+    # neighbours. It is compared as a float, so a zero's sign cannot change the test.
     # Sequential elimination deletes the *globally* heaviest point each time, so its budget of
     # deletions goes to the crowded regions and a locally heaviest point of a sparse region is
     # never reached; flagging every local maximum spent the budget thinning sparse regions and
@@ -353,8 +495,8 @@ def find_local_maxima(
     # 0.70. With the floor the rounds keep exactly the sequential set (100 of 100 on an
     # icosphere(2)).
     i = wp.int32(wp.tid())
-    excess = state[POISSON_ALIVE] - count
-    if alive[i] == 0 or weights[i] < -sorted_negated[excess - 1]:
+    floor = -float_from_ordered_bits(wp.cast(state[POISSON_PREFIX], wp.uint32))
+    if alive[i] == 0 or weights[i] < floor:
         out_is_max[i] = 0
         return
     wi = wp.max(weights[i], wp.float32(0.0))

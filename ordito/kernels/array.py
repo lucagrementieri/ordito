@@ -504,6 +504,15 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
 
 
 @wp.func
+def float_from_ordered_bits(key: wp.uint32) -> wp.float32:
+    # The float ``ordered_float_bits`` maps onto ``key`` (``+0.0`` for a zero, the quiet ``NaN``).
+    bits = ~key
+    if (key & wp.uint32(0x80000000)) != wp.uint32(0):
+        bits = key & wp.uint32(0x7FFFFFFF)
+    return wp.cast(bits, wp.float32)
+
+
+@wp.func
 def to_vec2d(v: wp.vec2) -> wp.vec2d:
     return wp.vec2d(wp.float64(v[0]), wp.float64(v[1]))
 

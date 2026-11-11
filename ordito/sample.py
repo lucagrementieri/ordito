@@ -484,36 +484,64 @@ def sample_surface_poisson_disk(
     # rounds replay as one conditional graph on CUDA with no per-round readback.
     if init_count > count:
         is_max = _launch.empty(init_count, dtype=wp.int32, device=device)
-        state = _launch.pattern([0, 1, init_count, 0], wp.int32, device)
-        # The radix sort's double-width buffers, reused every round: each round rewrites the keys
-        # and the identity payload in their leading halves, and the upper halves are sort scratch.
-        keys_buffer = _launch.empty(2 * init_count, dtype=wp.float32, device=device)
-        order_buffer = _launch.empty(2 * init_count, dtype=wp.int32, device=device)
-        sorted_negated = _launch.view(keys_buffer, 0, init_count)
-        order = _launch.view(order_buffer, 0, init_count)
+        state = _launch.pattern(
+            [0, 1, init_count] + [0] * (kernel_sample.POISSON_STATE_SIZE - 3), wp.int32, device
+        )
+        ticket = _launch.view(state, kernel_sample.POISSON_TICKET, kernel_sample.POISSON_TICKET + 1)
+        # On CUDA the floor is selected a digit a pass (``floor_digit``) in a histogram zeroed once
+        # (each pass's last block re-zeroes what it read); the passes launch tiled at the default
+        # launch width (256), so the module is built once, a block owning
+        # ``FLOOR_ITEMS_PER_BLOCK`` points its lanes stride over. The CPU device sorts the keys
+        # instead, cheaper there (``floor_from_sorted``), in the radix sort's double-width buffers.
+        floor_blocks = -(-init_count // kernel_sample.FLOOR_ITEMS_PER_BLOCK)
+        hist = None
+        sort_keys = None
+        if wp.get_device(device).is_cpu:
+            sort_keys = [
+                _launch.empty(2 * init_count, dtype=wp.float32, device=device),
+                _launch.empty(2 * init_count, dtype=wp.int32, device=device),
+            ]
+        else:
+            hist = _launch.zeros(kernel_sample.FLOOR_DIGIT_BINS, dtype=wp.int32, device=device)
         # The survivors' weights subtract their deleted neighbours in row order rather than by
         # float atomics in arrival order; the CPU device runs the scatter's threads one after
         # another, so its order is fixed already.
-        gather = is_deterministic() and wp.get_device(device).is_cuda
+        gather = is_deterministic() and sort_keys is None
         delete = kernel_sample.gather_deletions if gather else kernel_sample.apply_deletions
         deletion_inputs = [nbr_idx, nbr_dists, offsets, r_max, r_min, alpha, count]
 
         def elimination_round() -> None:
             # Only a point at least as heavy as the ``excess``-th heaviest alive one may go this
             # round, so the deletions follow the global weight order the elimination is defined
-            # by; ``find_local_maxima`` reads that floor off the sorted keys.
-            _launch.launch(
-                kernel_sample.alive_negated_weight_keys,
-                dim=init_count,
-                inputs=[weights, alive, state],
-                outputs=[keys_buffer, order_buffer],
-                device=device,
-            )
-            _launch.radix_sort_pairs(keys_buffer, order_buffer, count=init_count)
+            # by; it is left in ``state`` for ``find_local_maxima``.
+            if sort_keys is not None:
+                _launch.launch(
+                    kernel_sample.alive_negated_weight_keys,
+                    dim=init_count,
+                    inputs=[weights, alive],
+                    outputs=sort_keys,
+                    device=device,
+                )
+                _launch.radix_sort_pairs(*sort_keys, count=init_count)
+                _launch.launch(
+                    kernel_sample.floor_from_sorted,
+                    dim=1,
+                    inputs=[sort_keys[0], count, state],
+                    device=device,
+                )
+            else:
+                for shift, width in kernel_sample.FLOOR_PASSES:
+                    _launch.launch_tiled(
+                        kernel_sample.floor_digit,
+                        dim=[floor_blocks],
+                        inputs=[weights, alive, count, shift, width, hist, ticket, state],
+                        block_dim=256,
+                        device=device,
+                    )
             _launch.launch(
                 kernel_sample.find_local_maxima,
                 dim=init_count,
-                inputs=[weights, alive, nbr_idx, offsets, sorted_negated, count, state],
+                inputs=[weights, alive, nbr_idx, offsets, state],
                 outputs=[is_max],
                 device=device,
             )
@@ -532,7 +560,7 @@ def sample_surface_poisson_disk(
         alive_count, n_max = (int(value) for value in read_values(state, 2, 2))
         excess = alive_count - count
         if not 0 < n_max <= excess:
-            _cut_terminal_round(is_max, order, order_buffer, n_max, excess)
+            _cut_terminal_round(weights, alive, is_max, n_max, excess)
             _launch.launch(
                 delete,
                 dim=init_count,
@@ -546,9 +574,9 @@ def sample_surface_poisson_disk(
 
 
 def _cut_terminal_round(
+    weights: wp.array[wp.float32],
+    alive: wp.array[wp.int32],
     is_max: wp.array[wp.int32],
-    order: wp.array[wp.int32],
-    order_buffer: wp.array[wp.int32],
     n_max: int,
     excess: int,
 ) -> None:
@@ -558,8 +586,8 @@ def _cut_terminal_round(
     Two rounds end the loop without deleting their maxima, and both are the last: one whose
     maxima outnumber what is left to delete, and one in which *no* point is a local maximum
     because every alive point is isolated -- there the candidates are the whole alive set. Either
-    way the round deletes exactly ``excess`` candidates, the heaviest first, read off the round's
-    own weight sort (``order``): its keys are the alive points' negated weights, the deleted ones
+    way the round deletes exactly ``excess`` candidates, the heaviest first, read off one weight
+    sort of the round's state: its keys are the alive points' negated weights, the deleted ones
     keyed past the end, and its stable identity payload breaks ties to the smaller index. With no
     maxima the candidates lead the sort; otherwise the maxima are ranked in sort order by one scan
     and those ranked past ``excess`` unflagged.
@@ -571,13 +599,13 @@ def _cut_terminal_round(
 
     Parameters
     ----------
+    weights
+        ``(init_count,)`` crowding weights, as the round read them.
+    alive
+        ``(init_count,)`` ``0``/``1`` alive flags, as the round read them.
     is_max
         ``(init_count,)`` the round's ``0``/``1`` maxima flags, all zero when ``n_max`` is 0.
         Rewritten in place to the deletion flags, exactly ``excess`` of them set.
-    order
-        ``(init_count,)`` the round's weight sort's permutation.
-    order_buffer
-        ``(2 * init_count,)`` the sort's payload buffer, whose upper half is free scratch.
     n_max
         The round's maxima count.
     excess
@@ -585,6 +613,18 @@ def _cut_terminal_round(
     """
     device = is_max.device
     n_pool = is_max.size
+    # The radix sort's double-width buffers: the keys and the identity payload in their leading
+    # halves, the upper halves its scratch (and then the ranks' scan).
+    keys_buffer = _launch.empty(2 * n_pool, dtype=wp.float32, device=device)
+    order_buffer = _launch.empty(2 * n_pool, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_sample.alive_negated_weight_keys,
+        dim=n_pool,
+        inputs=[weights, alive],
+        outputs=[keys_buffer, order_buffer],
+        device=device,
+    )
+    _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
     if n_max == 0:
         _launch.launch(
             kernel_sample.mark_sorted_prefix,

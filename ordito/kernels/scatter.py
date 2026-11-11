@@ -450,6 +450,20 @@ def peer_summed_add(out_sum: wp.array[Any], index: wp.int32, value: wp.Float):
 
 
 @wp.func
+def peer_counted_add(out_counts: wp.array[wp.int32], index: wp.int32) -> None:
+    # ``wp.atomic_add(out_counts, index, 1)`` with the lanes of a warp counting into one bin
+    # (``reduce.warp_peer_lanes``) committed once, by the lowest, as their number; a lane with no
+    # peer, and every lane on the CPU device, takes the plain atomic. A count is exact in any
+    # order. For a histogram whose keys crowd a few bins: the Poisson-disk weight floor's
+    # 2 048-bin digits over a 1 M pool cost the round more than the sort they replaced unpooled.
+    lanes = warp_peer_lanes(index)
+    if lanes == 0:
+        wp.atomic_add(out_counts, index, 1)
+    elif warp_lane_leads(lanes) != 0:
+        wp.atomic_add(out_counts, index, popcount32(wp.uint32(lanes)))
+
+
+@wp.func
 def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) -> None:
     # ``peer_summed_add`` into row ``row`` of an ``(n, 3)`` accumulator, as ``atomic_add_vec3``.
     lanes = warp_peer_lanes(row)

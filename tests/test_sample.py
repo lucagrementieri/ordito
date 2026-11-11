@@ -589,14 +589,13 @@ def test_find_local_maxima_flags_an_independent_set(device: str):
     offsets_wp = wp.array(offsets_np, dtype=wp.int32, device=device)
     alive_wp = wp.ones(5, dtype=wp.int32, device=device)
     is_max_wp = wp.zeros(5, dtype=wp.int32, device=device)
-    # The loop state with five alive points and a target of four: ``excess`` is 1, so the floor is
-    # minus the first sorted key.
-    state_wp = wp.array([0, 1, 5, 0], dtype=wp.int32, device=device)
-    no_floor_wp = wp.full(1, np.inf, dtype=wp.float32, device=device)  # minus the floor
+    # The loop state: its sixth slot is the floor as an ordered key of minus the floor weight,
+    # first with no floor (minus infinity), then with a floor of 3, above every weight.
+    state_wp = wp.array([0, 1, 5, 0, 0, _ordered_key(np.inf), 0], dtype=wp.int32, device=device)
     wp.launch(
         kernel_sample.find_local_maxima,
         dim=5,
-        inputs=[weights_wp, alive_wp, indices_wp, offsets_wp, no_floor_wp, 4, state_wp, is_max_wp],
+        inputs=[weights_wp, alive_wp, indices_wp, offsets_wp, state_wp, is_max_wp],
         device=device,
     )
     is_max_np = is_max_wp.numpy()
@@ -611,15 +610,22 @@ def test_find_local_maxima_flags_an_independent_set(device: str):
     for i in flagged:
         assert flagged.isdisjoint(set(neighbour_rows[i]) - {i})
 
-    floor_wp = wp.full(1, -3.0, dtype=wp.float32, device=device)  # a floor of 3, above every weight
+    floor_wp = wp.array([0, 1, 5, 0, 0, _ordered_key(-3.0), 0], dtype=wp.int32, device=device)
     floored_wp = wp.zeros(5, dtype=wp.int32, device=device)
     wp.launch(
         kernel_sample.find_local_maxima,
         dim=5,
-        inputs=[weights_wp, alive_wp, indices_wp, offsets_wp, floor_wp, 4, state_wp, floored_wp],
+        inputs=[weights_wp, alive_wp, indices_wp, offsets_wp, floor_wp, floored_wp],
         device=device,
     )
     assert not floored_wp.numpy().any()
+
+
+def _ordered_key(value: float) -> int:
+    """``kernels/array.ordered_float_bits`` of ``value`` on the host, as ``int32`` bits."""
+    bits = int(np.array([value], dtype=np.float32).view(np.uint32)[0])
+    key = (~bits & 0xFFFFFFFF) if bits & 0x80000000 else bits | 0x80000000
+    return int(np.array([key], dtype=np.uint32).view(np.int32)[0])
 
 
 def _blue_noise_radius_for_count(surface_area: float, n: int) -> float:

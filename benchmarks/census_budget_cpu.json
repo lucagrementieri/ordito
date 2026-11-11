@@ -6571,7 +6571,7 @@
  },
  "benchmarks/test_sample.py::test_sample_surface_poisson_disk[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 102,
+   "launch": 134,
    "alloc": 14,
    "h2h": 1,
    "readback": 4,
