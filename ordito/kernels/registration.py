@@ -434,6 +434,14 @@ def fit_transform_and_accumulate_cost_block(
     # of a fit it may yet reject, and moves the points once, after the loop, by the transform it
     # kept.
     #
+    # Declined (2026-11-11, CUDA, bit-identical): ``icp``'s ungated loop publishing every round's
+    # image here, which keeps each fit, to drop the post-loop ``apply_transform_mat44`` launch:
+    # 0.98-1.03x from 20 000 to 2^20 points (the early-stopping call 1.03-1.07x on sphere_small),
+    # since that launch is issued while the replayed rounds still run and waits on nothing.
+    # Nor is the loop's identity seed (``registration._identity_mat44``) cheaper as a native fill
+    # for a ``wp.mat44``: per call an upload took 0.32x ``_launch.full`` and 0.66x a ``float32``
+    # ``_launch.pattern`` viewed as one.
+    #
     # Every lane forms the fit itself (``procrustes_matrix`` on the same ``acc``, so every lane
     # holds the one matrix, bit for bit) and the first lane of block 0 publishes it, which is what
     # ``build_procrustes_matrix`` writes when no cost is wanted. That replaced a ``dim=1`` fit

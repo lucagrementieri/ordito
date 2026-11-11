@@ -904,7 +904,7 @@ Measure `n` calls between two syncs and divide; a sync inside the loop drains th
 | `wp.array` slice / `_launch.view` | 4.2 / 1.05 µs |
 | small-pattern native fill (`_launch.pattern`) / 2-element upload | 8.2 / 11.7 µs |
 
-Small constant tables passed by value as `wp.types.vector` kernel arguments cost more host time than uploading them. The creation builders are host-bound: NumPy and Python per-op overhead (1-3 µs each) dominates, not the upload or the launch.
+Small constant tables passed by value as `wp.types.vector` kernel arguments cost more host time than uploading them. The native fill's edge is for scalars: one `wp.mat44` uploads in 6.9 µs against 21.6 µs through `_launch.full` and 10.5 µs as a `float32` `_launch.pattern` viewed as one (2026-11-11). The creation builders are host-bound: NumPy and Python per-op overhead (1-3 µs each) dominates, not the upload or the launch.
 
 Re-measured on Warp 1.19 (2026-11-03, one process per version, min of 7): `_launch.launch`, `wp.empty`, `wp.zeros`, `wp.copy`, a slice, a row or column view, a gather, `reshape`, `_launch.view` and `wp.array(ptr=...)` all 0.95-1.01x their 1.18 cost; `wp.launch` 1.05x (10.9 -> 11.4 µs).
 
@@ -1258,10 +1258,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
   start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
   another subtree), so what is open is a shorter chain for the same walk.
-- **ICP host tail** (2026-11-11, not attempted): `icp`'s post-loop `_apply_transform` launch and
-  the identity seed's upload (a native fill is ~3 us cheaper, §13.1) are each about 1-2 % of a
-  `sphere_small` call; folding the image into the kept fit's round would need the fit to write
-  the points every replayed round. Price before building.
 - **`ball_pivoting`'s late seeding waves** (2026-11-11): after the front dies, ~25 seeding waves
   of 90-150 us remain on `bunny` (~10 % of the call), each a few points a failure has released
   testing all 2 016 pairs of their neighbourhood and failing (63 steps of a rank a lane, nearly

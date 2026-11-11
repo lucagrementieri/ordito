@@ -1202,7 +1202,12 @@ _IDENTITY_MAT44_NP = np.eye(4, dtype=np.float32).reshape(1, 4, 4)
 
 
 def _identity_mat44(device: wp.DeviceLike) -> wp.array[wp.mat44]:
-    """Return a ``(1,)`` array holding the 4x4 identity transform."""
+    """
+    Return a ``(1,)`` array holding the 4x4 identity transform.
+
+    An upload, the cheapest way to make one ``wp.mat44`` (the decline beside
+    ``kernel_registration.fit_transform_and_accumulate_cost_block``).
+    """
     return _launch.array(_IDENTITY_MAT44_NP, dtype=wp.mat44, device=device)
 
 
