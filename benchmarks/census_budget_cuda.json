@@ -6156,8 +6156,9 @@
  },
  "benchmarks/test_reduce.py::test_mean_vec3[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },
@@ -6243,8 +6244,8 @@
  },
  "benchmarks/test_reduce.py::test_segment_mean[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 2,
+   "launch": 2,
+   "alloc": 1,
    "memset": 1,
    "d2h": 1
   }
@@ -6297,15 +6298,17 @@
  },
  "benchmarks/test_reduce.py::test_sum_vec3[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },
  "benchmarks/test_reduce.py::test_weighted_sum[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1
   }
  },

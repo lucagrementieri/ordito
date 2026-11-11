@@ -1348,6 +1348,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   0.92-0.95x a 25 us call) fits two more sites, not priced: `heat._pinned_system` and
   `ray.intersects_location` (about 1.7 us a call each). A rank-2 output loses (the reshape costs
   more than the allocation).
+- **`reduce.quantile`'s select path allocates twice** (2026-11-11): the state (`uint64`, a native
+  pattern fill) and the histogram plus ticket (`int32`, zeroed) are two allocations a call on the
+  CUDA select path (`bunny` rows: 2 allocations, 2 memsets). One carved buffer, the rank seeded by
+  the first pass, would save one (~6 us of ~60). Not priced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

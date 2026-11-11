@@ -5596,8 +5596,8 @@
  },
  "benchmarks/test_reduce.py::test_mean_vec3[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },
@@ -5681,8 +5681,8 @@
  },
  "benchmarks/test_reduce.py::test_segment_mean[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 3,
-   "alloc": 2,
+   "launch": 2,
+   "alloc": 1,
    "readback": 1
   }
  },
@@ -5728,15 +5728,15 @@
  },
  "benchmarks/test_reduce.py::test_sum_vec3[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },
  "benchmarks/test_reduce.py::test_weighted_sum[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },

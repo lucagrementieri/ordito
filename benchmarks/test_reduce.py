@@ -460,6 +460,11 @@ def test_scatter_mean(bench_case: BenchCase) -> None:
     ``scatter_sum``'s per-vertex corner sums, plus a count scatter and one division map.
 
     ``numpy.bincount`` with weights over ``bincount`` of the indices is the host reference.
+
+    The count keeps its own launch. Counting each term inside the scatter that sums it (an
+    ``atomic_add``, or ``peer_counted_add`` where the sum pools peers, in the group sum's pass 0)
+    saved the launch and lost where the device work shows (2026-11-11, CUDA, setting off, new/old:
+    0.93-0.99x from 5 k to 1 M terms, 1.12x at 14 M terms over 2.3 M groups).
     """
     if bench_case.kind == "numpy":
         values_np, vertices_np, _, _ = _corners_np(bench_case)

@@ -1449,6 +1449,7 @@ def _reduce_1d_tiled(
     term=None,
     term_dtype=wp.float32,
     tiles_per_block=TILES_PER_BLOCK_1D,
+    folded=False,
 ):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
@@ -1458,6 +1459,12 @@ def _reduce_1d_tiled(
     and, launched over its own output, the fold of those partials. A float ``atomic_add`` commits
     blocks in arrival order, so its total moves in the last bits from run to run on CUDA; stored
     partials folded by the same fixed tree give one answer on every run.
+
+    With ``folded=True`` the block's result goes through ``store_folded_total`` at stride 1: into a
+    one-slot ``out_result`` (``_launch.block_partials``' form with the deterministic setting off)
+    one ``atomic_add``, into ``blocks + 2`` slots a stored row whose last block adds every row into
+    slot 0. One launch either way, where the stored partials take a fold launch (and a buffer) per
+    factor of ``ITEMS_PER_BLOCK_1D``: the form ``reduce.sum_of_terms`` launches.
 
     The accumulator is seeded from the block's *first* chunk rather than from an identity, which
     keeps the kernel generic over ``wp.Scalar`` without the wrapper having to pass a per-dtype
@@ -1484,6 +1491,8 @@ def _reduce_1d_tiled(
     fold width: ``TILES_PER_BLOCK_1D`` but for a mapped sum built narrower (see ``term_sum_1d``).
     """
     element = array_term if term is None else term
+    value_dtype = dtype if term is None else term_dtype
+    is_last = last_ticket_vector if wp.types.type_is_vector(value_dtype) else last_ticket
 
     def _k(source: Any, out_result: Any) -> None:
         i, t = wp.tid()
@@ -1523,7 +1532,9 @@ def _reduce_1d_tiled(
                 for k in range(rest):
                     result = scalar(result, element(k, offset, source))
 
-        if t == 0:
+        if wp.static(folded):
+            store_folded_total(i, t, result, out_result, 0, 1, is_last)
+        elif t == 0:
             if wp.static(partials):
                 out_result[i] = result
             else:
@@ -1538,7 +1549,7 @@ def _reduce_1d_tiled(
     return wp.kernel(_k, name=name, module=term.module)
 
 
-def _weighted_sum_1d_tiled(name, dtype, partials=False):
+def _weighted_sum_1d_tiled(name, dtype, partials=False, folded=False):
     """
     Weighted 1-D sum ``sum_k values[k] * weights[k]``, in ``_reduce_1d_tiled``'s block shape.
 
@@ -1553,8 +1564,10 @@ def _weighted_sum_1d_tiled(name, dtype, partials=False):
     accumulator is seeded from the first weighted element for the same reason as above: neither a
     ``wp.float32(0.0)`` nor a ``wp.vec3(0.0)`` literal spells both instantiations.
 
-    ``partials=True`` stores each block's sum at ``out_sum[block]``, as in ``_reduce_1d_tiled``.
+    ``partials=True`` stores each block's sum at ``out_sum[block]``, and ``folded=True`` commits
+    it through ``store_folded_total``, as in ``_reduce_1d_tiled``.
     """
+    is_last = last_ticket_vector if wp.types.type_is_vector(dtype) else last_ticket
 
     def _k(
         values: wp.array[wp.Scalar], weights: wp.array[wp.float32], out_sum: wp.array[wp.Scalar]
@@ -1585,7 +1598,9 @@ def _weighted_sum_1d_tiled(name, dtype, partials=False):
                 for k in range(rest):
                     result = result + values[offset + k] * weights[offset + k]
 
-        if t == 0:
+        if wp.static(folded):
+            store_folded_total(i, t, result, out_sum, 0, 1, is_last)
+        elif t == 0:
             if wp.static(partials):
                 out_sum[i] = result
             else:
@@ -1897,8 +1912,9 @@ SUM1D_TILED = KernelTable(
         for d in _GLOBAL_DTYPES
     },
 )
-# The deterministic float sums' stages (see ``_reduce_1d_tiled``). Integer sums are exact in any
-# order and keep the one-launch atomic form.
+# Stored block partials (see ``_reduce_1d_tiled``), launched over its own output as a fold stage
+# by a caller whose first stage stores them (``linalg``'s multigrid power step). The library's own
+# float sums take ``SUM1D_FOLDED`` below; integer sums are exact in any order and keep the atomic.
 SUM1D_PARTIALS = KernelTable(
     "sum1d_partials",
     {
@@ -1908,26 +1924,42 @@ SUM1D_PARTIALS = KernelTable(
 )
 
 
+# The one-launch float sums ``reduce.sum`` takes under the deterministic setting and
+# ``reduce.sum_of_terms`` always: the ``folded`` commit, whose buffer picks the mode. Against the
+# stored partials and their fold launch (2026-11-11, CUDA, new/old): setting off, the vector and
+# weighted sums 0.76-0.92x from 5 k to 14 M items (they were fixed-order in both modes); setting
+# on, 0.87-0.98x from 100 k to 4 M, but the scalar ``reduce.sum`` 1.17-1.21x at 5 k-100 k, where
+# the zeroed buffer and the ticket chain sit on the device path just before the readback (5 us
+# against 29). CPU 0.62-0.98x, par past 1 M.
+SUM1D_FOLDED = KernelTable(
+    "sum1d_folded",
+    {
+        d: _reduce_1d_tiled(_tile_sum, None, wp.add, f"sum1d_folded_{d.__name__}", d, folded=True)
+        for d in (wp.float32, wp.float64)
+    },
+)
+
+
 class TermSum(NamedTuple):
     """
-    The two first stages of a ``dtype`` block sum, the pair ``reduce.sum_of_terms`` launches.
+    The ``dtype`` block sum ``reduce.sum_of_terms`` launches.
 
-    ``partials`` stores one sum per block, folded after by ``SUM1D_PARTIALS`` (the fixed-order
-    tree; ``sum_vec2_1d_partials`` for a ``wp.vec2``); ``atomic`` adds each block's sum into
-    slot 0, the form taken when ``ordito.config`` turns determinism off, or ``None`` where the sum
-    takes the fixed order either way (the weighted sum, as ``reduce.weighted_sum`` does). Each
-    kernel takes its inputs followed by its output. ``dtype`` is ``float32`` but for a
-    ``term_sum_1d`` built with another.
+    ``kernel`` commits each block's sum through ``store_folded_total``: into a one-slot buffer by
+    ``atomic_add`` (``ordito.config``'s determinism off), into a ``_launch.block_partials`` buffer
+    as a stored row the last block folds in a fixed tree. ``partials`` stores each block's sum in
+    its own slot instead, for a launch of more blocks than one last block should fold
+    (``FOLDED_ROWS_UP_TO``), whose rows a ``FOLD_ROWS`` kernel then adds. Each takes its inputs
+    followed by its output. ``dtype`` is ``float32`` but for a ``term_sum_1d`` built with another.
     """
 
+    kernel: wp.Kernel
     partials: wp.Kernel
-    atomic: wp.Kernel | None
     dtype: type = wp.float32
     tiles_per_block: int = TILES_PER_BLOCK_1D
-    """Tiles a block of the first stage folds; ``blocks_1d`` assumes ``TILES_PER_BLOCK_1D``."""
+    """Tiles a block folds; ``blocks_1d`` assumes ``TILES_PER_BLOCK_1D``."""
 
     def blocks(self, n: int) -> int:
-        """Return the first stage's block count over ``n`` terms."""
+        """Return the block count over ``n`` terms."""
         return -(-n // (self.tiles_per_block * TILE_1D))
 
 
@@ -1941,17 +1973,29 @@ def term_sum_1d(
     """
     Build the [`TermSum`][ordito.kernels.reduce.TermSum] of ``term(local, offset, terms)``.
 
-    The fused map and reduction: ``reduce.sum``'s two ``float32`` kernels in their mapped form (see
+    The fused map and reduction: ``reduce.sum``'s ``float32`` kernel in its mapped form (see
     [`_reduce_1d_tiled`][ordito.kernels.reduce._reduce_1d_tiled]), so the total is bit for bit
-    ``reduce.sum`` of the materialized terms in either determinism setting, with no term buffer.
-    ``terms_type`` is the ``@wp.struct`` the kernels take, holding the item count ``n`` and the
-    arrays ``term`` reads; ``name`` must be unique, and the two kernels are named ``name`` and
-    ``name + "_partials"``. ``dtype`` is what ``term`` returns: ``float32``, or ``wp.vec2`` for two
-    sums that share one pass over their items (each component folds as its own ``float32`` sum).
-    ``tiles_per_block`` narrows the fold for a term whose own latency, not the items' count, bounds
-    a lane's walk: the total is then that width's block tree, no longer ``reduce.sum``'s bits.
+    ``reduce.sum_of_terms`` of the materialized terms in either determinism setting, with no term
+    buffer. ``terms_type`` is the ``@wp.struct`` the kernels take, holding the item count ``n`` and
+    the arrays ``term`` reads; ``name`` must be unique, and the two kernels are named ``name`` and
+    ``name + "_partials"``. ``dtype`` is what ``term`` returns: ``float32``, or ``wp.vec2`` for
+    two sums that share one pass over their items (each component folds as its own ``float32``
+    sum). ``tiles_per_block`` narrows the fold for a term whose own
+    latency, not the items' count, bounds a lane's walk: the total is then that width's block
+    tree, no longer the standard width's bits.
     """
     return TermSum(
+        kernel=_reduce_1d_tiled(
+            _tile_sum,
+            None,
+            wp.add,
+            name,
+            terms_type,
+            term=term,
+            term_dtype=dtype,
+            tiles_per_block=tiles_per_block,
+            folded=True,
+        ),
         partials=_reduce_1d_tiled(
             _tile_sum,
             None,
@@ -1962,16 +2006,6 @@ def term_sum_1d(
             term,
             dtype,
             tiles_per_block,
-        ),
-        atomic=_reduce_1d_tiled(
-            _tile_sum,
-            wp.atomic_add,
-            wp.add,
-            name,
-            terms_type,
-            term=term,
-            term_dtype=dtype,
-            tiles_per_block=tiles_per_block,
         ),
         dtype=dtype,
         tiles_per_block=tiles_per_block,
@@ -2355,29 +2389,65 @@ MINMAX_2D_COLS_SERIAL = KernelTable(
 # same work, and it wins at every size.
 # ---------------------------------------------------------------------------
 
-sum_vec3_1d_partials = _reduce_1d_tiled(
-    _tile_sum, None, wp.add, "sum_vec3_1d_partials", dtype=wp.vec3, partials=True
+sum_vec2_1d_folded = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec2_1d_folded", dtype=wp.vec2, folded=True
 )
-
-sum_vec4_1d_partials = _reduce_1d_tiled(
-    _tile_sum, None, wp.add, "sum_vec4_1d_partials", dtype=wp.vec4, partials=True
-)
-
-# The fold of a ``wp.vec2`` ``term_sum_1d``'s block partials: two sums formed in one pass.
 sum_vec2_1d_partials = _reduce_1d_tiled(
     _tile_sum, None, wp.add, "sum_vec2_1d_partials", dtype=wp.vec2, partials=True
 )
 
+sum_vec3_1d_folded = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec3_1d_folded", dtype=wp.vec3, folded=True
+)
+sum_vec3_1d_partials = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec3_1d_partials", dtype=wp.vec3, partials=True
+)
+
+sum_vec4_1d_folded = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec4_1d_folded", dtype=wp.vec4, folded=True
+)
+sum_vec4_1d_partials = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec4_1d_partials", dtype=wp.vec4, partials=True
+)
+
+weighted_sum1d_folded = _weighted_sum_1d_tiled("weighted_sum1d_folded", wp.float32, folded=True)
 weighted_sum1d_partials = _weighted_sum_1d_tiled("weighted_sum1d_partials", wp.float32, True)
+weighted_sum_vec3_1d_folded = _weighted_sum_1d_tiled(
+    "weighted_sum_vec3_1d_folded", wp.vec3, folded=True
+)
 weighted_sum_vec3_1d_partials = _weighted_sum_1d_tiled(
     "weighted_sum_vec3_1d_partials", wp.vec3, True
 )
 
+# The most blocks whose rows one last block folds (``reduce.sum_of_terms`` with the deterministic
+# setting on). Past it the single ticket counter and the last block's walk over the rows cost more
+# than a second launch: stored partials, then their rows summed by ``FOLD_ROWS[dtype]``
+# (2026-11-11, CUDA, new/old against the fold launches: 2 M items, 1 954 blocks, 0.83-0.92x; 8 M
+# 0.97-1.03x; 14 M 1.11-1.14x for the scalar and ``vec3`` sums, a ``vec3`` ticket being three
+# float atomics a block on one address).
+FOLDED_ROWS_UP_TO = 4096
 
-# ``reduce.sum``'s own ``float32`` pair, and ``reduce.weighted_sum``'s fixed-order stage, as
-# ``reduce.sum_of_terms`` takes them: the input is the array (twice for the weighted sum).
-ARRAY_SUM = TermSum(partials=SUM1D_PARTIALS[wp.float32], atomic=SUM1D_TILED[wp.float32])
-WEIGHTED_SUM = TermSum(partials=weighted_sum1d_partials, atomic=None)
+# ``reduce.sum``'s own sums and ``reduce.weighted_sum``'s, as ``reduce.sum_of_terms`` takes them:
+# the input is the array (twice for the weighted sum).
+ARRAY_SUMS = {
+    d: TermSum(kernel=SUM1D_FOLDED[d], partials=SUM1D_PARTIALS[d], dtype=d)
+    for d in (wp.float32, wp.float64)
+}
+ARRAY_SUM = ARRAY_SUMS[wp.float32]
+VECTOR_SUMS = {
+    wp.vec3: TermSum(kernel=sum_vec3_1d_folded, partials=sum_vec3_1d_partials, dtype=wp.vec3),
+    wp.vec4: TermSum(kernel=sum_vec4_1d_folded, partials=sum_vec4_1d_partials, dtype=wp.vec4),
+}
+WEIGHTED_SUM = TermSum(kernel=weighted_sum1d_folded, partials=weighted_sum1d_partials)
+WEIGHTED_SUM_VEC3 = TermSum(
+    kernel=weighted_sum_vec3_1d_folded, partials=weighted_sum_vec3_1d_partials, dtype=wp.vec3
+)
+# The sum of a sum's stored partials, by its dtype: the array sum over the rows.
+FOLD_ROWS = {
+    **ARRAY_SUMS,
+    **VECTOR_SUMS,
+    wp.vec2: TermSum(kernel=sum_vec2_1d_folded, partials=sum_vec2_1d_partials, dtype=wp.vec2),
+}
 
 
 @wp.func

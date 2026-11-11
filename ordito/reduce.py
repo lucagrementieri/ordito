@@ -354,7 +354,7 @@ def sum(
     print(od.reduce.sum(points))  # [1.0, 2.0, 0.5]
     ```
     """
-    if array.dtype in _VECTOR_SUM_PARTIALS:
+    if array.dtype in kernel_reduce.VECTOR_SUMS:
         name = array.dtype.__name__
         if axis is not None:
             raise ValueError(f"sum over a {name} array supports only axis=None.")
@@ -364,8 +364,10 @@ def sum(
         if n == 0:
             raise ValueError("sum requires a non-empty array.")
         dtype = array.dtype
-        total = _sum_in_fixed_order(_VECTOR_SUM_PARTIALS[dtype], [array], n, dtype, array.device)
-        return cast(wp.vec3 | wp.vec4, dtype(*read_scalar(total, 0)))
+        total = _sum_of_terms_buffer(
+            kernel_reduce.VECTOR_SUMS[dtype], [array], n, device=array.device
+        )
+        return dtype(*read_scalar(total, 0))
     if array.dtype == wp.bool:
         mask = cast(wp.array[wp.bool], array)
         if axis is None:
@@ -531,15 +533,9 @@ def weighted_sum(
         raise ValueError("weighted_sum requires values and weights of equal length.")
 
     if values.dtype == wp.vec3:
-        total = _sum_in_fixed_order(
-            kernel_reduce.weighted_sum_vec3_1d_partials,
-            [values, weights],
-            n_values,
-            wp.vec3,
-            values.device,
-        )
+        total = _sum_of_terms_buffer(kernel_reduce.WEIGHTED_SUM_VEC3, [values, weights], n_values)
         return wp.vec3(*read_scalar(total, 0))
-    total = sum_of_terms(kernel_reduce.WEIGHTED_SUM, [values, weights], n_values)
+    total = _sum_of_terms_buffer(kernel_reduce.WEIGHTED_SUM, [values, weights], n_values)
     return float(read_scalar(total, 0))
 
 
@@ -554,16 +550,15 @@ def sum_of_terms(
     """
     Total of ``n`` terms a block-sum kernel pair forms, left on the device.
 
-    The device-side form of [`sum`][ordito.reduce.sum]: the same blocks, fold tree and determinism
-    rule, but the first stage is any ``ordito.kernels.reduce.TermSum`` -- ``sum``'s own
-    kernels over an array (``kernel_reduce.ARRAY_SUM``), the weighted sum's
-    (``kernel_reduce.WEIGHTED_SUM``), or a fused term built by
-    ``ordito.kernels.reduce.term_sum_1d`` that never stores its terms -- and the total
+    The device-side form of [`sum`][ordito.reduce.sum]: the same blocks and determinism rule, but
+    the kernel is any ``ordito.kernels.reduce.TermSum`` -- ``sum``'s own over an array
+    (``kernel_reduce.ARRAY_SUM``), the weighted sum's (``kernel_reduce.WEIGHTED_SUM``), or a fused
+    term built by ``ordito.kernels.reduce.term_sum_1d`` that never stores its terms -- and the total
     stays in a one-slot device array instead of being read back. The terms are ``float32``, or the
-    ``dtype`` the pair was built with (a ``wp.vec2`` of two sums formed in one pass). Under
-    [`is_deterministic`][ordito.config.is_deterministic] (or when ``kernels.atomic`` is ``None``)
-    every block stores its sum and the partials fold in a fixed tree; otherwise every block adds
-    its sum into the total.
+    ``dtype`` the kernel was built with (a ``wp.vec2`` of two sums formed in one pass). Under
+    [`is_deterministic`][ordito.config.is_deterministic] every block stores its sum and the last
+    block to finish adds them in a fixed tree (a second launch adds them past a few million
+    terms); otherwise every block adds its sum into the total, in one launch.
 
     Parameters
     ----------
@@ -575,8 +570,7 @@ def sum_of_terms(
         Number of terms; sets the block count. Must be positive.
     out
         ``(1,)`` buffer to receive the total, such as one slot of a larger buffer that is read
-        back once. When the atomic form runs it adds into ``out``, which must then hold zero.
-        ``None`` allocates one.
+        back once. It must hold zero: the sum may be added into it. ``None`` allocates one.
     device
         Device to launch on. ``None`` takes ``out``'s, else that of ``inputs[0]``, which must then
         be an array (a ``@wp.struct`` input carries no device).
@@ -606,22 +600,8 @@ def sum_of_terms(
     print(total.numpy().tolist())  # [14.0]
     ```
     """
-    if device is None:
-        device = out.device if out is not None else cast(wp.array[Any], inputs[0]).device
-    if kernels.atomic is None or is_deterministic():
-        return _sum_in_fixed_order(
-            kernels.partials, inputs, n, kernels.dtype, device, out=out, blocks=kernels.blocks(n)
-        )
-    if out is None:
-        out = _launch.zeros(1, dtype=kernels.dtype, device=device)
-    _launch.launch_tiled(
-        kernels.atomic,
-        dim=[kernels.blocks(n)],
-        inputs=[*inputs, out],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    return out
+    total = _sum_of_terms_buffer(kernels, inputs, n, out=out, device=device)
+    return total if total.size == 1 else _launch.view(total, 0, 1)
 
 
 def scatter_sum(
@@ -859,11 +839,17 @@ def segment_mean(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.arr
     require_same_device(values=values, offsets=offsets)
     sums = _segment_sum(values, offsets, "segment_mean")
     n_segments = sums.size
-    counts = _launch.empty(n_segments, dtype=wp.int32, device=values.device)
     if n_segments > 0:
+        # Each segment's length read off its two offsets inside the division.
+        mean_of_segment = (
+            kernel_scatter.scalar_mean_of_segment
+            if sums.dtype in (wp.float32, wp.float64)
+            else kernel_scatter.vector_mean_of_segment
+        )
         ends = _launch.view(offsets, 1, n_segments + 1)
-        wp.map(wp.sub, ends, _launch.view(offsets, 0, n_segments), out=counts)
-    return _divided_by_counts(sums, counts)
+        starts = _launch.view(offsets, 0, n_segments)
+        wp.map(mean_of_segment, sums, ends, starts, out=sums)
+    return sums
 
 
 def scatter_min(
@@ -1569,17 +1555,6 @@ class _BoolReduceSpec(NamedTuple):
     init_global: int
 
 
-# The vector dtypes ``sum`` folds componentwise, each with its fixed-order partials kernel.
-_VECTOR_SUM_PARTIALS: dict[type, odt.Kernel] = {
-    wp.vec3: kernel_reduce.sum_vec3_1d_partials,
-    wp.vec4: kernel_reduce.sum_vec4_1d_partials,
-}
-# ``_sum_in_fixed_order``'s folds: the vector sums', and a ``wp.vec2`` term sum's.
-_FOLD_PARTIALS: dict[type, odt.Kernel] = {
-    **_VECTOR_SUM_PARTIALS,
-    wp.vec2: kernel_reduce.sum_vec2_1d_partials,
-}
-
 _SCALAR_REDUCE: dict[str, _ScalarReduceSpec] = {
     "min": _ScalarReduceSpec(
         name="min",
@@ -1664,44 +1639,62 @@ _BOOL_REDUCE: dict[str, _BoolReduceSpec] = {
 # one dispatch table in the middle of the public surface.
 
 
-def _sum_in_fixed_order(
-    first: odt.Kernel,
+def _sum_of_terms_buffer(
+    kernels: kernel_reduce.TermSum,
     inputs: Sequence[object],
     n: int,
-    dtype: type,
-    device: wp.DeviceLike,
     *,
     out: wp.array[Any] | None = None,
-    blocks: int | None = None,
+    device: wp.DeviceLike = None,
 ) -> wp.array[Any]:
     """
-    Sum a float reduction in a fixed order, into a ``(1,)`` device array holding the total.
+    [`sum_of_terms`][ordito.reduce.sum_of_terms]'s body: a buffer whose slot 0 holds the total.
 
-    ``first`` is a ``partials=True`` kernel storing each block's sum in its own slot; while more
-    than one partial remains, ``SUM1D_PARTIALS`` (or its ``wp.vec3`` sibling) folds them a block at
-    a time. Every stage is a fixed tree, where one ``atomic_add`` per block would add the blocks in
-    arrival order and move the total's last bits between runs on CUDA. One launch up to
-    ``ITEMS_PER_BLOCK_1D`` elements, one more per factor of it after; integer sums keep the atomic.
-    ``inputs`` holds what ``first`` takes before its output. The last stage writes ``out`` when it
-    is given. ``blocks`` is ``first``'s block count when it folds a width of its own
-    (``TermSum.blocks``).
+    ``out`` when given, else the commit's own buffer, which a reproducible fold leaves longer than
+    one slot: a caller reading slot 0 back skips the view that
+    [`sum_of_terms`][ordito.reduce.sum_of_terms] cuts.
     """
-    fold = _FOLD_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
-    kernel = first
-    if blocks is None:
-        blocks = kernel_reduce.blocks_1d(n)
-    while True:
-        if blocks == 1 and out is not None:
-            partials = out
-        else:
-            partials = _launch.empty(blocks, dtype=dtype, device=device)
+    if device is None:
+        device = out.device if out is not None else cast(wp.array[Any], inputs[0]).device
+    blocks = kernels.blocks(n)
+    if blocks > kernel_reduce.FOLDED_ROWS_UP_TO and is_deterministic():
+        # More rows than one last block should fold: stored, then added by a launch of their own.
+        rows = _launch.empty(blocks, dtype=kernels.dtype, device=device)
         _launch.launch_tiled(
-            kernel, dim=[blocks], inputs=[*inputs, partials], block_dim=TILE_1D, device=device
+            kernels.partials, dim=[blocks], inputs=[*inputs, rows], block_dim=TILE_1D, device=device
         )
-        if blocks == 1:
-            return partials
-        kernel, inputs = fold, [partials]
+        inputs = [rows]
+        kernels = kernel_reduce.FOLD_ROWS[kernels.dtype]
         blocks = kernel_reduce.blocks_1d(blocks)
+    if blocks == 1:
+        # One block stores its sum: no fold, and no zeroed slot to add into.
+        if out is None:
+            out = _launch.empty(1, dtype=kernels.dtype, device=device)
+        _launch.launch_tiled(
+            kernels.partials, dim=[1], inputs=[*inputs, out], block_dim=TILE_1D, device=device
+        )
+        return out
+    # The buffer picks the commit: a one-slot buffer takes each block's ``atomic_add`` (the setting
+    # off), a ``block_partials`` one a stored row a block and the last block's fixed-order fold.
+    if is_deterministic():
+        partials, _ = _launch.block_partials(blocks, 1, kernels.dtype, device)
+        _launch.launch_tiled(
+            kernels.kernel,
+            dim=[blocks],
+            inputs=[*inputs, partials],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        if out is None:
+            return partials
+        _launch.copy(out, partials, count=1)
+        return out
+    if out is None:
+        out = _launch.zeros(1, dtype=kernels.dtype, device=device)
+    _launch.launch_tiled(
+        kernels.kernel, dim=[blocks], inputs=[*inputs, out], block_dim=TILE_1D, device=device
+    )
+    return out
 
 
 def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
@@ -1752,9 +1745,7 @@ def _launch_global_scalar_tiled(
             # A strided view has only the rank-2 kernel's arrival-order commit, so the
             # reproducible sum takes a contiguous copy and the fixed-order 1-D sum.
             flat = cast(odt.Array1dScalar, _launch.clone(array).flatten())
-        total = _sum_in_fixed_order(
-            kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype, flat.device
-        )
+        total = _sum_of_terms_buffer(kernel_reduce.ARRAY_SUMS[array.dtype], [flat], flat.size)
         return float(read_scalar(total, 0))
     if spec.global_output_slots == 2:
         # Both seeds in one native fill of their packed bytes: 1.4x cheaper on CUDA than uploading

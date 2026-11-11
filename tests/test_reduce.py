@@ -539,7 +539,7 @@ def test_weighted_sum_matches_pytorch3d(device: str) -> None:
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
-@pytest.mark.parametrize("n", [1, 100, 1_024, 5_000, 1_100_000])
+@pytest.mark.parametrize("n", [1, 100, 1_024, 5_000, 1_100_000, 5_000_000])
 def test_sum_of_terms_is_the_sum(device: str, n: int, deterministic: bool) -> None:
     """
     Ordito against ordito: ``sum_of_terms`` totals are ``sum`` and ``weighted_sum``, bit for bit.
@@ -547,9 +547,11 @@ def test_sum_of_terms_is_the_sum(device: str, n: int, deterministic: bool) -> No
     ``sum`` has the NumPy oracle (``test_float_sums_are_bit_identical_across_calls``); this pins
     the device-side entry to it, for ``sum``'s own kernels, the weighted ones and a fused term
     (``edge_length_loss``'s ``(x - 0)^2``, against ``sum`` of the materialized squares), each
-    written into one slot of a shared buffer whose other slot it must not touch. The sizes span
-    one block, one fold stage and two. The atomic form (determinism off) adds blocks in arrival
-    order on CUDA, so there the totals agree to rounding instead.
+    written into one zeroed slot of a shared buffer whose other slot it must not touch. The sizes
+    span one block, a few, a last block folding over a thousand rows, and more blocks than one
+    last block folds (``FOLDED_ROWS_UP_TO``: stored partials, then their fold). The atomic form
+    (determinism off) adds blocks in arrival order on CUDA, so there the totals agree to rounding
+    instead.
     """
     rng = np.random.default_rng(11)
     values_np = rng.random(n, dtype=np.float32)
@@ -562,10 +564,10 @@ def test_sum_of_terms_is_the_sum(device: str, n: int, deterministic: bool) -> No
     terms.target = 0.0
     squares_wp = wp.array(values_np * values_np, dtype=wp.float32, device=device)
 
-    # The atomic form adds into its slot, so that buffer starts at zero; the fourth slot is never
-    # written and keeps its initial value.
-    initial = -1.0 if deterministic else 0.0
-    totals_wp = wp.full(4, initial, dtype=wp.float32, device=device)
+    # A total may be added into its slot, so the three written slots start at zero; the fourth is
+    # never written and keeps its sentinel.
+    initial = -1.0
+    totals_wp = wp.array([0.0, 0.0, 0.0, initial], dtype=wp.float32, device=device)
     od_reduce.sum_of_terms(
         kernel_reduce.ARRAY_SUM, [values_wp], n, out=odt.as_dense(totals_wp[0:1])
     )

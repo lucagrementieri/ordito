@@ -393,6 +393,19 @@ def vector_mean_of_sum(total: Any, count: wp.int32):
 
 
 @wp.func
+def scalar_mean_of_segment(total: wp.Float, end: wp.int32, start: wp.int32):
+    # ``reduce.segment_mean``'s division: ``scalar_mean_of_sum`` by the segment's length, read off
+    # its two offsets, so no length table is formed.
+    return scalar_mean_of_sum(total, end - start)
+
+
+@wp.func
+def vector_mean_of_segment(total: Any, end: wp.int32, start: wp.int32):
+    # ``scalar_mean_of_segment`` for a vector, componentwise.
+    return vector_mean_of_sum(total, end - start)
+
+
+@wp.func
 def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) -> None:
     # Component-wise atomic accumulation of a wp.vec3 into row ``row`` of a (n, 3) buffer.
     #
@@ -1366,6 +1379,14 @@ def _declare_map_kernels() -> None:
         [
             *((scalar_mean_of_sum, (dense(d), dense(wp.int32)), d) for d in _GROUP_SUM_SCALARS),
             *((vector_mean_of_sum, (dense(d), dense(wp.int32)), d) for d in _GROUP_SUM_VECTORS),
+            *(
+                (scalar_mean_of_segment, (dense(d), dense(wp.int32), dense(wp.int32)), d)
+                for d in _GROUP_SUM_SCALARS
+            ),
+            *(
+                (vector_mean_of_segment, (dense(d), dense(wp.int32), dense(wp.int32)), d)
+                for d in _GROUP_SUM_VECTORS
+            ),
         ]
     )
 
