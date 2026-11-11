@@ -136,6 +136,10 @@ def _claim_pixel(
 ) -> None:
     """Bid face ``f`` for pixel ``(row, col)`` when its pixel-space triangle covers the centre."""
     bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
+    # A bare ``wp.atomic_min``, its result unread, is issued and not waited on. Reading the owner
+    # first to skip a beaten bid (``kernels/array.atomic_min_unless_below``) waits on that load at
+    # every covered pixel: 1.1-1.25x the pass on ``sphere_small`` to ``happy_buddha``, 1.7-1.8x on
+    # ``lucy`` at 2048-4096, whose projection stacks dozens of faces a pixel.
     if _covered(bary):
         wp.atomic_min(out_owner, row, col, f)
 
@@ -345,7 +349,10 @@ def sample_texture(
     Sample the texture at each vertex UV (edge-clamped), nearest or bilinear per ``mode``.
 
     ``out_flag[0]`` is set to 1 where a finite UV lies outside ``[0, 1]``, for the wrapper to raise
-    on: the range check rides the sampling launch.
+    on: the range check rides the sampling launch. Its own one-slot allocation stays: carved from
+    the tail of the output (as ``sample_class_image``'s is), the ``(n_vertices, n_channels)``
+    reshape of the prefix costs more host time than the allocation it saves (12.5 against
+    10.5-11.3 us for the pair).
     """
     v = wp.int32(wp.tid())
     flag_uv_out_of_range(uv[v], out_flag)
