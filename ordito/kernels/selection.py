@@ -699,8 +699,10 @@ def prehook_mesh_regions(
 def compress_mesh_regions(
     mesh_parents: wp.array[wp.int32], region_parents: wp.array[wp.int32]
 ) -> None:
-    # Both forests' ``ecl_compress``, one launch over the faces rather than one a forest: on
-    # lucy's 28 M faces the two launches cost 1.6-1.7 ms each.
+    # Both forests' ``ecl_compress``, one launch over the faces rather than one a forest: the
+    # whole fill 0.92x on lucy's 28 M faces. Compressing from 2**19 faces instead of
+    # ``ECL_COMPRESS_FROM`` (2026-11-11): the fill 0.96x on dragon and happy_buddha but 1.07x on
+    # bunny, and ``faces_left_of_contour`` at par; not worth a gate apart from the shared one.
     f = wp.int32(wp.tid())
     ecl_compress_node(mesh_parents, f)
     ecl_compress_node(region_parents, f)
@@ -961,8 +963,8 @@ def hook_dual(
     twins: wp.array[wp.int32], open_halfedges: wp.array[wp.int32], parents: wp.array[wp.int32]
 ) -> None:
     # The hook over the same open dual edges, after ``seed_and_prehook_dual`` has finished, read
-    # off its bits. Forming them again here (one or two contour searches a halfedge) was 101 us of
-    # dragon's call.
+    # off its bits. Forming them again here (one or two contour searches a halfedge) cost the
+    # hook 1.12x on dragon.
     h = wp.int32(wp.tid())
     f = h // 3
     if (open_halfedges[f] >> (h - wp.int32(3) * f)) & wp.int32(1) != 0:
@@ -1007,7 +1009,7 @@ def loops_are_input_rims(
     # deletion opened has every edge in the deleted table, so each lane stops at its first search;
     # an input rim has none, and its whole length of searches is the cost. One thread a loop
     # walked that alone: dragon's 142 input rims (up to 590 edges, a 19-step search each into
-    # 520 k keys) held the launch at 180 us.
+    # 520 k keys) made the launch 28 % of the call's device time.
     ell, lane = wp.tid()
     start = loop_offsets[ell]
     size = loop_offsets[ell + 1] - start
