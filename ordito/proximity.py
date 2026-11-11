@@ -870,8 +870,9 @@ def signed_distance_on_mesh(
 
     !!! note "Choosing a `sign_mode`"
 
-        ``"parity"`` (default) uses ``wp.mesh_query_point_sign_parity``: it casts ``n_sample``
-        perturbed rays and votes on the crossing parity. Exact on a watertight mesh, cheap, but
+        ``"parity"`` (default) takes the vote of ``wp.mesh_query_point_sign_parity``: it casts
+        ``n_sample`` perturbed rays and votes on the crossing parity, stopping once the majority
+        is decided. Exact on a watertight mesh, cheap, but
         it has no principled answer on an open or holed surface — a ray that escapes through a
         hole flips the verdict.
 

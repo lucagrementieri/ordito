@@ -1451,6 +1451,41 @@ def signed_distance_from_query(
     return sign * dist
 
 
+# Warp's ``mesh_query_inside_parity`` (the vote ``mesh_query_point_sign_parity`` casts after its
+# closest-point search), returning as soon as the majority is decided. Its directions are the same
+# expression over the same ``rand_init(42)`` stream, so every ray it casts is Warp's; the rays it
+# skips could not change the vote. Native because the three ``randf`` draws of a direction are one
+# C++ expression, whose argument order a Python spelling would not reproduce.
+_INSIDE_PARITY_VOTE = """
+uint32_t rand_state = wp::rand_init(42);
+int vote = 0;
+for (int i = 0; i < n_sample; ++i) {
+    wp::vec3 dir;
+    do {
+        dir = wp::vec3(1.f, 1.f, 1.f)
+            + wp::vec3(
+                  wp::randf(rand_state, -perturbation_scale, perturbation_scale),
+                  wp::randf(rand_state, -perturbation_scale, perturbation_scale),
+                  wp::randf(rand_state, -perturbation_scale, perturbation_scale)
+              );
+    } while (wp::length_sq(dir) < 1e-8f);
+    if (wp::mesh_query_ray_count_intersections(mesh_id, point, dir) % 2)
+        vote++;
+    if (vote * 2 >= n_sample)
+        return true;
+    if ((vote + n_sample - 1 - i) * 2 < n_sample)
+        return false;
+}
+return vote * 2 >= n_sample;
+"""
+
+
+@wp.func_native(_INSIDE_PARITY_VOTE)
+def inside_parity_vote(
+    mesh_id: wp.uint64, point: wp.vec3, n_sample: wp.int32, perturbation_scale: wp.float32
+) -> wp.bool: ...
+
+
 @wp.func
 def signed_distance_parity(
     mesh_id: wp.uint64,
@@ -1459,12 +1494,20 @@ def signed_distance_parity(
     n_sample: wp.int32,
     perturbation_scale: wp.float32,
 ) -> wp.float32:
-    # The ray-parity head: one query and the shared tail. Read by the point kernel and the lattice
-    # kernel, which differ only in where ``p`` comes from.
-    query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
-    return signed_distance_from_query(
-        mesh_id, p, query.result, query.face, query.u, query.v, query.sign, max_dist
+    # The ray-parity head: the shared tail over an unsigned query, then the vote where the tail
+    # keeps a sign (a hit outside the merge band). Read by the point kernel and the lattice kernel,
+    # which differ only in where ``p`` comes from. ``mesh_query_point_sign_parity`` searches the
+    # closest face exactly as ``mesh_query_point_no_sign`` does and then votes on every hit; the
+    # vote decides nothing on a miss or inside the band, and stops once its majority is decided.
+    query = wp.mesh_query_point_no_sign(mesh_id, p, max_dist)
+    distance = signed_distance_from_query(
+        mesh_id, p, query.result, query.face, query.u, query.v, wp.float32(1.0), max_dist
     )
+    if query.result:
+        if distance > TOLERANCE_MERGE_CONSTANT:
+            if inside_parity_vote(mesh_id, p, n_sample, perturbation_scale):
+                return -distance
+    return distance
 
 
 @wp.kernel
@@ -2291,41 +2334,6 @@ def box_diagonal_d(corners: wp.array[wp.float32], box: wp.int32) -> wp.float64:
         extent = wp.float64(-corners[base + 3 + axis]) - wp.float64(corners[base + axis])
         total += extent * extent
     return wp.sqrt(total)
-
-
-# Warp's ``mesh_query_inside_parity`` (the vote ``mesh_query_point_sign_parity`` casts after its
-# closest-point search), returning as soon as the majority is decided. Its directions are the same
-# expression over the same ``rand_init(42)`` stream, so every ray it casts is Warp's; the rays it
-# skips could not change the vote. Native because the three ``randf`` draws of a direction are one
-# C++ expression, whose argument order a Python spelling would not reproduce.
-_INSIDE_PARITY_VOTE = """
-uint32_t rand_state = wp::rand_init(42);
-int vote = 0;
-for (int i = 0; i < n_sample; ++i) {
-    wp::vec3 dir;
-    do {
-        dir = wp::vec3(1.f, 1.f, 1.f)
-            + wp::vec3(
-                  wp::randf(rand_state, -perturbation_scale, perturbation_scale),
-                  wp::randf(rand_state, -perturbation_scale, perturbation_scale),
-                  wp::randf(rand_state, -perturbation_scale, perturbation_scale)
-              );
-    } while (wp::length_sq(dir) < 1e-8f);
-    if (wp::mesh_query_ray_count_intersections(mesh_id, point, dir) % 2)
-        vote++;
-    if (vote * 2 >= n_sample)
-        return true;
-    if ((vote + n_sample - 1 - i) * 2 < n_sample)
-        return false;
-}
-return vote * 2 >= n_sample;
-"""
-
-
-@wp.func_native(_INSIDE_PARITY_VOTE)
-def inside_parity_vote(
-    mesh_id: wp.uint64, point: wp.vec3, n_sample: wp.int32, perturbation_scale: wp.float32
-) -> wp.bool: ...
 
 
 @wp.kernel
