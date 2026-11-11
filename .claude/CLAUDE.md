@@ -1247,12 +1247,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
   start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
   another subtree), so what is open is a shorter chain for the same walk.
-- **Ray casts and the parity sign, after the `ray` sweep** (2026-11-11): `signed_distance_parity`
-  (`kernels/proximity`) can take the split `contains_points` took (a `mesh_query_point_no_sign`
-  search, whose pruning and sliver skip match the parity query's, then `inside_parity_vote` only
-  outside the merge band), byte-identical by construction, saving up to two of five vote rays a
-  point; not priced (another session was reworking `signed_distance_on_mesh`). `visibility`'s
-  along-normal casts are the ray shape a Hilbert order of origins pays for (§14); not priced.
+- **`visibility`'s along-normal casts in a Hilbert order of origins** (2026-11-11): rays leaving
+  the surface are the shape that order pays for (§14, 0.46-0.87x from 2**18 rays on CUDA); those
+  kernels know their origins sit on the surface, so they need no syncing shape test. Not priced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
