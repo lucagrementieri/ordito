@@ -41,7 +41,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device
+from ordito._common import read_scalar, require_same_device, search_order
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility
@@ -614,6 +614,7 @@ def thickness(
                 not exterior,
                 wp.float32(math.inf),
                 wp.float32(TOLERANCE_PLANAR),
+                search_order(points),
                 out_thickness,
             ],
             device=points.device,
@@ -782,6 +783,9 @@ def _tangent_spheres(
     centers = _launch.empty(m, dtype=wp.vec3, device=device)
     not_converged = _launch.empty(m, dtype=wp.bool, device=device)
     limits = [corners, wp.float64(threshold)]
+    # The seed's ray walks and the shrink's closest-point searches take the queries in one search
+    # order, which changes no answer.
+    order = search_order(points)
     _launch.launch(
         kernel_visibility.seed_tangent_spheres,
         dim=m,
@@ -792,6 +796,7 @@ def _tangent_spheres(
             wp.float32(-1.0 if inwards else 1.0),
             *limits,
             wp.float32(TOLERANCE_PLANAR),
+            order,
         ],
         outputs=[ray_dirs, radii, centers, not_converged, support_indices, n_support],
         device=device,
@@ -846,6 +851,7 @@ def _tangent_spheres(
             *limits,
             wp.int32(max_iter),
             wp.float32(radius_scale),
+            order,
             not_converged,
             radii,
             centers,

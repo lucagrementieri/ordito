@@ -8,6 +8,7 @@ from ordito.kernels.array import (
     append_slot,
     morton_code_30,
     morton_frame,
+    ordered_item,
     to_vec3d,
 )
 from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
@@ -443,6 +444,7 @@ def longest_ray_along_normals(
     inward: wp.bool,
     max_t: wp.float32,
     planar_tol: wp.float32,
+    order: wp.array[wp.int32],
     out_thickness: wp.array[wp.float32],
 ) -> None:
     # ``thickness(method="ray")``: the direction (the normal, negated when ``inward``) and
@@ -451,8 +453,9 @@ def longest_ray_along_normals(
     # does, so the hits are its own bit for bit on both devices. Forming the closest-face normal
     # in this thread too (``normals_at_closest_faces_computed``'s body, even behind a uniform
     # branch) moved 2-4 % of CUDA hits by an ulp or two, a code-generation effect the CPU device
-    # does not show, so that stays its own launch.
-    i = wp.int32(wp.tid())
+    # does not show, so that stays its own launch. ``order`` is the queries' search order
+    # (``_common.search_order``; empty for index order), which leaves every answer as it was.
+    i = ordered_item(order, wp.int32(wp.tid()))
     normal = normals[i]
     direction = wp.where(inward, -normal, normal)
     out_thickness[i] = longest_ray_distance(mesh_id, points[i], direction, max_t, planar_tol)
@@ -599,6 +602,7 @@ def seed_tangent_spheres(
     corners: wp.array[wp.float32],
     threshold: wp.float64,
     planar_tol: wp.float32,
+    order: wp.array[wp.int32],
     out_ray_dirs: wp.array[wp.vec3],
     out_radii: wp.array[wp.float32],
     out_centers: wp.array[wp.vec3],
@@ -615,8 +619,8 @@ def seed_tangent_spheres(
     #
     # The shrink is ``shrink_tangent_spheres``, not this thread's continuation: run in one kernel
     # with the ray walk it cost 1.1-1.6x device time on 10 k-160 k queries (the two walks' register
-    # demand is the kernel's), against this split.
-    i = wp.int32(wp.tid())
+    # demand is the kernel's), against this split. ``order`` as ``longest_ray_along_normals``'s.
+    i = ordered_item(order, wp.int32(wp.tid()))
     max_t, _convergence_threshold = tangent_sphere_limits(corners, threshold)
     point = points[i]
     direction = ray_direction(normals[i], sign)
@@ -639,14 +643,15 @@ def shrink_tangent_spheres(
     threshold: wp.float64,
     max_iter: wp.int32,
     radius_scale: wp.float32,
+    order: wp.array[wp.int32],
     not_converged: wp.array[wp.bool],
     radii: wp.array[wp.float32],
     centers: wp.array[wp.vec3],
 ) -> None:
     # Every seeded sphere's shrink to convergence or ``max_iter`` steps (``shrink_tangent_sphere``),
     # one thread per query and in place. ``radius_scale`` multiplies the radius as it is stored
-    # (``2`` for a thickness, exact).
-    i = wp.int32(wp.tid())
+    # (``2`` for a thickness, exact). ``order`` as ``longest_ray_along_normals``'s.
+    i = ordered_item(order, wp.int32(wp.tid()))
     radius = radii[i]
     center = centers[i]
     if not_converged[i]:
