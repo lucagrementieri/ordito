@@ -1275,13 +1275,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   cheap tests first, then run their empty-ball walks a lane each. Declined on the way: runs of
   ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
   component-status.md`, `ball_pivoting`).
-- **`halfedge_twins`' validation read in callers that read again** (2026-11-11): `seams.uv_seam_edges`
-  and `cut_along_edges` drain the queue twice, once for the twins' two defect counts and once for
-  their own sizing read. With the twins' validation removed as the upper bound, the calls ran
-  0.80-0.91x and par to 0.9x (sphere_small to sphere_large, on a shared box: re-measure on an idle
-  one). Unbuilt: a public deferred form (twins plus their unread counts, raised from the caller's
-  one read). It is safe because a garbage table still holds in-range indices. Other `halfedge_twins`
-  callers with a sizing read of their own would take it too.
 - **A flip loop's first round** (2026-11-11): the rounds after a call's first re-test only the
   rows a flip touched (`kernels/remesh.flip_row_settled`), but each call's first round still
   tests every row in `float64` (`subdivide_region_to_size` on `sphere_large`: 2.6 of a 6.3 ms
