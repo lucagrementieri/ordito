@@ -57,6 +57,7 @@ from ordito.kernels.normals import add_to_face_corners, normalized_accumulated_r
 from ordito.kernels.predicates import (
     delone_metrics,
     dihedral_angle,
+    float_inf,
     is_unfold_quadrangle_convex,
     law_of_cosines_angle,
     mincircle_diameter_sq,
@@ -1436,6 +1437,33 @@ def _segments_dist_sq_d(p1: wp.vec3d, q1: wp.vec3d, p2: wp.vec3d, q2: wp.vec3d) 
 DELONE_KEEP = wp.int32(0)
 DELONE_FLIP = wp.int32(1)
 DELONE_FLIP_UNLESS_TURNED = wp.int32(2)
+# ``_delone_verdict_filtered_f32``'s answer where only ``float64`` can decide.
+DELONE_UNDECIDED = wp.int32(3)
+
+# The ``float32`` filter's bounds. ``u`` is the ``float32`` unit roundoff ``2**-24``; a triangle's
+# condition ``kappa`` is its longest squared side over the length of its edge cross product (at
+# least 1, and the aspect ratio up to a constant). Every constant is about twice the one derived
+# beside it, FMA contraction only removes roundings, and the ``float64`` computation's own error
+# (the same forms in ``2**-53``) is carried by ``DELONE_FILTER_F64``:
+# - cross product: an edge's difference rounds once, each product twice, the difference once, so
+#   each component is within ``4.1 u`` of its two products' magnitude and the vector within
+#   ``7.2 u |e1| |e2| <= 7.2 u Lmax``, ``7.2 u kappa`` relative (``DELONE_FILTER_CROSS``);
+# - squared side: within ``5 u`` relative; the circumdiameter ``l1 l2 l3 / |C|^2``: three sides,
+#   three roundings and the squared cross product's ``2.2 * cross + 4 u`` (``DELONE_FILTER_SIDES``
+#   for the ``u`` terms);
+# - normal cosine ``C1.C2 / (|C1| |C2|)``: each unit vector moves by at most twice its cross
+#   product's relative error, plus ``10 u`` of rounding (``DELONE_FILTER_COSINE``).
+# The range gate keeps every product in the normal ``float32`` range, where those bounds hold and
+# underflow's absolute error is far below them; a triangle outside it, or worse conditioned than
+# ``DELONE_FILTER_MAX_KAPPA``, leaves the quad to ``float64``.
+DELONE_FILTER_U = wp.float32(5.9604645e-08)
+DELONE_FILTER_CROSS = wp.float32(16.0)
+DELONE_FILTER_SIDES = wp.float32(48.0)
+DELONE_FILTER_COSINE = wp.float32(24.0)
+DELONE_FILTER_F64 = wp.float32(1.0e-13)
+DELONE_FILTER_MAX_KAPPA = wp.float32(5000.0)
+DELONE_FILTER_MIN_SIDE_SQ = wp.float32(1.0e-12)
+DELONE_FILTER_MAX_SIDE_SQ = wp.float32(1.0e12)
 
 
 @wp.func
@@ -1923,6 +1951,94 @@ def flip_quad_positions_d(
 
 
 @wp.func
+def _delone_triangle_f32(
+    p: wp.vec3, q: wp.vec3, r: wp.vec3
+) -> tuple[wp.vec3, wp.float32, wp.float32, wp.float32]:
+    # A triangle's edge cross product ``(q - p) x (r - p)`` (the orientation of ``triangle_normal``
+    # at ``(p, q, r)``), its squared circumdiameter, the circumdiameter's relative error bound and
+    # its condition ``kappa``; ``kappa`` is ``inf`` where ``_delone_verdict_filtered_f32`` must not
+    # decide (a side outside the range gate, a degenerate or ill-conditioned triangle).
+    e1 = q - p
+    e2 = r - p
+    l1 = wp.length_sq(e1)
+    l2 = wp.length_sq(e2)
+    l3 = wp.length_sq(r - q)
+    cross = wp.cross(e1, e2)
+    f = wp.length_sq(cross)
+    lmax = wp.max(wp.max(l1, l2), l3)
+    lmin = wp.min(wp.min(l1, l2), l3)
+    kappa = float_inf(f)
+    diameter_sq = wp.float32(0.0)
+    error = wp.float32(0.0)
+    if lmin >= DELONE_FILTER_MIN_SIDE_SQ and lmax <= DELONE_FILTER_MAX_SIDE_SQ and f > 0.0:
+        kappa = wp.float32(1.01) * lmax / wp.sqrt(f)
+        if kappa <= DELONE_FILTER_MAX_KAPPA:
+            diameter_sq = l1 * l2 * l3 / f
+            cross_error = DELONE_FILTER_CROSS * DELONE_FILTER_U * kappa
+            error = (
+                DELONE_FILTER_SIDES * DELONE_FILTER_U
+                + wp.float32(2.7) * cross_error
+                + DELONE_FILTER_F64 * kappa
+            )
+        else:
+            kappa = float_inf(f)
+    return cross, diameter_sq, error, kappa
+
+
+@wp.func
+def _filtered_not_pocket_f32(
+    c1: wp.vec3, kappa1: wp.float32, c2: wp.vec3, kappa2: wp.float32
+) -> wp.bool:
+    # Whether the two faces' unit normals certainly meet at a cosine of at least
+    # ``DELONE_CRITICAL_DOT``, as ``_delone_quadrangle_verdict_d``'s pocket test reads them in
+    # ``float64``: not a pocket. ``False`` where ``float64`` must decide.
+    # The two lengths apart, not ``sqrt(F1 F2)``: within the range gate each squared length is at
+    # most ``1e24``, and their product would overflow (or underflow, at the gate's small end).
+    cosine = wp.dot(c1, c2) / (wp.length(c1) * wp.length(c2))
+    error = (
+        DELONE_FILTER_COSINE * DELONE_FILTER_U * (wp.float32(1.0) + kappa1 + kappa2)
+        + DELONE_FILTER_F64 * (kappa1 + kappa2)
+        + wp.float32(1.0e-6)
+    )
+    return cosine - error > wp.float32(DELONE_CRITICAL_DOT)
+
+
+@wp.func
+def _delone_verdict_filtered_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.int32:
+    # ``_delone_quadrangle_verdict_d``'s answer where ``float32`` arithmetic with rigorous error
+    # bounds proves it (the ``DELONE_FILTER_*`` derivation), ``DELONE_UNDECIDED`` elsewhere. It
+    # decides only the common case: neither diagonal makes a pocket, and the two diagonals' Delone
+    # metrics, each an interval holding the ``float64`` value, do not overlap. A keep needs the
+    # ``a-c`` metric's interval wholly below the ``b-d`` one's (``DELONE_EPS`` only widens what
+    # ``float64`` keeps); a flip needs it above by more than ``DELONE_EPS`` on either side. The
+    # four triangles are the four normals' and, unoriented, the metrics'.
+    c_abc, m_abc, r_abc, k_abc = _delone_triangle_f32(a, b, c)
+    c_acd, m_acd, r_acd, k_acd = _delone_triangle_f32(a, c, d)
+    c_abd, m_abd, r_abd, k_abd = _delone_triangle_f32(a, b, d)
+    c_dbc, m_dbc, r_dbc, k_dbc = _delone_triangle_f32(d, b, c)
+    if wp.max(wp.max(k_abc, k_acd), wp.max(k_abd, k_dbc)) > DELONE_FILTER_MAX_KAPPA:
+        return DELONE_UNDECIDED
+    if not _filtered_not_pocket_f32(c_abc, k_abc, c_acd, k_acd):
+        return DELONE_UNDECIDED
+    if not _filtered_not_pocket_f32(c_abd, k_abd, c_dbc, k_dbc):
+        return DELONE_UNDECIDED
+    # Each interval ``m (1 -+ 2 r)``, two ``float32`` roundings beyond ``r`` widened in too.
+    slack = wp.float32(4.0) * DELONE_FILTER_U
+    one = wp.float32(1.0)
+    two = wp.float32(2.0)
+    ac_low = wp.max(m_acd * (one - two * r_acd - slack), m_abc * (one - two * r_abc - slack))
+    ac_high = wp.max(m_acd * (one + two * r_acd + slack), m_abc * (one + two * r_abc + slack))
+    bd_low = wp.max(m_abd * (one - two * r_abd - slack), m_dbc * (one - two * r_dbc - slack))
+    bd_high = wp.max(m_abd * (one + two * r_abd + slack), m_dbc * (one + two * r_dbc + slack))
+    if ac_high < bd_low:
+        return DELONE_KEEP
+    margin = wp.float32(4.0e-7)
+    if ac_low * (one - margin) > bd_high * (one + margin):
+        return DELONE_FLIP_UNLESS_TURNED
+    return DELONE_UNDECIDED
+
+
+@wp.func
 def _delone_flip_wanted(
     vertices: wp.array[wp.vec3],
     a: wp.int32,
@@ -1933,15 +2049,20 @@ def _delone_flip_wanted(
     max_deviation_sq: wp.float32,
     critical_aspect: wp.float32,
 ) -> wp.bool:
-    # ``delone_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``.
+    # ``delone_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``: the ``float32``
+    # filter's where it proves it, ``float64``'s elsewhere -- the same verdict either way.
+    verdict = _delone_verdict_filtered_f32(vertices[a], vertices[b], vertices[c], vertices[d])
+    if verdict == DELONE_KEEP:
+        return False
     ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
     n_abc = triangle_normal(ap, bp, cp)
     n_acd = triangle_normal(ap, cp, dp)
     n_abd = triangle_normal(ap, bp, dp)
     n_dbc = triangle_normal(dp, bp, cp)
+    if verdict == DELONE_UNDECIDED:
+        verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
     # The gates below are pure tests a flip must pass, so they run after the verdict, only for a
     # flip it wants: the same mask in any order.
-    verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
     if verdict == DELONE_KEEP:
         return False
     if verdict == DELONE_FLIP_UNLESS_TURNED:

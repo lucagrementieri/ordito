@@ -24,6 +24,7 @@ from scipy.spatial import KDTree
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import remesh as kernel_remesh
 from ordito.triangles import FaceQualityMetric
 from tests.comparisons import (
@@ -2920,6 +2921,144 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
     slots = topology.edge_set.numpy()
     live = slots[(slots != 0) & (slots != np.uint64(0xFFFFFFFFFFFFFFFF))] - np.uint64(1)
     assert np.array_equal(np.sort(live), np.unique(fresh.sorted_keys.numpy()))
+
+
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
+def _probe_delone_verdicts(points: wp.array[wp.vec3], out_verdicts: wp.array[wp.int32]) -> None:
+    # Quad ``i`` is points ``4 i .. 4 i + 3``; its filtered verdict goes to ``2 i``, its ``float64``
+    # one (as ``delone_flip_candidates`` forms it) to ``2 i + 1``.
+    # Warp's stubs type kernel scalars and array elements loosely, hence the per-line ignores.
+    i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+    a = wp.int32(4 * i)  # pyright: ignore[reportArgumentType]
+    b = wp.int32(a + 1)
+    c = wp.int32(a + 2)
+    d = wp.int32(a + 3)
+    filtered = kernel_remesh._delone_verdict_filtered_f32(
+        points[a],  # pyright: ignore[reportArgumentType]
+        points[b],  # pyright: ignore[reportArgumentType]
+        points[c],  # pyright: ignore[reportArgumentType]
+        points[d],  # pyright: ignore[reportArgumentType]
+    )
+    ap, bp, cp, dp = kernel_remesh.flip_quad_positions_d(points, a, b, c, d)
+    exact = kernel_remesh._delone_quadrangle_verdict_d(
+        ap,
+        bp,
+        cp,
+        dp,
+        kernel_predicates.triangle_normal(ap, bp, cp),  # pyright: ignore[reportArgumentType]
+        kernel_predicates.triangle_normal(ap, cp, dp),  # pyright: ignore[reportArgumentType]
+        kernel_predicates.triangle_normal(ap, bp, dp),  # pyright: ignore[reportArgumentType]
+        kernel_predicates.triangle_normal(dp, bp, cp),  # pyright: ignore[reportArgumentType]
+    )
+    out_verdicts[2 * i] = filtered  # pyright: ignore[reportIndexIssue]
+    out_verdicts[2 * i + 1] = exact  # pyright: ignore[reportIndexIssue, reportOperatorIssue]
+
+
+def test_delone_float32_filter_never_contradicts_float64(device: str) -> None:
+    """
+    Ordito against ordito: the ``float32`` Delone filter decides only what ``float64`` decides.
+
+    ``delone_flip_candidates`` takes the filter's verdict wherever it gives one, so every decided
+    quad must get the ``float64`` verdict; the filter's bounds are what make that so. The quads are
+    the hard kinds: random, near-cocircular down to a ``1e-9`` perturbation (where the two metrics
+    tie), folded about the diagonal, needles to the condition gate, folds at the pocket threshold,
+    and all of them scaled from ``1e-6`` to ``1e5`` and moved off the origin. Shrinking the
+    constants about 64-fold makes decided quads disagree; the filter must also decide most of the
+    easy kinds and none of the exactly cocircular ones, or it is not a filter.
+    """
+    rng = np.random.default_rng(20261111)
+    n = 20_000
+
+    def circle_quads(delta: float, fold: float) -> np.ndarray:
+        angles = np.sort(rng.uniform(0.0, 2.0 * np.pi, (n, 4)), axis=1)
+        quads = np.stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)], -1)
+        quads += rng.normal(scale=delta, size=quads.shape)
+        quads[:, [1, 3], 2] += fold * rng.uniform(-1.0, 1.0, (n, 2))
+        return quads
+
+    def needles(aspect: float) -> np.ndarray:
+        quads = rng.normal(size=(n, 4, 3))
+        quads[:, :, 1:] /= aspect
+        return quads
+
+    angle = np.arccos(-0.9) + rng.normal(scale=1e-5, size=n)
+    pockets = np.zeros((n, 4, 3))
+    pockets[:, 0, 0], pockets[:, 2, 0] = -1.0, 1.0
+    pockets[:, 1] = np.stack([rng.uniform(-0.5, 0.5, n), -np.ones(n), np.zeros(n)], -1)
+    pockets[:, 3] = np.stack(
+        [rng.uniform(-0.5, 0.5, n), np.cos(np.pi - angle), np.sin(np.pi - angle)], -1
+    )
+    cocircular = circle_quads(0.0, 0.0)
+    shapes = [rng.uniform(-1.0, 1.0, (n, 4, 3)), cocircular, pockets]
+    shapes += [circle_quads(delta, fold) for delta in (1e-2, 1e-6, 1e-9) for fold in (0.0, 0.3)]
+    shapes += [needles(aspect) for aspect in (10.0, 1e3, 3e3, 1e4)]
+    scaled = [
+        shape * scale + offset
+        for shape in shapes[:6]
+        for scale, offset in (
+            (1e-6, 1.0),
+            (6e-7, 0.0),
+            (1e-5, 0.0),
+            (1e3, 1e4),
+            (1e5, 1e5),
+            (4e5, 0.0),
+        )
+    ]
+    quads_np = np.concatenate(shapes + scaled).astype(np.float32)
+
+    verdicts = wp.zeros(2 * quads_np.shape[0], dtype=wp.int32, device=device)
+    wp.launch(
+        _probe_delone_verdicts,
+        dim=quads_np.shape[0],
+        inputs=[wp.array(quads_np.reshape(-1, 3), dtype=wp.vec3, device=device), verdicts],
+        device=device,
+    )
+    verdicts_np = verdicts.numpy().reshape(-1, 2)
+    decided = verdicts_np[:, 0] != int(kernel_remesh.DELONE_UNDECIDED)
+    assert np.array_equal(verdicts_np[decided, 0], verdicts_np[decided, 1])
+    # Both verdicts occur among the decided quads, it decides most random quads, and it leaves
+    # every exactly cocircular one (a metric tie) to ``float64``.
+    assert set(np.unique(verdicts_np[decided, 0]).tolist()) == {
+        int(kernel_remesh.DELONE_KEEP),
+        int(kernel_remesh.DELONE_FLIP_UNLESS_TURNED),
+    }
+    assert decided[:n].mean() > 0.5
+    assert not decided[n : 2 * n].any()
+
+
+def test_flip_loop_builds_inside_the_loop_keep_the_result(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a flip loop that rebuilds mid-way flips exactly as one that does not.
+
+    A build inside the loop renumbers the rows, so the rows' settled verdicts
+    (``kernel_remesh.flip_row_settled``) must go with it: kept, a row inherits another edge's
+    verdict and skips a flip. The flip budget is forced down so a long Delaunay flip loop builds
+    many times, and its triangulation is compared with the default budget's; dropping the clear
+    changes it.
+    """
+    points_np = np.random.default_rng(7).random((2_000, 2)).astype(np.float32)
+    points = wp.array(points_np, dtype=wp.vec2, device=device)
+    faces_np = od.reconstruction.delaunay_triangulation(points).numpy()
+
+    builds: list[int] = []
+    flip_topology = od.remesh._FlipTopology
+    original_init = flip_topology.__init__
+    original_rebuild = flip_topology.rebuild
+
+    def small_budget(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._flip_budget = 50
+
+    def counted_rebuild(self: Any, *args: Any, **kwargs: Any) -> int:
+        builds.append(int(kwargs.get("incremental", False) and not kwargs.get("read_count", True)))
+        return original_rebuild(self, *args, **kwargs)
+
+    monkeypatch.setattr(flip_topology, "__init__", small_budget)
+    monkeypatch.setattr(flip_topology, "rebuild", counted_rebuild)
+    assert np.array_equal(od.reconstruction.delaunay_triangulation(points).numpy(), faces_np)
+    assert sum(builds) >= 3
 
 
 def test_flip_topology_drops_non_manifold_edges_like_face_adjacency(device: str) -> None:
