@@ -323,39 +323,34 @@ def halfedge_tangent_angles(
     device = vertices.device
     n = vertices.size
     n_halfedges = faces.size // 3 * 3
-    angles = _launch.zeros(n_halfedges, dtype=wp.float64, device=device)
     if n_halfedges == 0 or n == 0:
-        return angles
+        return _launch.zeros(n_halfedges, dtype=wp.float64, device=device)
 
     if rings is None:
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, is_boundary = rings
 
     if face_angles is None:
-        # The ring walk forms each corner angle itself, as ``triangles.face_angles`` would; the
-        # long rings ``vertex_one_rings`` listed have theirs formed across the device first.
-        listed = long_rings(ring_offsets)
-        if listed is not None:
-            _launch.launch(
-                kernel_tangent_space.park_long_ring_angles,
-                dim=listed.size
-                * kernel_tangent_space.TANGENT_PARK_BLOCKS
-                * kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
-                inputs=[vertices, faces, ring_offsets, ring_halfedges, listed],
-                outputs=[angles],
-                device=device,
-            )
+        # Each face's corner angles are formed once, in ``float64``, and parked in the output
+        # slots the ring walk then reads and overwrites; the parking writes every slot.
+        angles = _launch.empty(n_halfedges, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_tangent_space.park_corner_angles,
+            dim=n_halfedges // 3,
+            inputs=[vertices, faces],
+            outputs=[angles],
+            device=device,
+        )
         _launch.launch_tiled(
-            kernel_tangent_space.halfedge_tangent_angles_from_positions
-            if listed is None
-            else kernel_tangent_space.halfedge_tangent_angles_parked,
+            kernel_tangent_space.halfedge_tangent_angles_parked,
             dim=-(-n // kernel_tangent_space.TANGENT_ROWS_PER_BLOCK),
-            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary],
+            inputs=[ring_offsets, ring_halfedges, is_boundary],
             outputs=[angles],
             device=device,
             block_dim=kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
         )
         return angles
+    angles = _launch.zeros(n_halfedges, dtype=wp.float64, device=device)
     _launch.launch_tiled(
         kernel_tangent_space.halfedge_tangent_angles,
         dim=-(-n // kernel_tangent_space.TANGENT_ROWS_PER_BLOCK),

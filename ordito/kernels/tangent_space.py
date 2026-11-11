@@ -74,18 +74,13 @@ def table_corner_angle(
 
 
 @wp.func
-def position_corner_angle(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+def parked_corner_angle(
+    parked: wp.array[wp.float64], _same_table: wp.array[wp.float64], h: wp.int32
 ) -> wp.float64:
-    # ``tangent_angle_rows``' corner angle at the origin of ``h`` formed from the positions:
-    # ``triangles.face_corner_angles_d``' (the ``angles`` kernel's rule in ``float64``, as
-    # geometry-central forms its angles: the vector heat method's transport reads these, and
-    # ``float32`` angles alone moved its log map by 4e-5 on needle meshes). Each halfedge forms its
-    # face's three angles to keep the one it needs (the degeneracy guard reads all three), three
-    # times the table's arithmetic, in place of the table's launch and its ``(n_faces, 3)`` round
-    # trip.
-    a0, a1, a2 = face_corner_angles_d(vertices, faces, h // wp.int32(3))
-    return wp.vec3d(a0, a1, a2)[h % wp.int32(3)]
+    # ``tangent_angle_rows``' corner angle at the origin of ``h`` parked in its own output slot by
+    # ``park_corner_angles``, passed as both angle sources and as the output: a halfedge lies on
+    # exactly one ring, its origin's, so the walk reads its slot before overwriting it.
+    return parked[h]
 
 
 # Vertices a block of the tangent-angle kernels holds, a vertex a lane on CUDA, and the ring size
@@ -104,34 +99,23 @@ def tangent_angle_ring(
     end: wp.int32,
     boundary: wp.bool,
     angle_of: wp.Function,
-    park: wp.bool,
     out_angles: wp.array[wp.float64],
 ):
     # One lane's two passes over a counter-clockwise ring: the first sums the corner angles
     # (``angle_of``) into the total angle Theta_v, the second lays the halfedges out as polar
     # coordinates in the flattened tangent plane (``ring_tangent_scale``), from the reference slot
-    # (``ring_reference_slot``). With ``park`` each angle formed in the first pass waits in the
-    # halfedge's own output slot until the second reads it back and overwrites it -- a halfedge
-    # lies on exactly one ring, its origin's, so the slot is this ring's alone; without it (a table
-    # lookup, cheaper to repeat than a scattered write and read: parked, the table variant cost
-    # 1.1-1.7x on CUDA, 2026-11-08) the second pass forms it again.
+    # (``ring_reference_slot``), reading each angle again before overwriting its slot (a table
+    # lookup, or the angle ``park_corner_angles`` parked in that slot: parking a table variant's
+    # angles cost it 1.1-1.7x on CUDA, a scattered write and read, 2026-11-08).
     total = wp.float64(0.0)
     for j in range(begin, end):
-        h = ring_halfedges[j]
-        angle = angle_of(angle_data, angle_faces, h)
-        if park:
-            out_angles[h] = angle
-        total += angle
+        total += angle_of(angle_data, angle_faces, ring_halfedges[j])
     scale = ring_tangent_scale(total, boundary)
     start = ring_reference_slot(ring_halfedges, begin, end, boundary)
     accumulated = wp.float64(0.0)
     for t in range(end - begin):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
-        angle = wp.float64(0.0)
-        if park:
-            angle = out_angles[h]
-        else:
-            angle = angle_of(angle_data, angle_faces, h)
+        angle = angle_of(angle_data, angle_faces, h)
         out_angles[h] = scale * accumulated
         accumulated += angle
 
@@ -196,7 +180,6 @@ def tangent_angle_ring_block(
     boundary: wp.bool,
     lane: wp.int32,
     angle_of: wp.Function,
-    parked: wp.bool,
     out_angles: wp.array[wp.float64],
 ):
     # ``tangent_angle_ring`` by the whole block (every lane must call it), for a hub whose ring one
@@ -205,19 +188,14 @@ def tangent_angle_ring_block(
     # chunk's angles and sums them in order, every lane sums the chunk totals before its own (and
     # all of them, the total) in lane order, and each lays its chunk out from there. The sums are
     # a fixed chunked order, so the ring repeats bit for bit; it is not the one-lane walk's order,
-    # which ``float64`` rounding separates by ulps (``tile_scan_*`` takes no ``float64``). With
-    # ``parked`` the angles already wait in their slots (``park_long_ring_angles``) and are read.
+    # which ``float64`` rounding separates by ulps (``tile_scan_*`` takes no ``float64``).
     start = ring_reference_slot_block(ring_halfedges, begin, end, boundary, lane)
     first, last = ring_lane_chunk(begin, end, lane)
     partial = wp.float64(0.0)
     for t in range(first, last):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
-        angle = wp.float64(0.0)
-        if parked:
-            angle = out_angles[h]
-        else:
-            angle = angle_of(angle_data, angle_faces, h)
-            out_angles[h] = angle
+        angle = angle_of(angle_data, angle_faces, h)
+        out_angles[h] = angle
         partial += angle
     before, total = lanes_before_and_total(partial, lane)
     scale = ring_tangent_scale(total, boundary)
@@ -239,17 +217,13 @@ def tangent_angle_rows(
     blk: wp.int32,
     lane: wp.int32,
     angle_of: wp.Function,
-    park: wp.bool,
-    parked: wp.bool,
     out_angles: wp.array[wp.float64],
 ):
     # Block ``blk``'s ``TANGENT_ROWS_PER_BLOCK`` vertices of a tangent-angle launch: a lane walks
     # each ring (``tangent_angle_ring``), and on CUDA a ring of ``TANGENT_LONG_RING`` halfedges or
     # more is left to the whole block after (``tangent_angle_ring_block``), so a block without one
     # pays one reduction. The CPU device, whose single lane walks every ring in turn anyway,
-    # defers none, so its angles are the one-lane walk's. With ``parked`` the rings
-    # ``vertex_one_rings`` listed (``halfedge.ring_long_from`` halfedges or more) hold their
-    # angles already (``park_long_ring_angles``).
+    # defers none, so its angles are the one-lane walk's.
     first, rows = block_chunk(is_boundary.shape[0], blk, TANGENT_ROWS_PER_BLOCK)
     if rows <= 0:
         return
@@ -266,11 +240,10 @@ def tangent_angle_rows(
         elif end > begin:
             tangent_angle_ring(
                 angle_data, angle_faces, ring_halfedges, begin, end, is_boundary[v],
-                angle_of, park, out_angles,
+                angle_of, out_angles,
             )  # fmt: skip
     if block_sum(found) == 0:
         return
-    parked_from = ring_long_from(ring_halfedges.shape[0])
     for r in range(rows):
         v = first + r
         begin = ring_offsets[v]
@@ -278,7 +251,7 @@ def tangent_angle_rows(
         if end - begin >= long_from:
             tangent_angle_ring_block(
                 angle_data, angle_faces, ring_halfedges, begin, end, is_boundary[v], lane,
-                angle_of, parked and end - begin >= parked_from, out_angles,
+                angle_of, out_angles,
             )  # fmt: skip
 
 
@@ -291,77 +264,50 @@ def halfedge_tangent_angles(
     out_angles: wp.array[wp.float64],
 ) -> None:
     # ``tangent_angle_rows`` over a ``float32`` corner-angle table; launched tiled.
-    # ``halfedge_tangent_angles_from_positions`` is the same walk forming the corner angles itself.
+    # ``halfedge_tangent_angles_parked`` is the same walk over the angles ``park_corner_angles``
+    # formed from the positions.
     blk, lane = wp.tid()
     tangent_angle_rows(
         face_angles, face_angles, ring_offsets, ring_halfedges, is_boundary, blk, lane,
-        table_corner_angle, False, False, out_angles,
+        table_corner_angle, out_angles,
     )  # fmt: skip
 
 
 @wp.kernel
-def halfedge_tangent_angles_from_positions(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    ring_offsets: wp.array[wp.int32],
-    ring_halfedges: wp.array[wp.int32],
-    is_boundary: wp.array[wp.bool],
-    out_angles: wp.array[wp.float64],
+def park_corner_angles(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angles: wp.array[wp.float64]
 ) -> None:
-    # ``halfedge_tangent_angles`` for a caller with no corner-angle table: ``tangent_angle_rows``
-    # forming each angle from the positions (``position_corner_angle``); launched tiled.
-    blk, lane = wp.tid()
-    tangent_angle_rows(
-        vertices, faces, ring_offsets, ring_halfedges, is_boundary, blk, lane,
-        position_corner_angle, True, False, out_angles,
-    )  # fmt: skip
+    # A face's three corner angles (``triangles.face_corner_angles_d``: the ``angles`` kernel's
+    # rule in ``float64``, as geometry-central forms its angles -- the vector heat method's
+    # transport reads these, and ``float32`` angles alone moved its log map by 4e-5 on needle
+    # meshes) parked in its three halfedges' output slots ``3 f + k`` for
+    # ``halfedge_tangent_angles_parked``. Formed in the ring walk instead, each halfedge formed its
+    # face's three (the degeneracy guard reads all three) to keep one, three times the ``float64``
+    # arithmetic on the lanes of 256-vertex blocks, few enough SMs that a small mesh's walk was
+    # bound by their ``float64`` issue (``sphere_small`` and ``sphere_med`` alike ~60 us, dragon
+    # 0.88 ms; a hub's on one SM). A thread a face.
+    f = wp.int32(wp.tid())
+    a0, a1, a2 = face_corner_angles_d(vertices, faces, f)
+    out_angles[3 * f] = a0
+    out_angles[3 * f + 1] = a1
+    out_angles[3 * f + 2] = a2
 
 
 @wp.kernel
 def halfedge_tangent_angles_parked(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
     out_angles: wp.array[wp.float64],
 ) -> None:
-    # ``halfedge_tangent_angles_from_positions`` once ``park_long_ring_angles`` has formed the
-    # listed long rings' angles: their block walks read them. A kernel of its own, so the ordinary
-    # walk's code stays as it was (identical SASS, 2026-11-10).
+    # ``halfedge_tangent_angles`` once ``park_corner_angles`` has parked every halfedge's corner
+    # angle in its output slot: ``tangent_angle_rows`` reading them back (``parked_corner_angle``);
+    # launched tiled.
     blk, lane = wp.tid()
     tangent_angle_rows(
-        vertices, faces, ring_offsets, ring_halfedges, is_boundary, blk, lane,
-        position_corner_angle, True, True, out_angles,
+        out_angles, out_angles, ring_offsets, ring_halfedges, is_boundary, blk, lane,
+        parked_corner_angle, out_angles,
     )  # fmt: skip
-
-
-# Blocks ``park_long_ring_angles`` spreads one long ring over (``TANGENT_ROWS_PER_BLOCK`` lanes
-# each).
-TANGENT_PARK_BLOCKS = 64
-
-
-@wp.kernel
-def park_long_ring_angles(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    ring_offsets: wp.array[wp.int32],
-    ring_halfedges: wp.array[wp.int32],
-    listed: wp.array[wp.int32],
-    out_angles: wp.array[wp.float64],
-) -> None:
-    # The corner angle (``position_corner_angle``) of every halfedge on the long rings
-    # ``vertex_one_rings`` listed, parked in its output slot for
-    # ``halfedge_tangent_angles_from_positions``' block walk: ``TANGENT_PARK_BLOCKS`` blocks a ring.
-    # Formed in the walk, a hub's ``float64`` angles all ran on the one SM holding its block
-    # (``fan_hub``: 3.2 ms for two rings of 41 k). Launch over
-    # ``listed.shape[0] * TANGENT_PARK_BLOCKS * TANGENT_ROWS_PER_BLOCK`` threads.
-    t = wp.int32(wp.tid())
-    per_ring = TANGENT_PARK_BLOCKS * TANGENT_ROWS_PER_BLOCK
-    v = listed[t // per_ring]
-    for j in range(ring_offsets[v] + t % per_ring, ring_offsets[v + 1], per_ring):
-        h = ring_halfedges[j]
-        out_angles[h] = position_corner_angle(vertices, faces, h)
 
 
 @wp.func
