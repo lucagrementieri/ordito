@@ -11,7 +11,6 @@ from ordito.kernels.array import (
     pack_ranked_key,
     scanned_count,
     store_counted_ballot_bit,
-    walk_item,
 )
 from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
@@ -21,7 +20,7 @@ from ordito.kernels.halfedge import (
     sorted_run_mate,
 )
 from ordito.kernels.predicates import newell_term
-from ordito.kernels.reduce import block_sum
+from ordito.kernels.reduce import block_max, block_min, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -553,13 +552,16 @@ def store_pinch_cycle(
     return size
 
 
-@wp.kernel
+# Lanes a loop of ``split_pinched_loops``: a warp, at its own launch width (``module="unique"``).
+PINCH_SPLIT_LANES = 32
+
+
+@wp.kernel(enable_backward=False, module="unique")
 def split_pinched_loops(
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     previous: wp.array[wp.int32],
     sentinel: wp.int64,
-    lanes: wp.int32,
     out_stack: wp.array[wp.int32],
     out_path_index: wp.array[wp.int32],
     out_representative: wp.array[wp.int32],
@@ -569,77 +571,108 @@ def split_pinched_loops(
     out_slots: wp.array[wp.int32],
     out_totals: wp.array[wp.int32],
 ) -> None:
-    # One thread per loop, the host walk's stack decomposition over positions: an entry whose
-    # vertex is on the path cuts the path back to that vertex's entry and the cut-off run, from
-    # that entry on, is a cycle; any other entry is pushed. What is left at the end is the last
-    # cycle. The scratch tables are indexed by packed position, inside the loop's own range:
-    # ``out_stack`` the path (from the loop's start), ``out_path_index`` a pushed entry's depth or
-    # ``-1`` once cut off, ``out_representative`` the pushed entry an occurrence stands for. An
-    # occurrence's vertex is on the path exactly when its previous occurrence's representative
-    # still is: when that one was handled no other entry of the vertex was on the path.
+    # One block per loop. A loop passing no vertex twice is one cycle in walk order: its lanes
+    # copy it, take its smallest vertex by a block minimum of ``(vertex, offset)`` (its vertices
+    # are distinct, so no tie) and fill its slots, striding by ``wp.block_dim()``. Most loops of
+    # a mesh with a pinch somewhere have none of their own, and one thread walking each of them
+    # in turn was the launch (dragon's deletion rims: 0.07x this kernel's device time).
+    #
+    # A loop with a repeat takes the host walk's stack decomposition over positions, on the
+    # first lane: an entry whose vertex is on the path cuts the path back to that vertex's entry
+    # and the cut-off run, from that entry on, is a cycle; any other entry is pushed. What is left
+    # at the end is the last cycle. The scratch tables are indexed by packed position, inside the
+    # loop's own range: ``out_stack`` the path (from the loop's start), ``out_path_index`` a
+    # pushed entry's depth or ``-1`` once cut off, ``out_representative`` the pushed entry an
+    # occurrence stands for. An occurrence's vertex is on the path exactly when its previous
+    # occurrence's representative still is: when that one was handled no other entry of the
+    # vertex was on the path.
     #
     # Cycles take value and record slots from the loop's start in cut order (a loop yields at
     # most one value and one cycle per entry); the loop's other record slots get ``sentinel``,
-    # which sorts after every key. ``out_totals`` counts the cycles and their entries. ``lanes``
-    # threads a loop, the first walking (``_launch.walk_lanes``).
-    ell = walk_item(wp.int32(wp.tid()), lanes)
-    if ell < 0:
-        return
+    # which sorts after every key. ``out_totals`` counts the cycles and their entries.
+    ell, lane = wp.tid()
     start = offsets[ell]
     end = offsets[ell + 1]
-    depth = wp.int32(0)
-    stored = wp.int32(0)
+    size = end - start
+    repeats = wp.int32(0)
+    smallest = wp.int64(INT32_MAX_CONSTANT) << wp.int64(32)
+    for p in range(start + lane, end, wp.block_dim()):
+        if previous[p] >= 0:
+            repeats = wp.int32(1)
+        vertex = flat_loops[p]
+        out_values[p] = vertex
+        smallest = wp.min(smallest, (wp.int64(vertex) << wp.int64(32)) | wp.int64(p - start))
+    repeats = block_max(repeats)
     cycles = wp.int32(0)
-    for p in range(start, end):
-        q = previous[p]
-        representative = wp.int32(-1)
-        on_path = wp.int32(-1)
-        if q >= 0:
-            representative = out_representative[q]
-            on_path = out_path_index[representative]
-        if on_path >= 0:
-            stored += store_pinch_cycle(
-                flat_loops,
-                out_stack,
-                start,
-                on_path,
-                depth,
-                start + stored,
-                start + cycles,
-                out_values,
-                out_records,
-                out_keys,
-            )
-            cycles += 1
-            for k in range(on_path + 1, depth):
-                out_path_index[out_stack[start + k]] = -1
-            depth = on_path + 1
-            out_representative[p] = representative
-        else:
-            out_stack[start + depth] = p
-            out_path_index[p] = depth
-            out_representative[p] = p
-            depth += 1
-    if depth > 0:
-        stored += store_pinch_cycle(
-            flat_loops,
-            out_stack,
-            start,
-            0,
-            depth,
-            start + stored,
-            start + cycles,
-            out_values,
-            out_records,
-            out_keys,
-        )
-        cycles += 1
-    for slot in range(start, end):
+    if repeats == 0:
+        if size > 0:
+            smallest = block_min(smallest)
+            cycles = wp.int32(1)
+            if lane == 0:
+                rotation = wp.int32(smallest & wp.int64(0xFFFFFFFF))
+                following = wp.int32(-1)
+                if size > 1:
+                    following = flat_loops[start + (rotation + 1) % size]
+                out_records[start] = wp.vec3i(start, size, rotation)
+                out_keys[start] = (smallest - wp.int64(rotation)) | wp.int64(following + 1)
+                wp.atomic_add(out_totals, 0, 1)
+                wp.atomic_add(out_totals, 1, size)
+    else:
+        if lane == 0:
+            depth = wp.int32(0)
+            stored = wp.int32(0)
+            for p in range(start, end):
+                q = previous[p]
+                representative = wp.int32(-1)
+                on_path = wp.int32(-1)
+                if q >= 0:
+                    representative = out_representative[q]
+                    on_path = out_path_index[representative]
+                if on_path >= 0:
+                    stored += store_pinch_cycle(
+                        flat_loops,
+                        out_stack,
+                        start,
+                        on_path,
+                        depth,
+                        start + stored,
+                        start + cycles,
+                        out_values,
+                        out_records,
+                        out_keys,
+                    )
+                    cycles += 1
+                    for k in range(on_path + 1, depth):
+                        out_path_index[out_stack[start + k]] = -1
+                    depth = on_path + 1
+                    out_representative[p] = representative
+                else:
+                    out_stack[start + depth] = p
+                    out_path_index[p] = depth
+                    out_representative[p] = p
+                    depth += 1
+            if depth > 0:
+                stored += store_pinch_cycle(
+                    flat_loops,
+                    out_stack,
+                    start,
+                    0,
+                    depth,
+                    start + stored,
+                    start + cycles,
+                    out_values,
+                    out_records,
+                    out_keys,
+                )
+                cycles += 1
+            wp.atomic_add(out_totals, 0, cycles)
+            wp.atomic_add(out_totals, 1, stored)
+        # The first lane's cycle count, to every lane.
+        cycles = block_max(cycles)
+    for slot in range(start + lane, end, wp.block_dim()):
         out_slots[slot] = slot
         if slot >= start + cycles:
             out_keys[slot] = sentinel
-    wp.atomic_add(out_totals, 0, cycles)
-    wp.atomic_add(out_totals, 1, stored)
 
 
 @wp.kernel

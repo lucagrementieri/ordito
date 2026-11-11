@@ -466,16 +466,15 @@ def _split_at_pinches(
     # the path and the depths in their upper halves, the representatives and the cycles' vertices
     # in their lower ones.
     sentinel = n_vertices << 32
-    lanes = _launch.walk_lanes(n_loops, device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_boundary.split_pinched_loops,
-        dim=n_loops * lanes,
+        dim=[n_loops],
+        block_dim=kernel_boundary.PINCH_SPLIT_LANES,
         inputs=[
             flat_loops,
             offsets,
             previous,
             sentinel,
-            wp.int32(lanes),
             _launch.view(keys, total, 2 * total),
             _launch.view(positions, total, 2 * total),
             _launch.view(keys, 0, total),
