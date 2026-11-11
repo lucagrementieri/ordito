@@ -7,10 +7,12 @@ from ordito.kernels.array import (
     OverloadTable,
     append_slot,
     csr_row_long,
+    device_is_cpu,
     greater,
     inverse_or_one,
     mask_and_not,
     next_row_entry,
+    row_chunk_entries,
     sort_segment,
     store_coo_key,
     to_vec3,
@@ -4072,8 +4074,27 @@ def stencil_laplacian(
         start = offsets[v]
         count = offsets[v + 1] - start
         scale = wp.float64(1.0) / wp.float64(count)
-        for k in range(count):
-            delta += (x[v] - x[neighbors[start + k]]) * scale
+        end = start + count
+        if device_is_cpu() != 0:
+            for k in range(count):
+                delta += (x[v] - x[neighbors[start + k]]) * scale
+        else:
+            # Four entries a step (``array.row_chunk_entries``), the gathers in flight together;
+            # the terms still add in ring order.
+            xv = x[v]
+            for k in range(start, end, 4):
+                ring = row_chunk_entries(neighbors, k, end)
+                x0 = x[ring[0]]
+                x1 = x[ring[1]]
+                x2 = x[ring[2]]
+                x3 = x[ring[3]]
+                delta += (xv - x0) * scale
+                if k + 1 < end:
+                    delta += (xv - x1) * scale
+                if k + 2 < end:
+                    delta += (xv - x2) * scale
+                if k + 3 < end:
+                    delta += (xv - x3) * scale
     elif stencil == STENCIL_RIM:
         pair = rim_pairs[v]
         delta = (x[v] - x[pair[0]]) * wp.float64(0.5) + (x[v] - x[pair[1]]) * wp.float64(0.5)
@@ -4187,6 +4208,19 @@ def gauss_seidel_wave_start(
 
 
 @wp.func
+def gauss_seidel_blocks(
+    u: wp.int32, v: wp.int32, c: wp.int32, classes: wp.array[wp.int32], counts: wp.array[wp.int32]
+) -> wp.int32:
+    # 1 when moving neighbour ``u`` keeps vertex ``v``, ``c`` sweeps done, from its next sweep: it
+    # has not yet completed ``c + 1`` (numbered below ``v``) or exactly ``c`` (above). A fixed
+    # neighbour never blocks.
+    if classes[u] == STENCIL_FIXED:
+        return 0
+    want = wp.where(u < v, c + 1, c)
+    return wp.where(counts[u] != want, wp.int32(1), wp.int32(0))
+
+
+@wp.func
 def gauss_seidel_wave_vertex(
     x: wp.array[wp.vec3d],
     counts: wp.array[wp.int32],
@@ -4215,12 +4249,20 @@ def gauss_seidel_wave_vertex(
         ready = wp.int32(1)
         start = offsets[v]
         stop = offsets[v + 1]
-        for k in range(start, stop):
-            u = neighbors[k]
-            if classes[u] != STENCIL_FIXED:
-                want = wp.where(u < v, c + 1, c)
-                if counts[u] != want:
+        if device_is_cpu() != 0:
+            for k in range(start, stop):
+                if gauss_seidel_blocks(neighbors[k], v, c, classes, counts) != 0:
                     ready = 0
+                    break
+        else:
+            # Four neighbours a step (``array.row_chunk_entries``), their class and count loads in
+            # flight together; any blocker of a step ends the walk after it.
+            for k in range(start, stop, 4):
+                ring = row_chunk_entries(neighbors, k, stop)
+                for s in range(4):
+                    if k + s < stop and gauss_seidel_blocks(ring[s], v, c, classes, counts) != 0:
+                        ready = 0
+                if ready == 0:
                     break
         if ready != 0:
             relax_in_place(x, v, factor, neighbors, offsets, classes, rim_pairs)
