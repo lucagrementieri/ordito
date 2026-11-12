@@ -3013,7 +3013,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cuda-refined]": {
   "counts": {
    "launch": 61,
-   "alloc": 56,
+   "alloc": 55,
    "memset": 23,
    "d2d": 1,
    "h2d": 1,
@@ -3037,7 +3037,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cuda-refined]": {
   "counts": {
    "launch": 127,
-   "alloc": 61,
+   "alloc": 60,
    "memset": 30,
    "d2d": 1,
    "h2d": 1,
@@ -3049,7 +3049,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cuda-derived]": {
   "counts": {
    "launch": 65,
-   "alloc": 59,
+   "alloc": 58,
    "memset": 24,
    "d2d": 1,
    "h2d": 1,
@@ -3061,7 +3061,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cuda-explicit]": {
   "counts": {
    "launch": 65,
-   "alloc": 58,
+   "alloc": 57,
    "memset": 24,
    "d2d": 1,
    "h2d": 1,
@@ -3073,7 +3073,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cuda-derived]": {
   "counts": {
    "launch": 61,
-   "alloc": 56,
+   "alloc": 55,
    "memset": 23,
    "d2d": 1,
    "h2d": 1,
@@ -3085,7 +3085,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cuda-explicit]": {
   "counts": {
    "launch": 61,
-   "alloc": 55,
+   "alloc": 54,
    "memset": 23,
    "d2d": 1,
    "h2d": 1,
@@ -3153,7 +3153,7 @@
  "benchmarks/test_holes.py::test_refill_region[sphere_small-ordito-cuda-refined]": {
   "counts": {
    "launch": 175,
-   "alloc": 107,
+   "alloc": 103,
    "memset": 44,
    "d2d": 1,
    "h2d": 2,
@@ -3207,7 +3207,7 @@
  "benchmarks/test_holes.py::test_stitch_smooth[rim_short-ordito-cuda]": {
   "counts": {
    "launch": 80,
-   "alloc": 67,
+   "alloc": 66,
    "memset": 28,
    "d2d": 3,
    "d2h": 14,
@@ -6008,19 +6008,19 @@
  },
  "benchmarks/test_reconstruction.py::test_ball_pivoting[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 254,
+   "launch": 256,
    "alloc": 28,
    "memset": 9,
    "d2h": 10,
-   "scan": 3,
-   "sort": 2
+   "scan": 4,
+   "sort": 1
   }
  },
  "benchmarks/test_reconstruction.py::test_delaunay_triangulation[ordito-cuda-20000]": {
   "counts": {
    "launch": 35,
    "alloc": 13,
-   "memset": 6,
+   "memset": 8,
    "h2d": 1,
    "d2h": 21,
    "scan": 3,
@@ -6040,22 +6040,22 @@
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform[sphere_small-ordito-cuda-0.01]": {
   "counts": {
-   "launch": 30,
+   "launch": 32,
    "alloc": 32,
    "memset": 8,
    "d2h": 9,
-   "scan": 5,
-   "sort": 4
+   "scan": 6,
+   "sort": 3
   }
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform[sphere_small-ordito-cuda-0.02]": {
   "counts": {
-   "launch": 28,
+   "launch": 30,
    "alloc": 31,
    "memset": 7,
    "d2h": 8,
-   "scan": 5,
-   "sort": 4
+   "scan": 6,
+   "sort": 3
   }
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cuda-0.01]": {
@@ -6723,13 +6723,13 @@
  },
  "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus_small-ordito-cuda-local]": {
   "counts": {
-   "launch": 251,
-   "alloc": 170,
-   "memset": 71,
+   "launch": 256,
+   "alloc": 174,
+   "memset": 70,
    "d2d": 2,
    "h2d": 4,
-   "d2h": 60,
-   "scan": 39,
+   "d2h": 58,
+   "scan": 38,
    "sort": 17
   }
  },
@@ -6990,7 +6990,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cuda]": {
   "counts": {
    "launch": 115,
-   "alloc": 46,
+   "alloc": 45,
    "memset": 9,
    "d2d": 3,
    "h2d": 5,
@@ -7002,7 +7002,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cuda]": {
   "counts": {
    "launch": 116,
-   "alloc": 46,
+   "alloc": 45,
    "memset": 9,
    "d2d": 3,
    "h2d": 5,
@@ -7133,10 +7133,10 @@
  },
  "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cuda]": {
   "counts": {
-   "alloc": 7,
-   "d2h": 1,
    "launch": 6,
+   "alloc": 7,
    "memset": 1,
+   "d2h": 1,
    "scan": 2
   }
  },
@@ -7754,7 +7754,7 @@
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[hemisphere-ordito-cuda]": {
   "counts": {
    "launch": 129,
-   "alloc": 63,
+   "alloc": 61,
    "memset": 25,
    "d2h": 41,
    "scan": 17,
@@ -7764,7 +7764,7 @@
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[saddle_small-ordito-cuda]": {
   "counts": {
    "launch": 161,
-   "alloc": 76,
+   "alloc": 73,
    "memset": 31,
    "d2h": 49,
    "scan": 21,

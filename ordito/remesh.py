@@ -1882,9 +1882,10 @@ class _FlipTopology:
     claims_armed : bool
         Whether ``face_claim`` and ``edge_claim`` currently hold the unclaimed key everywhere.
     settled : wp.array[wp.int32]
-        Length ``m + n_faces``: each row's settled verdict, then each face's last rewrite, which
-        the predicate kernels read to re-test only the rows a flip touched since they last said no
-        (``kernel_remesh.flip_row_settled``, which says why none of it needs a fill).
+        Length ``m + n_faces`` (empty with no rows): each row's settled verdict, then each face's
+        last rewrite, which the predicate kernels read to re-test only the rows a flip touched since
+        they last said no (``kernel_remesh.flip_row_settled``, which says why none of it needs a
+        fill).
     at_fixpoint : bool
         Whether the last ``_flip_interior_edges`` call over this topology ended on a round that
         flipped nothing, so that a call with the same predicate over the same faces and vertices
@@ -2217,15 +2218,18 @@ class _FlipTopology:
         """(Re)allocate the ``m``-row tables and the hashed edge-claim table sized from them."""
         self._rows = m
         # The four ``int32`` row tables in one allocation, the row -> halfedges map an
-        # incremental build adopts, and the settled rows and rewritten faces.
+        # incremental build adopts, and the settled rows and rewritten faces. No rows flip
+        # nothing, so the face stamps go too: the constructor's zero-row tables allocate nothing,
+        # and an empty ``settled`` carries no settled face (``emit_size_faces_settling``).
+        face_stamps = self._n_faces if m > 0 else 0
         adjacency, adjacency_edges, unshared, quad, row_halfedges, settled = _split_buffer(
-            _launch.empty(13 * m + self._n_faces, dtype=wp.int32, device=self._device),
+            _launch.empty(13 * m + face_stamps, dtype=wp.int32, device=self._device),
             2 * m,
             2 * m,
             2 * m,
             4 * m,
             2 * m,
-            m + self._n_faces,
+            m + face_stamps,
         )
         self.settled = settled
         self._row_halfedges_store = odt.as_array2d(row_halfedges.reshape((m, 2)), wp.int32)
