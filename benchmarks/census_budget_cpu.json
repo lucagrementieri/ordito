@@ -4740,7 +4740,7 @@
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
   "counts": {
    "launch": 178,
-   "alloc": 51,
+   "alloc": 52,
    "readback": 5,
    "scan": 20,
    "sort": 20
@@ -4758,7 +4758,7 @@
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
   "counts": {
    "launch": 149,
-   "alloc": 51,
+   "alloc": 52,
    "readback": 5,
    "scan": 18,
    "sort": 18
@@ -5791,7 +5791,7 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 5,
+   "alloc": 6,
    "h2h": 1,
    "readback": 3,
    "sort": 1
@@ -6915,21 +6915,21 @@
  "benchmarks/test_smoothing.py::test_filter_normals[saddle-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 4,
+   "alloc": 5,
    "sort": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_normals[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 4,
+   "alloc": 5,
    "sort": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_normals_meshlib[saddle-ordito-cpu]": {
   "counts": {
    "launch": 28,
-   "alloc": 10,
+   "alloc": 11,
    "readback": 10,
    "sort": 2
   }
@@ -6937,7 +6937,7 @@
  "benchmarks/test_smoothing.py::test_filter_normals_meshlib[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 28,
-   "alloc": 10,
+   "alloc": 11,
    "readback": 10,
    "sort": 2
   }
@@ -7313,7 +7313,7 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cpu-False]": {
   "counts": {
    "launch": 4,
-   "alloc": 5,
+   "alloc": 6,
    "readback": 1,
    "sort": 1
   }
@@ -7321,7 +7321,7 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cpu-True]": {
   "counts": {
    "launch": 5,
-   "alloc": 7,
+   "alloc": 8,
    "readback": 1,
    "sort": 2
   }
@@ -7347,7 +7347,7 @@
  "benchmarks/test_triangles.py::test_face_normals_and_areas[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
-   "alloc": 1
+   "alloc": 2
   }
  },
  "benchmarks/test_triangles.py::test_face_quality[saddle-ordito-cpu]": {

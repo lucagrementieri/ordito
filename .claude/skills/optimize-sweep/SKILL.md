@@ -102,6 +102,10 @@ already landed, so read that commit before writing your own version.
 6. **Allocate less.**
    - Carve same-lifetime scratch out of one allocation per dtype (the "carve" commits across
      repair, holes and smoothing; radix sort keys and payload from one `sort_buffers` allocation).
+   - **Never carve the arrays a public function returns.** Each returned array is its own
+     allocation, owning its memory: a view into a shared buffer keeps its siblings alive for as long
+     as the caller holds any one of them. Carve only scratch the call frees before returning. A
+     `face_normals_and_areas` carve of its two outputs (0.89-0.93x) was reverted for this.
    - Write counts straight into the offsets' buffer.
    - Write a CSR's empty bounds instead of zero-filling the offsets.
    - Allocate a pass's buffers once, outside the loop (`filter_two_step`).

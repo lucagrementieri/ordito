@@ -5212,7 +5212,7 @@
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cuda-2]": {
   "counts": {
    "launch": 441,
-   "alloc": 52,
+   "alloc": 53,
    "memset": 20,
    "d2h": 7,
    "sync": 2,
@@ -5234,7 +5234,7 @@
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cuda-2]": {
   "counts": {
    "launch": 308,
-   "alloc": 52,
+   "alloc": 53,
    "memset": 20,
    "d2h": 7,
    "sync": 2,
@@ -6368,7 +6368,7 @@
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 9,
-   "alloc": 5,
+   "alloc": 6,
    "memset": 1,
    "h2d": 1,
    "d2h": 3,
@@ -7603,21 +7603,21 @@
  "benchmarks/test_smoothing.py::test_filter_normals[saddle-ordito-cuda]": {
   "counts": {
    "launch": 23,
-   "alloc": 4,
+   "alloc": 5,
    "sort": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_normals[saddle_graded-ordito-cuda]": {
   "counts": {
    "launch": 23,
-   "alloc": 4,
+   "alloc": 5,
    "sort": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_normals_meshlib[saddle-ordito-cuda]": {
   "counts": {
    "launch": 34,
-   "alloc": 12,
+   "alloc": 13,
    "memset": 3,
    "d2h": 1,
    "scan": 1,
@@ -7627,7 +7627,7 @@
  "benchmarks/test_smoothing.py::test_filter_normals_meshlib[saddle_graded-ordito-cuda]": {
   "counts": {
    "launch": 34,
-   "alloc": 12,
+   "alloc": 13,
    "memset": 3,
    "d2h": 1,
    "scan": 1,
@@ -8031,7 +8031,7 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cuda-False]": {
   "counts": {
    "launch": 6,
-   "alloc": 5,
+   "alloc": 6,
    "memset": 1,
    "d2h": 1,
    "scan": 1
@@ -8040,7 +8040,7 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cuda-True]": {
   "counts": {
    "launch": 7,
-   "alloc": 7,
+   "alloc": 8,
    "memset": 1,
    "d2h": 1,
    "scan": 1,
@@ -8068,7 +8068,7 @@
  "benchmarks/test_triangles.py::test_face_normals_and_areas[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 1
+   "alloc": 2
   }
  },
  "benchmarks/test_triangles.py::test_face_quality[saddle-ordito-cuda]": {
