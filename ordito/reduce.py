@@ -1479,23 +1479,28 @@ def _selected_order_statistics(
         if wp.types.type_size_in_bytes(dtype) == 4
         else kernel_reduce.RADIX_SELECT_PASSES_64
     )
-    state = _launch.pattern([0, rank, 0, UINT64_MAX], wp.uint64, device)
-    # The digit histogram and the passes' ticket, zeroed once: each pass's last block re-zeroes
-    # the bins it read and the ticket.
+    # The state, the digit histogram and the passes' ticket in one zeroed allocation: each pass's
+    # last block re-zeroes the bins it read and the ticket, and the first pass takes the rank.
     bins = kernel_reduce.RADIX_SELECT_BINS
-    scratch = _launch.zeros(bins + 1, dtype=wp.int32, device=device)
-    hist = _launch.view(scratch, 0, bins)
-    ticket = _launch.view(scratch, bins, bins + 1)
+    state_bytes = kernel_reduce.SELECT_STATE_SIZE * 8
+    scratch = _launch.zeros(
+        kernel_reduce.SELECT_STATE_SIZE + (bins + 2) // 2, dtype=wp.uint64, device=device
+    )
+    state = _launch.view(scratch, 0, kernel_reduce.SELECT_STATE_SIZE)
+    hist = _launch.alias(scratch, wp.int32, state_bytes, bins)
+    ticket = _launch.alias(scratch, wp.int32, state_bytes + 4 * bins, 1)
     blocks = -(-n // kernel_reduce.RADIX_SELECT_ITEMS_PER_BLOCK)
     select_pass = kernel_reduce.RADIX_SELECT_PASS[dtype]
+    seed_rank = rank
     for shift, width in passes:
         _launch.launch_tiled(
             select_pass,
             dim=[blocks],
-            inputs=[values, shift, width, hist, ticket, state],
+            inputs=[values, shift, width, seed_rank, hist, ticket, state],
             block_dim=TILE_1D,
             device=device,
         )
+        seed_rank = -1
     if pair:
         _launch.launch_tiled(
             kernel_reduce.RADIX_SELECT_SUCCESSOR[dtype],
@@ -1505,9 +1510,9 @@ def _selected_order_statistics(
             device=device,
         )
     # Host readback: the selected key, its rank within its run of equals, the run's length and the
-    # smallest key above it -- the answer.
+    # smallest key above it (complemented) -- the answer.
     key, within, run, successor = (int(value) for value in read_values(state, 0, 4))
-    next_key = key if not pair or within + 1 < run else successor
+    next_key = key if not pair or within + 1 < run else UINT64_MAX - successor
     return _ordered_key_value(key, dtype), _ordered_key_value(next_key, dtype)
 
 

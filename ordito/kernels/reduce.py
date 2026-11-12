@@ -2703,9 +2703,11 @@ RADIX_SELECT_PASSES_32 = ((21, 11), (10, 11), (0, 10))
 RADIX_SELECT_PASSES_64 = ((53, 11), (42, 11), (31, 11), (20, 11), (9, 11), (0, 9))
 # A block's share of the array, its lanes striding over it.
 RADIX_SELECT_ITEMS_PER_BLOCK = 256
-# The ``uint64`` state of one select: the digits selected so far (after the last pass the whole
-# key), the rank still sought below them (then the rank within the key's run of equals), the
-# length of that run, and the smallest key above it (``radix_select_successor``).
+# The ``uint64`` state of one select, zeroed: the digits selected so far (after the last pass the
+# whole key), the rank still sought below them (then the rank within the key's run of equals;
+# the first pass takes it as ``seed_rank``), the length of that run, and the smallest key above it
+# complemented (``UINT64_MAX - key``, ``radix_select_successor``), so zero is "none". Nothing in
+# it needs a nonzero seed, so it shares one zeroed allocation with the histogram and the ticket.
 SELECT_PREFIX = 0
 SELECT_RANK = 1
 SELECT_RUN = 2
@@ -2759,11 +2761,17 @@ def radix_select_bin(
 
 @wp.func
 def radix_select_close(
-    lane: wp.int32, width: wp.int32, hist: wp.array[wp.int32], state: wp.array[wp.uint64]
+    lane: wp.int32,
+    width: wp.int32,
+    seed_rank: wp.int32,
+    hist: wp.array[wp.int32],
+    state: wp.array[wp.uint64],
 ) -> None:
-    # A pass's last block: append the digit holding the rank still sought and keep the rank within
-    # it and its bin's count.
-    digit, within, run = radix_select_digit(lane, wp.int32(state[SELECT_RANK]), hist)
+    # A pass's last block: append the digit holding the rank still sought (``seed_rank`` on the
+    # first pass, a negative one on every later pass, which reads the state's) and keep the rank
+    # within it and its bin's count.
+    rank = wp.where(seed_rank >= 0, seed_rank, wp.int32(state[SELECT_RANK]))
+    digit, within, run = radix_select_digit(lane, rank, hist)
     if lane == 0:
         state[SELECT_PREFIX] = (state[SELECT_PREFIX] << wp.uint64(width)) | wp.uint64(digit)
         state[SELECT_RANK] = wp.uint64(within)
@@ -2800,6 +2808,7 @@ def _radix_select_pass(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
         values: wp.array[Any],
         shift: wp.int32,
         width: wp.int32,
+        seed_rank: wp.int32,
         hist: wp.array[wp.int32],
         ticket: wp.array[wp.int32],
         state: wp.array[wp.uint64],
@@ -2818,7 +2827,7 @@ def _radix_select_pass(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
                 peer_counted_add(hist, b)
         n_blocks = (n + RADIX_SELECT_ITEMS_PER_BLOCK - 1) // RADIX_SELECT_ITEMS_PER_BLOCK
         if last_atomic_block(lane, ticket, n_blocks) != 0:
-            radix_select_close(lane, width, hist, state)
+            radix_select_close(lane, width, seed_rank, hist, state)
 
     radix_select_pass.__annotations__["values"] = wp.array[dtype]
     return wp.kernel(radix_select_pass, name=name)
@@ -2826,8 +2835,8 @@ def _radix_select_pass(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
 
 def _radix_select_successor(name: str, dtype: Any, key: wp.Function) -> wp.Kernel:
     def radix_select_successor(values: wp.array[Any], state: wp.array[wp.uint64]) -> None:
-        # The smallest key above the selected one, into ``state[SELECT_SUCCESSOR]``
-        # (``UINT64_MAX`` seeded): a block minimum, then one atomic a block.
+        # The smallest key above the selected one, complemented into the zeroed
+        # ``state[SELECT_SUCCESSOR]``: a block minimum, then one atomic maximum a block.
         block, lane = wp.tid()
         selected = state[SELECT_PREFIX]
         n = values.shape[0]
@@ -2839,7 +2848,7 @@ def _radix_select_successor(name: str, dtype: Any, key: wp.Function) -> wp.Kerne
                 best = wp.min(best, k)
         lowest = block_min(best)
         if lane == 0 and lowest != UINT64_MAX_CONSTANT:
-            wp.atomic_min(state, SELECT_SUCCESSOR, lowest)
+            wp.atomic_max(state, SELECT_SUCCESSOR, UINT64_MAX_CONSTANT - lowest)
 
     radix_select_successor.__annotations__["values"] = wp.array[dtype]
     return wp.kernel(radix_select_successor, name=name)
