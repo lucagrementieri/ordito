@@ -3949,6 +3949,8 @@ class HeatSolver:
         _, _, offsets, columns, run_start, keys, count, _ = mesh.mesh_operator_pattern
         n_vertices = mesh.vertices.size
         device = mesh.vertices.device
+        # Two allocations, not the rim with its count carved behind it: built once a solver, ahead
+        # of a solve, the ~2 us that would save is no share of anything.
         rim = _launch.empty(n_vertices, dtype=wp.int32, device=device)
         n_rim = _launch.zeros(1, dtype=wp.int32, device=device)
         _launch.launch(

@@ -6,7 +6,6 @@ import math
 
 import warp as wp
 
-import ordito.typing as odt
 from ordito import _launch
 from ordito._common import read_scalar, require_same_device, scan_count
 from ordito.config import is_deterministic
@@ -98,10 +97,13 @@ def intersects_location(
 
     if is_deterministic():
         return _intersects_location_ordered(mesh, ray_origins, ray_directions, max_t)
-    index_ray = _launch.empty(n, dtype=wp.int32, device=device)
-    index_tri = _launch.empty(n, dtype=wp.int32, device=device)
+    # Both index buffers and, behind them, the hit counter: one allocation, the counter zeroed.
+    indices = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
+    index_ray = _launch.view(indices, 0, n)
+    index_tri = _launch.view(indices, n, 2 * n)
+    counter = _launch.view(indices, 2 * n, 2 * n + 1)
+    _launch.zero_(counter)
     locations = _launch.empty(n, dtype=wp.vec3, device=device)
-    counter = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_ray.first_hit_append,
         dim=n,
@@ -124,9 +126,9 @@ def intersects_location(
         empty_int = _launch.empty(0, dtype=wp.int32, device=device)
         return _launch.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
     return (
-        odt.as_dense(locations[:n_hits]),
-        odt.as_dense(index_ray[:n_hits]),
-        odt.as_dense(index_tri[:n_hits]),
+        _launch.view(locations, 0, n_hits),
+        _launch.view(indices, 0, n_hits),
+        _launch.view(indices, n, n + n_hits),
     )
 
 
