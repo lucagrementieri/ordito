@@ -161,7 +161,15 @@ def _check_vertex(
             wp.atomic_min(out_flags, 1, wp.int32(0))
 
 
-@wp.kernel
+# The four rasterizer kernels are built with no floating-point contraction, each in a module of its
+# own (``fuse_fp`` is a module option). With it, nvcc fused the coverage test's products by loop
+# shape, so a pixel centre within rounding of a near-degenerate face's edge fell on either side
+# depending on the kernel: the one-thread and sliced owner passes parted on ~1 in 3 000 rim pixels
+# of an edge-on projection, and the CUDA and CPU builds of one kernel on ~1 in 900. Unfused, both
+# devices and both owner passes give the CPU's former images bit for bit (coverage and
+# interpolated values), at 1.00-1.05x the owner pass on CUDA (``dragon`` at 4096 1.05x, ``lucy``
+# at 2048 1.04x), the pixel passes and the CPU at par.
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_owner(
     uv: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
@@ -206,7 +214,7 @@ OWNER_SLICE_WIDTHS = 2.0
 OWNER_MAX_SLICES_LOG2 = 6
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_owner_sliced(
     uv: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
@@ -222,11 +230,8 @@ def rasterize_owner_sliced(
     Over ``max(n_faces * slices, n_uv)``: thread ``t`` takes face ``t // slices`` and tests every
     ``slices``-th pixel of the window in row-major order from ``t % slices``, so a warp's lanes test
     neighbouring pixels of one face and a face of many pixels no longer holds its warp alone. The
-    owners are ``rasterize_owner``'s up to rounding: ``wp.atomic_min`` keeps the lowest covering
-    face whatever the split, but nvcc contracts the barycentric products differently in this loop,
-    so a pixel centre within rounding of a near-degenerate face's edge can change sides (about 1 in
-    3 000 pixels on a projected sphere's edge-on rim, against 1 in 900 where the CPU and CUDA
-    builds of ``rasterize_owner`` already part).
+    owners are ``rasterize_owner``'s: ``wp.atomic_min`` keeps the lowest covering face whatever the
+    split.
     """
     t = wp.int32(wp.tid())
     if t < (faces.shape[0] // 3) * slices:
@@ -248,7 +253,7 @@ def rasterize_owner_sliced(
         _check_vertex(uv, labels, t, out_flags)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_pixels(
     uv: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
@@ -278,7 +283,7 @@ def rasterize_pixels(
         )
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_label_pixels(
     uv: wp.array[wp.vec2],
     faces: wp.array[wp.int32],

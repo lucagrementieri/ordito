@@ -833,6 +833,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Sum cross products about a point of the loop, never the origin (`predicates.newell_term`).
 - FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and 0 on CPU. Do not disable it; write degeneracy tests at small scale and never assume CPU/CUDA bit agreement.
 - Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
+- A coverage or containment test that must not depend on the kernel around it is built unfused: `module_options={"fuse_fp": False}` on a `module="unique"` kernel turns off nvcc's `--fmad` and the CPU backend's fusion together. nvcc otherwise contracts the same `@wp.func` by loop shape, so the texture owner pass's one-thread and sliced forms parted on ~1 in 3 000 rim pixels of an edge-on projection and its CPU and CUDA builds on ~1 in 900; unfused, CUDA gives the CPU's former images bit for bit at 1.00-1.05x the pass (2026-11-12, `kernels/texture`; `kernels/heat`'s unfolding kernels likewise).
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
@@ -1182,9 +1183,8 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   a thread a face (`sphere_small` at 2048: 5 120 threads of ~3 500 pixels). Owner pass 528 -> 35 us
   there, bunny 485 -> 109 us at 4096, dragon 0.66x at 4096; whole calls 0.21x / 0.61x at 2048.
   The one-thread form stays its own kernel (the sliced walk inside it cost it 1.1-1.2x), and a
-  read before the `atomic_min` lost 1.1-1.8x (the bare atomic is not waited on). The two kernels
-  differ in rim pixels within rounding of a near-degenerate face's edge (nvcc contracts the
-  barycentric products by loop shape), as the CPU and CUDA builds of one kernel already do.
+  read before the `atomic_min` lost 1.1-1.8x (the bare atomic is not waited on). The rasterizer
+  kernels build unfused (§12.3), so the two owner passes and both devices give the same images.
 - **A sort that only groups rows under a small key is a ring compare** (2026-11-11,
   `repair._exact_value_classes`): rows sharing a primary key (a vertex's corners) take atomic
   slots in a CSR ring (`kernels/repair.count_primary_slots`, `place_ring_rows`), and each row finds
@@ -1339,19 +1339,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **Texture coverage rounds by build** (2026-11-11): `kernels/texture._claim_pixel`'s
-  barycentric test is contracted by nvcc per loop shape, so the one-thread and sliced owner passes
-  part on ~1 in 3 000 rim pixels of an edge-on projection, and the CPU and CUDA builds of one
-  kernel on ~1 in 900. Open: an explicitly rounded (`__fmaf_rn`, §12.3) or exact edge test would
-  make coverage the same on both devices and every launch shape (it moves those pixels once).
-- **A one-slot flag carved from a 1-D output's tail** (2026-11-11, `texture`'s discrete sampler,
-  0.92-0.95x a 25 us call) fits two more sites, not priced: `heat._pinned_system` and
-  `ray.intersects_location` (about 1.7 us a call each). A rank-2 output loses (the reshape costs
-  more than the allocation).
-- **`reduce.quantile`'s select path allocates twice** (2026-11-11): the state (`uint64`, a native
-  pattern fill) and the histogram plus ticket (`int32`, zeroed) are two allocations a call on the
-  CUDA select path (`bunny` rows: 2 allocations, 2 memsets). One carved buffer, the rank seeded by
-  the first pass, would save one (~6 us of ~60). Not priced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

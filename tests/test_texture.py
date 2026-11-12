@@ -23,6 +23,7 @@ from scipy.ndimage import map_coordinates
 
 import ordito as od
 import ordito.typing as odt
+from tests.conftest import sphere_irregular_arrays
 from tests.conversions import points_to_warp_uv
 
 
@@ -525,6 +526,53 @@ def test_rasterize_remap_roundtrip(device: str):
     class_image = od.texture.rasterize_discrete_attribute(uv_wp, faces_wp, labels_wp, resolution)
     recovered_labels = od.texture.remap_discrete_attribute_from_uv(uv_wp, class_image).numpy()
     assert np.array_equal(recovered_labels[interior], labels_np[interior])
+
+
+# --------------------------------------------------------------------------------------------
+# Independence from the owner pass's split and from the device
+# --------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("slices", [1, 8])
+def test_rasterize_ignores_split_and_device(
+    device: str, slices: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the images are the same bits whatever the owner pass's split or device.
+
+    No library rasterizes with this coverage rule. ``sphere_irregular`` projected onto ``xy``
+    stacks its front and back (the lowest-face rule decides every covered pixel) and turns its
+    rim faces edge-on, whose pixel centres sit within rounding of an edge: the pixels a contracted
+    (FMA) coverage test settles by loop shape and by device. The default split is compared with
+    one forced split per parameter, and both with the CPU's answer.
+    """
+    vertices_np, faces_np = sphere_irregular_arrays()
+    xy = vertices_np[:, :2]
+    uv_np = ((xy - xy.min(axis=0)) / np.ptp(xy, axis=0)).astype(np.float32)
+    faces_flat_np = faces_np.reshape(-1).astype(np.int32)
+    attribute_np = vertices_np.astype(np.float32)
+    labels_np = (np.arange(uv_np.shape[0]) % 5).astype(np.int32)
+    resolution = 512
+
+    def images(on: str) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
+        uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_flat_np, on)
+        labels_wp = wp.array(labels_np, dtype=wp.int32, device=on)
+        image = od.texture.rasterize_attribute(
+            uv_wp, faces_wp, _float_rows(attribute_np, on), resolution
+        )
+        class_image = od.texture.rasterize_discrete_attribute(
+            uv_wp, faces_wp, labels_wp, resolution
+        )
+        return image.numpy(), class_image.numpy()
+
+    image_np, class_np = images(device)
+    monkeypatch.setattr(od.texture, "_owner_slices", lambda *_: slices)
+    image_split_np, class_split_np = images(device)
+    monkeypatch.undo()
+    image_cpu_np, class_cpu_np = images("cpu")
+    assert 0 < (class_np >= 0).sum() < class_np.size
+    assert np.array_equal(image_split_np, image_np)
+    assert np.array_equal(class_split_np, class_np)
+    assert np.array_equal(image_cpu_np, image_np)
+    assert np.array_equal(class_cpu_np, class_np)
 
 
 # --------------------------------------------------------------------------------------------
