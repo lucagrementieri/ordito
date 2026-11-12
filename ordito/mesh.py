@@ -2275,22 +2275,22 @@ class Trimesh:
         print(f"{moved.bounds[0][2]:.4f} {moved.bounds[1][2]:.4f}")  # 4.0000 6.0000
         ```
         """
+        # Every use below -- the classification, the `reverses_orientation` check, the normal
+        # matrix in `_carry_directions`, up to two `as_mat44` calls in `_carry_box` -- is a host
+        # branch over a matrix that does not change between them. Resolving it once (the one
+        # readback a device array costs, none for an assumed identity) and passing the host value
+        # down reads the 16 floats once.
+        matrix_host = od.transform.as_mat44(matrix) if assume is None else None
         kind = str(
             od.transform.TransformKind(assume)
-            if assume is not None
-            else od.transform.classify_transform(matrix)
+            if matrix_host is None
+            else od.transform.classify_transform(matrix_host)
         )
         if kind == od.transform.TransformKind.IDENTITY:
             return self
+        if matrix_host is None:
+            matrix_host = od.transform.as_mat44(matrix)
 
-        # Every use below -- `transform_mesh`'s own `reverses_orientation` check, the explicit one
-        # on the next line, up to four `transform_normals` calls in `_carry_directions`, up to two
-        # `as_mat44` calls in `_carry_box` -- is a host branch over a matrix that does not change
-        # between them. Resolving it once here (paying the one readback `classify_transform`/
-        # `reverses_orientation` already forces when `matrix` is a device array) and passing the
-        # resolved host value down turns what was up to 7-8 independent host syncs of the same 16
-        # floats into exactly one.
-        matrix_host = od.transform.as_mat44(matrix)
         carry = _TRANSFORM_CARRY[kind]
         reverse = od.transform.reverses_orientation(matrix_host)
         if reverse:

@@ -293,23 +293,29 @@ def test_invalidation(bench_case: BenchCase, mode: str) -> None:
 
 @pytest.mark.benchmark(group="mesh_carry_directions")
 @pytest.mark.benchlibs("ordito")
-@pytest.mark.parametrize("mode", ["invert", "rotate"])
+@pytest.mark.parametrize("mode", ["invert", "rotate", "rotate_device"])
 def test_carry_directions(bench_case: BenchCase, mode: str) -> None:
     """
     ``invert`` and a rigid ``transform`` with both normal buffers cached: the carry, not a rebuild.
 
     ``invert`` negates the cached face and vertex normals, a rotation maps them by the normal
     matrix; either way in one launch over both buffers, beside the face-buffer work the new mesh
-    needs anyway. ordito-only for the reason ``mesh_invalidation`` is: the quantity is a cache
-    policy, with nothing to agree with.
+    needs anyway. ``rotate_device`` hands the rotation over as a ``(1,)`` device array, as a
+    fitted transform arrives, which prices reading it back. ordito-only for the reason
+    ``mesh_invalidation`` is: the quantity is a cache policy, with nothing to agree with.
     """
     skip_larger_than(bench_case, "happy_buddha")
     mesh = _warm(bench_case, "face_normals")
     _ = mesh.vertex_normals
     rotation = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.3)
+    matrix = (
+        wp.array([rotation], dtype=wp.mat44, device=mesh.vertices.device)
+        if mode == "rotate_device"
+        else rotation
+    )
 
     def run() -> od.Trimesh:
-        return mesh.invert() if mode == "invert" else mesh.transform(rotation)
+        return mesh.invert() if mode == "invert" else mesh.transform(matrix)
 
     assert bench_case.run(run) is not None
 

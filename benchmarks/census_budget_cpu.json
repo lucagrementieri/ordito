@@ -4010,7 +4010,14 @@
  "benchmarks/test_mesh.py::test_carry_directions[sphere_small-ordito-cpu-rotate]": {
   "counts": {
    "launch": 1,
-   "alloc": 5
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_mesh.py::test_carry_directions[sphere_small-ordito-cpu-rotate_device]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "readback": 1
   }
  },
  "benchmarks/test_mesh.py::test_center_mass[sphere_small-ordito-cpu-cold]": {
