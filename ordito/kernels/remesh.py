@@ -3944,6 +3944,11 @@ def reproject_vertices(
 ) -> wp.vec3:
     # Snap a free vertex back onto the closest point of the original surface, undoing the drift the
     # smoothing pass introduces. Pinned vertices and failed queries keep their position.
+    #
+    # Not bounded by the move (``proximity.closest_point_query_within``, with the step's length as
+    # the bound, a vertex reprojected last pass being on the surface): declined unbuilt
+    # (2026-11-12), since ``smooth_free_vertices`` is 16 % of ``isotropic_remesh``'s device time on
+    # bunny and 6 % on dragon, and the bound bought its first adopter about a tenth of the query.
     if finalize_vertex_codes(feature_count) != FREE_VERTEX:
         return vertex
     query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)

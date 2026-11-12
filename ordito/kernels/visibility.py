@@ -566,6 +566,17 @@ def shrink_tangent_sphere(
     # thread: no launch, convergence count or readback per round, and the state stays in
     # registers. A step that stops leaves the sphere as it returned it, which is where a round
     # launched over a converged lane left it.
+    #
+    # Declined (2026-11-12): one BVH walk shrinking the sphere in place against every face that
+    # reaches into it (the spheres tangent at ``p`` are nested, so pruning stays sound). It finds
+    # the least tangent radius over the faces, which is not this iteration's answer: where a face
+    # incident to ``p`` rises above the tangent plane (a saddle or concave vertex) that least radius
+    # tends to zero towards ``p``, and the iteration, whose closest-point query from a distant
+    # centre never lands beside ``p``, stops at the gap tolerance well above it; the reference
+    # implementations iterate as this does. Measured on 10 k queries: 35-45 % of radii moved, up
+    # to 80 % relative, both ways; and the walk cost 1.4-2.4x the iteration on bunny and dragon (a
+    # ``float64`` face test for every face the sphere's box meets; a ``float32`` plane prefilter
+    # brought it to 1.04-1.8x, shells_8 0.3x).
     r = radius
     c = center
     for _step in range(max_iter):
