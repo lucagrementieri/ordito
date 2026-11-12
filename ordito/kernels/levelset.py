@@ -18,7 +18,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
 from ordito.kernels.normals import accumulated_row_normal
-from ordito.kernels.proximity import closest_offset_d, closest_point_query
+from ordito.kernels.proximity import closest_offset_d, closest_point_query_within
 from ordito.kernels.reduce import GroupSumPass, block_max
 from ordito.kernels.triangles import corner_triple, face_vertices
 
@@ -1065,7 +1065,16 @@ def float64_band_field(
                     refine = refine or may_cross(result, there, iso, doubt)
     if refine:
         p = lattice_position(lower, step, i, j, k)
-        _closest, _distance, face = closest_point_query(mesh, wp.vec3(p), FLOAT32_INF_CONSTANT)
+        # The node's ``float32`` value is its distance at the ``float32`` position, so the query is
+        # asked within it first (``closest_point_query_within``); a field that understates it
+        # misses and asks again unbounded, so the face is the unbounded query's either way.
+        query_point = wp.vec3(p)
+        reach = wp.abs(value) * wp.float32(1.001) + wp.float32(1e-5) * (
+            wp.abs(value) + wp.length(query_point)
+        )
+        _closest, _distance, face = closest_point_query_within(
+            mesh, query_point, reach, FLOAT32_INF_CONSTANT
+        )
         if face >= 0:
             distance = wp.length(closest_offset_d(mesh, face, p))
             result = wp.where(value < 0.0, -distance, distance)
