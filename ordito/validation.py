@@ -1498,7 +1498,10 @@ def is_watertight(
     # flag and it is read once; only the self-intersection test, which needs a BVH, waits for it.
     # Reading the edge test's flag first, to skip the vertex test on an open mesh, costs a closed
     # mesh more than it saves an open one: the vertex test's launches then no longer overlap the
-    # sort on the device.
+    # sort on the device. Declined the other way (2026-11-12, CUDA): issuing the BVH build and the
+    # self-intersection pass before this read, so one sync serves both, took watertight and
+    # self-intersecting icospheres to 0.97-1.02x from 5 k to 2.6 M faces and cost an open one
+    # 3.1-17x (the BVH and the broad phase it skips today).
     n_vertices = vertices.size
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     parents = _corner_parents_from_mates(

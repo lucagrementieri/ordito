@@ -1355,11 +1355,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **`is_watertight` reads back twice** (2026-11-12): the manifold flag, then the
-  self-intersection flag, so a non-manifold mesh skips the BVH build and the broad phase. Reading
-  both at once (the broad phase issued before the first read) saves a sync on watertight input
-  and pays a BVH build and a broad phase on every other; unpriced. Price it on `sphere_med`,
-  `tangle_2` and an open mesh at two sizes before building it.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
