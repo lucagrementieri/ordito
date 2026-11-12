@@ -2070,15 +2070,28 @@ def csr_transpose(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
             _launch.empty(0, dtype=matrix.values.dtype, device=device),
             nnz=0,
         )
+    # The entries run row-major, so the transpose's columns (the rows) are in slot order: the
+    # keys' column field is padded and the sort orders the row bits alone.
+    key_cols = _column_ordered_key_cols(n_rows)
     keys, order = csr_key_buffers(count, device)
     _launch.launch(
         kernel_array.csr_transposed_keys,
         dim=n_rows + 1,
-        inputs=[matrix.offsets, matrix.columns, wp.int32(n_rows), wp.int32(n_cols), keys, order],
+        inputs=[
+            matrix.offsets,
+            matrix.columns,
+            wp.int32(n_rows),
+            wp.int32(n_cols),
+            wp.int32(n_rows if key_cols is None else key_cols),
+            keys,
+            order,
+        ],
         device=device,
     )
     # Every key is distinct, so each run is one entry and its "sum" is its own value.
-    return _csr_from_coo_keys(n_cols, n_rows, keys, order, odt.as_dense(matrix.values[:count]))
+    return _csr_from_coo_keys(
+        n_cols, n_rows, keys, order, odt.as_dense(matrix.values[:count]), key_cols=key_cols
+    )
 
 
 def _csr_from_coo_keys(
@@ -2089,12 +2102,16 @@ def _csr_from_coo_keys(
     values: wp.array[odt.Block, Any],
     *,
     prune_numerical_zeros: bool = False,
+    key_cols: int | None = None,
 ) -> odt.BsrMatrix[odt.Block]:
     """
     Sort written COO keys and assemble the matrix they spell, summing each run of ``values``.
 
     ``keys`` / ``order`` are [`csr_key_buffers`][ordito.array.csr_key_buffers] holding one
     ``kernels/array.csr_key`` and one index into ``values`` per slot in their first halves.
+    ``key_cols`` is ``_column_ordered_key_cols``' width for keys written with it in place of
+    ``n_cols``, their columns non-decreasing in slot order within each row: the stable sort then
+    orders the row bits alone.
     """
     count = int(values.shape[0])
     device = keys.device
@@ -2102,8 +2119,16 @@ def _csr_from_coo_keys(
     offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(count, dtype=wp.int32, device=device)
     summed = _launch.empty(count, dtype=values.dtype, device=device)
-    sentinel = n_rows * n_cols
-    _launch.radix_sort_pairs(keys, order, count=count, end_bit=_launch.key_bits(sentinel + 1))
+    # A column field of ``key_cols``, a power of two, is the key's low bits; the radix sort is
+    # stable on both devices, so with the columns already in slot order each row's run comes out
+    # column-sorted from a sort of the bits above it.
+    begin_bit = 0 if key_cols is None else (key_cols - 1).bit_length()
+    if key_cols is None:
+        key_cols = n_cols
+    sentinel = n_rows * key_cols
+    _launch.radix_sort_pairs(
+        keys, order, count=count, begin_bit=begin_bit, end_bit=_launch.key_bits(sentinel + 1)
+    )
     # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and
     # one pass places them, summing each run where it lands; the flags and their scan live in the
     # payload buffer's upper half, which is sort scratch.
@@ -2122,7 +2147,7 @@ def _csr_from_coo_keys(
                 values.dtype(),
                 wp.int32(1 if prune_numerical_zeros else 0),
                 wp.int32(n_rows),
-                wp.uint64(n_cols),
+                wp.uint64(key_cols),
                 flags,
                 offsets,
                 columns,
@@ -2156,7 +2181,7 @@ def _csr_from_coo_keys(
             flags,
             wp.uint64(sentinel),
             wp.int32(n_rows),
-            wp.uint64(n_cols),
+            wp.uint64(key_cols),
             offsets,
             columns,
             summed,
@@ -2256,17 +2281,44 @@ def index_sparse(
         )
     # The triplets' keys straight from the index rows: a zero-valued triplet adds nothing to its
     # entry's sum, so pruning on the sums needs no keys of its own.
+    # The index rows run in column order, so the keys' column field is padded and the sort
+    # orders the row bits alone.
+    key_cols = _column_ordered_key_cols(n_cols)
     keys, order = csr_key_buffers(count, device)
     _launch.launch(
         kernel_array.index_sparse_keys,
         dim=count,
-        inputs=[indices.flatten(), wp.int32(n_repeats), wp.int32(n_rows), wp.int32(n_cols)],
+        inputs=[
+            indices.flatten(),
+            wp.int32(n_repeats),
+            wp.int32(n_rows),
+            wp.int32(n_cols if key_cols is None else key_cols),
+        ],
         outputs=[keys, order],
         device=device,
     )
     return _csr_from_coo_keys(
-        n_rows, n_cols, keys, order, data, prune_numerical_zeros=prune_numerical_zeros
+        n_rows,
+        n_cols,
+        keys,
+        order,
+        data,
+        prune_numerical_zeros=prune_numerical_zeros,
+        key_cols=key_cols,
     )
+
+
+def _column_ordered_key_cols(n_cols: int) -> int | None:
+    """
+    Power-of-two column field for keys written in column order, or ``None`` past ``int32``.
+
+    A producer whose slots already run in column order within each row (``index_sparse``'s index
+    rows, ``csr_transpose``'s row-major entries) writes ``csr_key`` with this in place of
+    ``n_cols`` and hands it to ``_csr_from_coo_keys`` as ``key_cols``, whose sort then skips the
+    column bits.
+    """
+    width = 1 << (n_cols - 1).bit_length()
+    return width if width <= 1 << 30 else None
 
 
 def isin(
