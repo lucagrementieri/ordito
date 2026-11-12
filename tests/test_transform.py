@@ -14,10 +14,16 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+from ordito.kernels import transform as kernel_transform
 from ordito.mesh import _ORIENTATION_DEPENDENT_KEYS
 from ordito.transform import TransformKind
 from tests.comparisons import SET_VALUED_CACHE_KEYS, comparable_arrays, csr_row_sets
-from tests.conftest import OPEN_MESHES, populate_cache
+from tests.conftest import (
+    OPEN_MESHES,
+    populate_cache,
+    saddle_graded_large_arrays,
+    sphere_irregular_arrays,
+)
 from tests.conversions import (
     numpy_to_warp,
     points_to_open3d,
@@ -397,26 +403,31 @@ def test_transform_normals_matches_pyvista(sphere_irregular: tuple[tm.Trimesh, w
     assert np.allclose(mapped_wp, expected_pv, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("mesh", ["sphere_irregular", "saddle_graded_large"])
 @pytest.mark.parametrize("in_place", [False, True], ids=["allocated", "in_place"])
 @pytest.mark.parametrize("on_device", [False, True], ids=["host_matrix", "device_matrix"])
 @pytest.mark.parametrize("kind", ["rigid", "reflection"])
 def test_transform_mesh_matrix_forms_match_trimesh(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], kind: str, on_device: bool, in_place: bool
+    device: wp.Device, mesh: str, kind: str, on_device: bool, in_place: bool
 ) -> None:
     """
     Class A: every matrix form and face mode of ``transform_mesh`` against ``apply_transform``.
 
-    A host matrix runs the one-launch form, whose faces are reversed, copied, or left alone when
-    ``out_faces`` is the input buffer; a ``(1,)`` device matrix runs the two-pass form, which
-    reverses or copies, and skips the copy in place. A rigid motion keeps the winding and the
-    reflection reverses it, so both face answers are exercised in every form.
+    On CUDA a host matrix and a ``(1,)`` device matrix each run one launch, the second deciding
+    the winding in the kernel; on the CPU a device matrix runs two passes, and so does a host
+    matrix keeping the winding from ``kernels/transform.CPU_TWO_PASS_FROM_FACES`` faces, which
+    ``saddle_graded_large`` (8 978 faces) crosses and ``sphere_irregular`` (996) does not. Faces
+    are reversed, copied, or left alone when ``out_faces`` is the input buffer; a rigid motion
+    keeps the winding and the reflection reverses it, so both face answers run in every form.
     """
-    mesh_tm, mesh_wp = sphere_irregular
-    device = mesh_wp.device
+    if mesh == "sphere_irregular":
+        vertices_np, faces_np = sphere_irregular_arrays()
+    else:
+        vertices_np, faces_np = saddle_graded_large_arrays()
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
     matrix = TRANSFORMS[3][1] if kind == "reflection" else _ROTATION
     assert od.transform.reverses_orientation(matrix) is (kind == "reflection")
-    faces_wp = wp.clone(mesh_wp.indices)
-    vertices_wp = wp.clone(mesh_wp.points)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     matrix_arg: wp.mat44 | wp.array[wp.mat44] = (
         wp.array([matrix], dtype=wp.mat44, device=device) if on_device else matrix
     )
@@ -573,6 +584,46 @@ def test_carried_cache_matches_recomputation(
             assert np.allclose(got, expected, rtol=1e-4, atol=1e-4), (
                 f"{kind} carried a stale {key} on {mesh_name}"
             )
+
+
+@pytest.mark.parametrize("cached", ["normals", "frames"])
+@pytest.mark.parametrize("kind", ["rigid", "reflection", "similarity"])
+def test_transform_carry_forms_agree(
+    device: str, monkeypatch: pytest.MonkeyPatch, kind: str, cached: str
+) -> None:
+    """
+    Ordito against ordito: the CPU's launch-a-buffer carry equals the one-launch carry.
+
+    From ``kernels/transform.CPU_TWO_PASS_FROM_FACES`` buffer entries the CPU maps the positions
+    and each carried direction in a launch of its own, and reverses a mirror's faces in another;
+    raising the bound sends the same call through ``transform_mesh_and_directions``, whose values
+    ``test_carried_cache_matches_recomputation`` checks. The 20 480-face icosphere crosses the
+    bound; on CUDA both runs take the one launch.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=5)
+    vertices_np, faces_np = sphere_tm.vertices, sphere_tm.faces
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    assert faces_np.shape[0] >= kernel_transform.CPU_TWO_PASS_FROM_FACES
+    matrix = {"rigid": _ROTATION, "reflection": TRANSFORMS[3][1], "similarity": TRANSFORMS[4][1]}[
+        kind
+    ]
+
+    def carried() -> list[np.ndarray]:
+        mesh = od.Trimesh(vertices_wp, faces_wp)
+        _ = mesh.face_normals
+        _ = mesh.vertex_tangent_frames if cached == "frames" else mesh.vertex_normals
+        moved = mesh.transform(matrix)
+        arrays = [moved.vertices.numpy(), moved.faces.numpy()]
+        for key in sorted(moved._cache):
+            arrays.extend(comparable_arrays(moved._cache[key]))
+        return arrays
+
+    by_buffer = carried()
+    monkeypatch.setattr(kernel_transform, "CPU_TWO_PASS_FROM_FACES", 2**62)
+    one_launch = carried()
+    assert len(by_buffer) == len(one_launch) > 3
+    for got, expected in zip(by_buffer, one_launch, strict=True):
+        assert np.array_equal(got, expected)
 
 
 def test_transform_carries_the_expensive_operators_through_a_rigid_motion(

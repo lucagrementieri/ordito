@@ -36,7 +36,12 @@ def transform_mesh_and_directions(
     # ``Trimesh.transform`` in one launch over the longest buffer: the positions and faces
     # (``transform.transform_mesh``'s row) and up to four cached directions
     # (``transform.transform_normals``' map), so a transformed mesh carrying its normals costs one
-    # launch.
+    # launch. CUDA only: on the CPU, which runs a launch's threads in turn, a launch a buffer (the
+    # point map, each direction's normal map, a mirror's face reversal) ran 0.59-0.87x this
+    # launch with no directions cached (``sphere_small`` to ``dragon``, a mirror) and 0.61-0.67x
+    # with both normal buffers from ``bunny`` up (1.03x on ``sphere_small``, 1.05-1.09x on its
+    # whole call), so a mesh carrying directions takes this launch on the CPU below
+    # ``transform.CPU_TWO_PASS_FROM_FACES`` buffer entries (2026-11-12).
     i = wp.int32(wp.tid())
     transform_mesh_row(vertices, faces, matrix, face_mode, i, out_vertices, out_faces)
     transform_normal_at(face_normals, normal_matrix, i, out_face_normals)

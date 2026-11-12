@@ -61,6 +61,20 @@ FACES_KEEP = wp.int32(0)
 FACES_COPY = wp.int32(1)
 FACES_REVERSE = wp.int32(2)
 
+# From this many faces the CPU runs ``transform.transform_mesh`` under a host matrix that keeps the
+# winding as two passes, the point map and then a ``wp.copy`` of the faces (none in place), instead
+# of one ``transform_mesh_buffers`` launch. The CPU runs a launch's threads in turn, and the fused
+# launch spends a thread on every face copying three indices where ``wp.copy`` is a memcpy, plus
+# idle threads past the last vertex. CPU calls, a rotation, new/old: 0.86-0.90x at 16 k faces,
+# 0.70-0.76x on ``bunny``, 0.56-0.63x on ``dragon``, par on ``sphere_small`` (5 k) (2026-11-12).
+# A mirror keeps the fused launch: the map plus ``repair.reverse_face_winding`` read 0.77x on
+# ``dragon`` when the output pages were resident and 0.93x when every call faulted them in, but
+# 1.6x in a heap state where both forms took ~2 000 minor faults a call and only the two passes
+# paid for them, and 1.08-1.12x at 16 k faces. CUDA keeps the one launch at every size.
+# ``Trimesh.transform`` takes the same bound on its longest buffer before mapping carried
+# directions a launch a buffer on the CPU (``kernels/mesh.transform_mesh_and_directions``).
+CPU_TWO_PASS_FROM_FACES = 2**13
+
 
 @wp.func
 def transform_mesh_row(
@@ -126,7 +140,8 @@ def transform_mesh_buffers_device(
     # back. CUDA only (0.22x on sphere_small and dragon, 0.96x on lucy). On the CPU the
     # per-thread sign test cost 1.1-4.6x the old two passes (sphere_small to dragon) and reading
     # the matrix there instead still lost 1.26-1.54x on dragon: one thread writing a vertex and a
-    # face runs slower on the CPU than the map and the face pass apart, so the CPU keeps them.
+    # face runs slower on the CPU than the map and the face pass apart
+    # (``CPU_TWO_PASS_FROM_FACES``), so the CPU keeps them.
     i = wp.int32(wp.tid())
     m = matrix[0]
     mode = wp.where(mirrors_mat44(m), FACES_REVERSE, face_mode)

@@ -16,6 +16,7 @@ from ordito import _launch
 from ordito._common import read_scalar, require_nonempty_mesh
 from ordito.config import is_deterministic
 from ordito.kernels import mesh as kernel_mesh
+from ordito.kernels import repair as kernel_repair
 from ordito.kernels import transform as kernel_transform
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -2310,8 +2311,9 @@ class Trimesh:
         ``reverse`` (a mirror), the faces corner-reversed as
         [`transform_mesh`][ordito.transform.transform_mesh] writes them; otherwise connectivity is
         untouched, so the face buffer is shared rather than copied, as `invert` shares the
-        vertices: neither mesh can mutate it. Positions, faces and every carried direction are one
-        ``kernels/mesh.transform_mesh_and_directions`` launch.
+        vertices: neither mesh can mutate it. On CUDA, positions, faces and every carried direction
+        are one ``kernels/mesh.transform_mesh_and_directions`` launch; the CPU takes a launch a
+        buffer (`_carry_directions_by_buffer`) unless a small mesh carries directions.
 
         The directions are rotated rather than dropped only for a similarity or stronger, where a
         direction's image is determined by the transform alone. A translation moves no direction
@@ -2365,7 +2367,13 @@ class Trimesh:
             self.n_faces if reverse else 0,
             *(0 if array is None else array.size for array in inputs),
         )
-        if n > 0:
+        if not wp.get_device(device).is_cuda and (
+            not directed or n >= kernel_transform.CPU_TWO_PASS_FROM_FACES
+        ):
+            self._carry_directions_by_buffer(
+                matrix, reverse, inputs, new_vertices, new_faces, outputs
+            )
+        elif n > 0:
             _launch.launch(
                 kernel_mesh.transform_mesh_and_directions,
                 dim=n,
@@ -2393,6 +2401,40 @@ class Trimesh:
         if vertex_normals is not None:
             survived["vertex_normals"] = out_normal
         return new_vertices, new_faces
+
+    def _carry_directions_by_buffer(
+        self,
+        matrix: wp.mat44,
+        reverse: bool,
+        inputs: list[wp.array[wp.vec3] | None],
+        new_vertices: wp.array[wp.vec3],
+        new_faces: wp.array[wp.int32],
+        outputs: list[wp.array[wp.vec3] | None],
+    ) -> None:
+        """
+        `_carry_directions`' launch on the CPU, as one pass a buffer.
+
+        The point map, the normal map of each carried direction and, for a mirror, the face
+        reversal. The CPU runs a launch's threads in turn, so one thread placing a vertex, a face
+        and up to four directions runs slower there than a launch for each buffer.
+        """
+        device = self._vertices.device
+        if self.n_vertices > 0:
+            _launch.map(
+                kernel_transform.transform_point_mat44, self._vertices, matrix, out=new_vertices
+            )
+        if any(array is not None for array in inputs):
+            normal_map = od.transform.normal_matrix(matrix)
+            for array, out in zip(inputs, outputs, strict=True):
+                if array is not None and out is not None and array.size > 0:
+                    _launch.map(kernel_transform.transform_normal_mat33, array, normal_map, out=out)
+        if reverse and self.n_faces > 0:
+            _launch.launch(
+                kernel_repair.reverse_face_winding,
+                dim=self.n_faces,
+                inputs=[self._faces, new_faces],
+                device=device,
+            )
 
     def _carry_box(
         self, kind: str, matrix: wp.mat44 | wp.array[wp.mat44], survived: dict[str, object]

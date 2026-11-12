@@ -1274,6 +1274,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   correlation -0.09). It would also have to be a per-module option, since module flags replace
   `wp.config.cpu_compiler_flags`, and `wp.map` modules take none. An unknown `-mllvm` option
   fails every CPU build.
+- **A CPU row can swing with the heap's history.** glibc's dynamic mmap threshold and heap trimming
+  decide whether a call's large outputs land on resident pages. `transform_mesh`'s CPU mirror in
+  two passes read 2.05 ms on `dragon` run alone and 4.2 ms right after a rigid call in the same
+  process (~2 000 minor faults a call against none), while the fused form beside it took the same
+  faults in one sequence at no visible cost (2026-11-12). Count `resource.getrusage(...).ru_minflt`
+  per call in both arms before attributing a CPU row that moves with what ran before it, and read
+  each regime alone: `MALLOC_MMAP_THRESHOLD_=131072` faults every call in, a threshold of 1 GiB
+  with `MALLOC_TRIM_THRESHOLD_` at its maximum keeps every page resident.
 - **Pin the B arm to a worktree, not the live tree.** Another session committing and editing in the live tree during a sweep changed that arm's code mid-run (the 1.19 A/B: its heat and mesh rows, and a cold compile that hit a half-written kernel). Check `git log` and file mtimes against the run's timestamps before trusting a live-tree arm.
 - **`wp.timing_begin` sees no graph-replayed kernels**, so every CG solve reads host-bound. Re-run with capture disabled and carry the device total back. It misses `capture_while` passes too, and `TIMING_KERNEL` omits memcpys: price a fusion that replaces a `wp.copy` with `TIMING_ALL`.
 - **Every group has a census row:** scan-mesh rows (`bunny` to `lucy`) run only at `--size medium`, so every scan sweep also runs its ordito rows on `sphere_small` (`CENSUS_MESH`, `benchmarks/conftest.py`), the rows the gate counts; a test with nothing to do on a closed smooth sphere names another small feature mesh with `@pytest.mark.censusmesh(name)` (`saddle_small` for rims, `tangle_torus_small` for creases). A census row that skips leaves its group outside the gate. The census keeps only the smallest mesh of each size axis a test sweeps (`benchmarks/census.py`, `_SIZE_AXES`): of 120 size-axis tests, 91 counted the same at every size and 20 more only ran more rounds (CG iterations, Cholesky panels); the other branches on size are kept with `@pytest.mark.censuskeep` (k-NN deferral, chunked geodesic ball, multi-block polyline reduction, longest-edge split selection). Feature-axis meshes are different inputs and all stay, except a row `@pytest.mark.censusskip` names whose counts equal a cheaper row's by construction (`thickness_interior`'s `max_sphere` on `sphere_med`: in-kernel iterations, 75x `shells_8`'s time for its exact counts). `screened_poisson` keeps depth 7 only. `sample_surface_poisson_disk`'s rounds replay as one graph on CUDA and run in thread order on the CPU, so its row is gated like any other. The stitch rows assert their band size, since a band of two parallel half-strips once stitched nothing.
@@ -1335,6 +1343,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   at `cg_one_block`); find what does before tuning. `normal_equations_rows` (1.5 ms there) sorts a
   hub's 2-ring by insertion in one thread; an order-keeping rewrite is priced at ~0.5 ms
   (`reference/component-status.md`, 16.8).
+- **`normals.vertex_normals(weighting="angle")` is not reproducible on CUDA with the setting on**
+  (2026-11-12): 19 of 19 calls on an `icosphere(5)` differed bit-wise under
+  `set_deterministic(True)`, with or without `face_normals` passed, while the default area
+  weighting repeated exactly; `Trimesh.vertex_normals` (and every carried or recomputed vertex
+  normal and tangent frame) inherits it. Found on the way, not yet traced: the angle path's
+  per-vertex sum is the suspect (§2.2).
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
@@ -1354,10 +1368,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **The fused `transform_mesh_buffers` loses on large CPU meshes** (2026-11-12): one thread
-  writing a vertex and a face (`transform.transform_mesh` with a host matrix, and
-  `Trimesh.transform`'s `kernels/mesh.transform_mesh_and_directions`) ran 2.8-2.9 ms on `dragon`
-  on the CPU against 1.8-2.3 ms for the point map plus a face pass (rigid and mirror), while
-  winning on `sphere_small` (57 against 58-71 us). The device-matrix CPU path keeps the two passes
-  (`transform._transform_mesh_two_pass`); a CPU size gate for the host-matrix path is unpriced
-  (the box was loaded).

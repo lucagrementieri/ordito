@@ -458,6 +458,11 @@ def transform_mesh(
     else:
         if reverses_orientation(matrix):
             face_mode = kernel_transform.FACES_REVERSE
+        elif (
+            faces.size // 3 >= kernel_transform.CPU_TWO_PASS_FROM_FACES
+            and not wp.get_device(vertices.device).is_cuda
+        ):
+            return _transform_mesh_two_pass(vertices, faces, matrix, new_vertices, new_faces)
         kernel = kernel_transform.transform_mesh_buffers
     n = max(vertices.size, faces.size // 3)
     if n > 0:
@@ -474,24 +479,27 @@ def transform_mesh(
 def _transform_mesh_two_pass(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    matrix: wp.array[wp.mat44],
+    matrix: wp.mat44 | wp.array[wp.mat44],
     new_vertices: wp.array[wp.vec3],
     new_faces: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    [`transform_mesh`][ordito.transform.transform_mesh] for a CPU device matrix, in two passes.
+    [`transform_mesh`][ordito.transform.transform_mesh] on the CPU, in two passes.
 
-    The points map, then a face reversal or copy decided on the host. On the CPU the reading is
-    a view, and these passes run faster than one ``transform_mesh_buffers`` launch on a large
-    mesh, whose thread writes both a vertex and a face.
+    The points map, then a face reversal or copy decided on the host (a CPU array's read is a
+    view). Taken by a CPU device matrix, and by a host matrix that keeps the winding on a mesh
+    that is not small, where the copy is a memcpy rather than a thread copying each face.
     """
     if vertices.size > 0:
-        _launch.launch(
-            kernel_transform.apply_transform_mat44,
-            dim=vertices.size,
-            inputs=[vertices, matrix, new_vertices],
-            device=vertices.device,
-        )
+        if isinstance(matrix, wp.array):
+            _launch.launch(
+                kernel_transform.apply_transform_mat44,
+                dim=vertices.size,
+                inputs=[vertices, matrix, new_vertices],
+                device=vertices.device,
+            )
+        else:
+            _launch.map(kernel_transform.transform_point_mat44, vertices, matrix, out=new_vertices)
     n_faces = faces.size // 3
     if reverses_orientation(matrix):
         if n_faces > 0:
