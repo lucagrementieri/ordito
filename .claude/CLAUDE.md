@@ -1355,6 +1355,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
+- **Tangent spheres walk the whole mesh from a round centre** (2026-11-12): the shrink step is a
+  closest-point query from the sphere's centre, which on a near-perfect sphere finds every face
+  within the radius (`thickness(method="max_sphere")` on `sphere_med`, 10 k queries: 0.41 s, 20x
+  bunny). Unbuilt: a branch-and-bound search for the least tangent radius over the faces (a box
+  holds no point inside a sphere it does not meet) in place of the iteration; it may change
+  answers, so it needs the owner's go-ahead. `closest_point_query_within` (a known bound first,
+  bit-identical) also fits a query whose distance the caller can bound: `remesh.reproject_vertices`
+  / `clamp_to_surface_band` by the smoothing drift, `levelset`'s band-node queries by a
+  neighbour's distance plus the spacing; neither carries the bound yet, unpriced.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

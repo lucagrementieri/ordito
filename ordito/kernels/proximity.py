@@ -116,6 +116,26 @@ def closest_point_query(
 
 
 @wp.func
+def closest_point_query_within(
+    mesh_id: wp.uint64, p: wp.vec3, bound: wp.float32, max_dist: wp.float32
+) -> tuple[wp.vec3, wp.float32, wp.int32]:
+    # ``closest_point_query`` at ``max_dist``, asked first within ``bound``: the caller's estimate
+    # of the distance (a surface point known to be that near, with slack for a box distance
+    # rounding above a face distance). Warp seeds its pruning with the bound, so a far sibling the
+    # nearest-first descent would push and re-test later is never pushed. A hit is the unbounded
+    # query's answer bit for bit (pruning skips only nodes farther than the running best, and the
+    # visit order does not depend on it); a miss asks again at ``max_dist``.
+    closest = p
+    distance = max_dist
+    face = wp.int32(-1)
+    if bound < max_dist:
+        closest, distance, face = closest_point_query(mesh_id, p, bound)
+    if face < 0:
+        closest, distance, face = closest_point_query(mesh_id, p, max_dist)
+    return closest, distance, face
+
+
+@wp.func
 def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
     # ``p`` minus its closest point on one mesh face, in ``float64``.
     corner = face * 3

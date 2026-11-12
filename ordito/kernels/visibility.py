@@ -5,7 +5,7 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, append_slot, ordered_item, to_vec3d
 from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
-from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query
+from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query_within
 from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum, minmax_vec3_chunk
 from ordito.kernels.sample import fibonacci_direction
@@ -514,7 +514,14 @@ def sphere_shrink_step(
     # shrinking; a sphere that stops -- touching the surface, or with no tangent sphere -- keeps
     # its radius and centre. The query and its miss convention are
     # ``proximity.closest_point_query``'s.
-    _nearest, distance, face = closest_point_query(mesh_id, center, max_t)
+    #
+    # ``p`` lies on the surface, so the centre's closest point is within ``radius`` of it: the
+    # query is asked within that first (``closest_point_query_within``), and again at ``max_t``
+    # on a miss (``p`` off the surface, or only sliver faces near it, which Warp skips).
+    # Byte-identical, CUDA 0.87-0.91x a call on bunny and dragon, 0.96-0.99x on spheres whose
+    # centre sees every face within the radius; CPU 0.92-1.00x.
+    bound = radius * wp.float32(1.001) + wp.float32(1e-5) * (max_t + wp.length(p))
+    _nearest, distance, face = closest_point_query_within(mesh_id, center, bound, max_t)
     # Warp's query picks the face; everything after is ``float64``. The point Warp places on the
     # face is up to ~2e-5 off, above the tolerance the gap is tested against, and the tangent
     # radius divides by a dot product that cancels as the sphere closes in, so ``float32`` there
