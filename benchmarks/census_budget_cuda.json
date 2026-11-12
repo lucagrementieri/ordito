@@ -8243,8 +8243,8 @@
  },
  "benchmarks/test_validation.py::test_is_orientable[ribbon_long-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 5,
+   "launch": 4,
+   "alloc": 4,
    "memset": 1,
    "d2h": 1,
    "sort": 1
@@ -8252,8 +8252,8 @@
  },
  "benchmarks/test_validation.py::test_is_orientable[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 5,
+   "launch": 4,
+   "alloc": 4,
    "memset": 1,
    "d2h": 1,
    "sort": 1

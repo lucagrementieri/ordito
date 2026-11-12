@@ -1043,14 +1043,24 @@ def face_orientation_bits(
     # readbacks for work bounded by a few milliseconds of bandwidth.
     # ``signed_edges`` holds face ids this function just built from ``adjacency`` (itself bounded
     # by ``n_faces`` by construction) and every sign is ``0`` or ``1``, so nothing is range-checked.
-    _launch.launch(
-        kernel_connected_components.ecl_hook_parity,
-        dim=m,
-        inputs=[signed_edges, signs, words],
-        device=device,
-    )
     if is_deterministic():
-        words = _reproducible_orientation_words(faces, None, signed_edges, signs, words)
+        # The flagged hook tells whether the racing forest already is the reproducible answer.
+        conflict = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_connected_components.ecl_hook_parity_flagged,
+            dim=m,
+            inputs=[signed_edges, signs, words],
+            outputs=[conflict],
+            device=device,
+        )
+        words = _reproducible_orientation_words(faces, None, signed_edges, signs, words, conflict)
+    else:
+        _launch.launch(
+            kernel_connected_components.ecl_hook_parity,
+            dim=m,
+            inputs=[signed_edges, signs, words],
+            device=device,
+        )
     return _flatten_orientation(words), signed_edges, signs, m
 
 
@@ -1129,15 +1139,10 @@ def is_orientable(
     if n_faces == 0:
         return True
 
-    orient, mates = _orientation_bits_from_mates(faces, n_vertices, mates)
-    device = faces.device
-    conflict = _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_validation.mate_orientation_conflict,
-        dim=mates.size,
-        inputs=[faces, mates, orient, conflict],
-        device=device,
-    )
+    # The hook flags a pair its forest contradicts, which is a re-test of every pair against the
+    # flattened bits: no flatten and no second pass.
+    conflict = _launch.zeros(1, dtype=wp.int32, device=faces.device)
+    _orientation_words_from_mates(faces, n_vertices, mates, conflict)
     return int(read_scalar(conflict, 0)) == 0
 
 
@@ -1255,10 +1260,11 @@ def _face_flip_words(
     (``kernels/validation.face_parity_flip``), so the mask is never materialized. Nonempty
     ``faces``; reproducible under the deterministic setting exactly as the mask is.
     """
-    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
-    if is_deterministic():
-        words = _reproducible_orientation_words(faces, mates, None, None, words)
-    return words
+    if not is_deterministic():
+        return _orientation_words_from_mates(faces, n_vertices, mates)[0]
+    conflict = _launch.zeros(1, dtype=wp.int32, device=faces.device)
+    words, mates = _orientation_words_from_mates(faces, n_vertices, mates, conflict)
+    return _reproducible_orientation_words(faces, mates, None, None, words, conflict)
 
 
 def _reproducible_orientation_words(
@@ -1267,6 +1273,7 @@ def _reproducible_orientation_words(
     edges: odt.Array2dInt32 | None,
     signs: wp.array[wp.int32] | None,
     words: wp.array[wp.int32],
+    conflict: wp.array[wp.int32],
 ) -> wp.array[wp.int32]:
     """
     Parity words that are a function of ``faces`` alone, for the deterministic setting.
@@ -1274,32 +1281,18 @@ def _reproducible_orientation_words(
     The signed face graph is the halfedge ``mates``' pairs (``face_flip_mask``) or, given
     ``edges`` and ``signs``, that edge list (``face_orientation_bits``); the other pair is
     ``None``. ``words`` from the racing parity union-find over it already are on a consistent
-    mesh, which one conflict test and a readback confirm. Otherwise the parity is re-solved over
-    the graph's unique minimum spanning forest, keyed by edge index (``kernels/validation``'s
-    Boruvka rounds, one readback each to stop), whose parity is the same on every run and, on each
-    consistent component, the racing answer.
+    mesh, which ``conflict``, raised by the flagged hook that built them, and a readback confirm.
+    Otherwise the parity is re-solved over the graph's unique minimum spanning forest, keyed by
+    edge index (``kernels/validation``'s Boruvka rounds, one readback each to stop), whose parity
+    is the same on every run and, on each consistent component, the racing answer.
     """
     device = faces.device
     n_faces = words.size
-    conflict = _launch.zeros(1, dtype=wp.int32, device=device)
-    orient = _flatten_orientation(words)
     if edges is None:
         assert mates is not None
         n_edges = mates.size
-        _launch.launch(
-            kernel_validation.mate_orientation_conflict,
-            dim=n_edges,
-            inputs=[faces, mates, orient, conflict],
-            device=device,
-        )
     else:
         n_edges = int(edges.shape[0])
-        _launch.launch(
-            kernel_validation.signed_edge_orientation_conflict,
-            dim=n_edges,
-            inputs=[edges, signs, orient, conflict],
-            device=device,
-        )
     # Unavoidable: whether any pair contradicts the parity decides whether the forest is needed.
     if int(read_scalar(conflict, 0)) == 0:
         return words
@@ -1351,23 +1344,11 @@ def _reproducible_orientation_words(
     return forest_words
 
 
-def _orientation_bits_from_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Flip bits, with the signed edges formed straight off the halfedge mates.
-
-    The bits [`face_orientation_bits`][ordito.validation.face_orientation_bits] returns, for
-    [`is_orientable`][ordito.validation.is_orientable], which consumes the bits and not the table.
-    ``faces`` must be non-empty; ``n_vertices`` is ``halfedge_mates``' optional bound. The mates
-    are returned too, so a caller can re-form the same edges; given ``mates`` are used as they are.
-    """
-    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
-    return _flatten_orientation(words), mates
-
-
 def _orientation_words_from_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
+    faces: wp.array[wp.int32],
+    n_vertices: int | None,
+    mates: wp.array[wp.int32] | None,
+    conflict: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Build the parity union-find's hooked words over the signed edges of the halfedge mates.
@@ -1377,7 +1358,8 @@ def _orientation_words_from_mates(
     So neither the adjacency table nor the host read of its length is built. Flattened, the words
     give [`face_orientation_bits`][ordito.validation.face_orientation_bits]' bits
     (``_flatten_orientation``) or [`face_flip_mask`][ordito.validation.face_flip_mask]'s mask.
-    Returned with the mates.
+    Returned with the mates. Given a zeroed ``conflict``, the hook raises ``conflict[0]`` when some
+    pair contradicts the forest, which is when the mesh is not orientable.
     """
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, n_vertices)
@@ -1393,12 +1375,21 @@ def _orientation_words_from_mates(
         outputs=[words],
         device=faces.device,
     )
-    _launch.launch(
-        kernel_validation.mate_hook_parity,
-        dim=mates.size,
-        inputs=[faces, mates, words],
-        device=faces.device,
-    )
+    if conflict is None:
+        _launch.launch(
+            kernel_validation.mate_hook_parity,
+            dim=mates.size,
+            inputs=[faces, mates, words],
+            device=faces.device,
+        )
+    else:
+        _launch.launch(
+            kernel_validation.mate_hook_parity_flagged,
+            dim=mates.size,
+            inputs=[faces, mates, words],
+            outputs=[conflict],
+            device=faces.device,
+        )
     return words, mates
 
 

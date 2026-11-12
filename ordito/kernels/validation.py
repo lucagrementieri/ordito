@@ -557,14 +557,16 @@ def mate_signed_edge(
     A pair's lower halfedge gives the row the adjacency table would hold -- the ascending face
     pair and the flip bit over that halfedge's edge -- and every other halfedge a self-loop with
     sign ``0``, which the parity union-find skips and every orientation satisfies. Shared by
-    ``mate_hook_parity`` and ``mate_orientation_conflict``, which form the edge in the thread
+    ``mate_hook_parity`` and ``mate_hook_parity_flagged``, which form the edge in the thread
     rather than read a ``(3 n_faces, 2)`` table and its signs.
     """
     mate = mates[h]
-    if mate <= h:
-        return h // 3, h // 3, wp.int32(0)
     g0 = h // 3
     g1 = mate // 3
+    # A face paired with itself (``(a, b, a)``: ``a -> b`` and ``b -> a``) runs that edge both
+    # ways, which any flip satisfies, so it is a sign-``0`` self-loop like an unpaired halfedge.
+    if mate <= h or g0 == g1:
+        return g0, g0, wp.int32(0)
     f0 = wp.min(g0, g1)
     f1 = wp.max(g0, g1)
     a, b = edge_endpoints(faces, h)
@@ -606,6 +608,21 @@ def mate_hook_parity(
     ecl_hook_pair_parity(words, f0, f1, sign)
 
 
+@wp.kernel
+def mate_hook_parity_flagged(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    out_conflict: wp.array[wp.int32],
+) -> None:
+    # ``mate_hook_parity`` raising ``out_conflict[0]`` on a pair the forest contradicts
+    # (``connected_components.ecl_hook_parity_flagged``'s test): whether the mesh is orientable,
+    # with no flatten and no re-test of the pairs.
+    f0, f1, sign = mate_signed_edge(faces, mates, wp.int32(wp.tid()))
+    if ecl_hook_pair_parity(words, f0, f1, sign) != 0:
+        out_conflict[0] = wp.int32(1)
+
+
 @wp.func
 def face_parity_flip(words: wp.array[wp.int32], v: wp.int32) -> wp.bool:
     # Does face ``v`` flip, read off the parity union-find's ``words``: a parity is ``0`` or ``1``,
@@ -622,43 +639,6 @@ def flatten_parity_flip_mask(words: wp.array[wp.int32], out_flip: wp.array[wp.bo
     # the ``int32`` bits.
     v = wp.int32(wp.tid())
     out_flip[v] = face_parity_flip(words, v)
-
-
-@wp.func
-def signed_edge_violated(
-    orient: wp.array[wp.int32], f0: wp.int32, f1: wp.int32, sign: wp.int32
-) -> wp.int32:
-    # ``1`` when the flip bits of ``f0`` and ``f1`` break their signed edge's constraint, else
-    # ``0``. Shared by ``mate_orientation_conflict`` and ``signed_edge_orientation_conflict``,
-    # which differ only in where the edge comes from.
-    return wp.where(((orient[f0] + orient[f1]) & wp.int32(1)) != sign, wp.int32(1), wp.int32(0))
-
-
-@wp.kernel
-def mate_orientation_conflict(
-    faces: wp.array[wp.int32],
-    mates: wp.array[wp.int32],
-    orient: wp.array[wp.int32],
-    out_conflict: wp.array[wp.int32],
-) -> None:
-    # Flag any signed edge of ``mate_signed_edge``'s whose faces violate its flip constraint.
-    f0, f1, sign = mate_signed_edge(faces, mates, wp.int32(wp.tid()))
-    if signed_edge_violated(orient, f0, f1, sign) != 0:
-        out_conflict[0] = wp.int32(1)
-
-
-@wp.kernel
-def signed_edge_orientation_conflict(
-    edges: wp.array2d[wp.int32],
-    signs: wp.array[wp.int32],
-    orient: wp.array[wp.int32],
-    out_conflict: wp.array[wp.int32],
-) -> None:
-    # ``mate_orientation_conflict`` over a signed edge list (``face_pair_signs_and_roots``'), for
-    # ``face_orientation_bits`` under the deterministic setting.
-    e = wp.int32(wp.tid())
-    if signed_edge_violated(orient, edges[e, 0], edges[e, 1], signs[e]) != 0:
-        out_conflict[0] = wp.int32(1)
 
 
 # A spanning forest of a signed face graph that is a function of the input alone, for the

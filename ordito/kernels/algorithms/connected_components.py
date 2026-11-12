@@ -256,7 +256,7 @@ def find_representative_parity(words: wp.array[wp.int32], v: wp.int32) -> tuple[
 @wp.func
 def ecl_hook_edge_parity(
     words: wp.array[wp.int32], rep_v: wp.int32, parity_v: wp.int32, u: wp.int32, edge_sign: wp.int32
-) -> tuple[wp.int32, wp.int32]:
+) -> wp.int32:
     # Parity-carrying mirror of ``ecl_hook_edge``: union the trees holding ``rep_v`` and ``u``,
     # larger root at the smaller, with the offset that keeps the potential consistent. Writing
     # ``p(x)`` for the parity from ``x`` to its root, the union must satisfy
@@ -266,7 +266,11 @@ def ecl_hook_edge_parity(
     #
     # A component with contradictory signs (a Mobius band, in the orientation application) simply
     # takes whichever branch reached its roots first: the potential does not exist, so no assignment
-    # is correct and callers detect the contradiction afterwards by re-testing the edges.
+    # is correct. Returns ``1`` when this edge is one of them: its endpoints were already joined,
+    # under a common ancestor ``x`` the loop met, at parities ``p(v -> x) ^ p(u -> x)`` other than
+    # ``edge_sign``. Parity to an ancestor never changes once joined (compression XORs the path), so
+    # this is the edge's verdict under the final forest, and every other edge is a tree edge the
+    # forest satisfies: the flags of all edges are exactly a re-test of the edges after the flatten.
     #
     # ``offset`` is masked to bit 0 because it is OR-ed into a word whose upper 31 bits are a node
     # id: an ``edge_sign`` outside {0, 1} would otherwise corrupt the *parent* half of the packed
@@ -299,7 +303,9 @@ def ecl_hook_edge_parity(
                     root_v = old >> 1
                     par_v = par_v ^ (old & 1)
                     repeat = wp.bool(True)
-    return root_v, par_v
+    return wp.where(
+        root_v == root_u and ((par_v ^ edge_sign ^ par_u) & 1) != 0, wp.int32(1), wp.int32(0)
+    )
 
 
 @wp.func
@@ -322,15 +328,20 @@ def ecl_init_parent_parity(out_words: wp.array[wp.int32]) -> None:
 @wp.func
 def ecl_hook_pair_parity(
     words: wp.array[wp.int32], a: wp.int32, b: wp.int32, edge_sign: wp.int32
-) -> None:
+) -> wp.int32:
     # The parity hook of one signed graph edge ``(a, b)``: ``ecl_hook_pair``'s counterpart, shared
     # by ``ecl_hook_parity`` and the kernels that form their signed edges in the thread
-    # (``validation``'s orientation over the halfedge mates). A self-loop unions nothing.
+    # (``validation``'s orientation over the halfedge mates). A self-loop unions nothing. Returns
+    # ``ecl_hook_edge_parity``'s contradiction flag, which for a self-loop is its sign (``p(a) ^
+    # p(a)`` is ``0``: a degenerate face paired with itself across opposite halfedges); a caller
+    # that only builds the forest drops it.
+    violated = edge_sign & 1
     if a != b:
         rep_a = wp.int32(0)
         par_a = wp.int32(0)
         rep_a, par_a = find_representative_parity(words, a)
-        ecl_hook_edge_parity(words, rep_a, par_a, b, edge_sign)
+        violated = ecl_hook_edge_parity(words, rep_a, par_a, b, edge_sign)
+    return violated
 
 
 @wp.kernel
@@ -341,6 +352,21 @@ def ecl_hook_parity(
     # a tree, so after this single launch the forest spans every edge — no host convergence loop.
     e = wp.int32(wp.tid())
     ecl_hook_pair_parity(words, edges[e, 0], edges[e, 1], signs[e])
+
+
+@wp.kernel
+def ecl_hook_parity_flagged(
+    edges: wp.array2d[wp.int32],
+    signs: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    out_conflict: wp.array[wp.int32],
+) -> None:
+    # ``ecl_hook_parity`` that also raises ``out_conflict[0]`` on an edge the forest contradicts
+    # (``ecl_hook_edge_parity``), for a caller asking whether the potential exists: no flatten and
+    # no second pass over the edges re-testing them.
+    e = wp.int32(wp.tid())
+    if ecl_hook_pair_parity(words, edges[e, 0], edges[e, 1], signs[e]) != 0:
+        out_conflict[0] = wp.int32(1)
 
 
 @wp.kernel

@@ -947,6 +947,30 @@ def test_is_orientable_on_non_orientable_surfaces(
 
 
 @pytest.mark.parametrize(
+    ("mesh_name", "orientable"), [("sphere_irregular", True), ("mobius", False)]
+)
+def test_is_orientable_with_a_self_paired_face(
+    request: pytest.FixtureRequest, mesh_name: str, orientable: bool
+) -> None:
+    """
+    Class A against the NumPy parity flood fill, with a face ``(a, n, a)`` paired with itself.
+
+    The face runs its edge ``(a, n)`` both ways and nothing else uses it, so its two halfedges are
+    mates within one face: any flip satisfies that pair, and the verdict is the mesh's own. Both
+    answers are covered (the Moebius band keeps its ``False``); a pair sign read off the face twice
+    once made every such mesh non-orientable.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    a, n = int(mesh_tm.faces[0, 0]), mesh_tm.vertices.shape[0]
+    faces_np = np.vstack((mesh_tm.faces, [[a, n, a]]))
+    faces_wp = wp.array(
+        faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=mesh_wp.device
+    )
+    assert _orientable_np(faces_np) is orientable
+    assert od.validation.is_orientable(faces_wp) is orientable
+
+
+@pytest.mark.parametrize(
     ("mesh_name", "orientable"),
     [("sphere_irregular", True), ("mobius", False), ("boy_surface", False)],
 )
