@@ -424,7 +424,10 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
     # accumulator does not fix the ordering -- nothing here can -- but it drops the disagreement
     # between two orderings far below what the float32 result can represent, so the narrowed answer
     # is reproducible in practice. It is not a *guarantee*: a sum landing within an eps of a float32
-    # rounding boundary could still round both ways.
+    # rounding boundary could still round both ways, and a component that cancels to near zero
+    # keeps its ordering bits whatever the width (an ``icosphere(5)`` pole's normal moved by
+    # ``5e-19`` between runs). With the setting on the normals therefore take the exact group sum
+    # (``scatter_add_vec3_row``).
     #
     # Cost: the scatter kernel itself is within noise of the float32 one, and
     # ``normals.vertex_normals`` end to end wins on a small mesh -- the fused narrow-and-normalize
@@ -476,6 +479,26 @@ def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec
             wp.atomic_add(out_sum, row, 0, out_sum.dtype(x))
             wp.atomic_add(out_sum, row, 1, out_sum.dtype(y))
             wp.atomic_add(out_sum, row, 2, out_sum.dtype(z))
+
+
+@wp.func
+def scatter_add_vec3_row(
+    out_sum: wp.array2d[wp.Float], sums: GroupSumPass, row: wp.int32, v: wp.vec3
+) -> None:
+    # ``out_sum[row] += v`` for an ``(n, 3)`` accumulator, the mode picked by ``sums``
+    # (``_launch.group_sums`` over ``wp.vec3``, ``scatter_add_vector``'s convention): with the
+    # setting off ``peer_summed_add_vec3`` in arrival order, with it on ``v`` into group ``row``'s
+    # exact sum, so the sum repeats bit for bit. A ``float64`` row sum of ``float32`` terms is
+    # exact in any order only while the row's terms span under ``2^29`` (less their count's bits),
+    # which the components of cancelling normals break: an ``icosphere(5)`` pole sums
+    # ``+-1.76e-2`` and ``+-5.1e-11`` to ``-3.5e-18``, ``0`` or ``3.5e-18`` by arrival order.
+    # Out of line on the CPU device for the on-mode terms, as ``sole_scatter_add_vector``.
+    if sums.words.shape[0] == 0:
+        peer_summed_add_vec3(out_sum, row, v)
+    elif device_is_cpu() != 0:
+        group_sum_vector_term_out_of_line(sums, row, v)
+    else:
+        group_sum_vector_term(sums, row, v)
 
 
 @wp.kernel
@@ -578,6 +601,10 @@ def scatter_sum_scalar(
 def scatter_sum_vec(
     values: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sum: wp.array2d[wp.Float]
 ) -> None:
+    # Each face's vector onto its three corners in arrival order, the setting off;
+    # ``scatter_sum_vec_exact`` is the setting on. Two kernels, not ``scatter_add_vec3_row``'s
+    # branch: in a kernel whose work is the scatter the on-mode terms, even out of line, cost the
+    # CPU off mode 1.20-1.30x (``mean_vertex_normals`` on ``sphere_small`` and ``bunny``).
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
     value = values[f]
@@ -587,18 +614,54 @@ def scatter_sum_vec(
 
 
 @wp.kernel
+def scatter_sum_vec_exact(
+    values: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_sum: wp.array2d[wp.Float],
+) -> None:
+    # ``scatter_sum_vec`` with the setting on: each corner's vector into its vertex's exact group
+    # sum (``out_sum`` is unused, ``None``).
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    value = values[f]
+    scatter_add_vec3_row(out_sum, sums, i0, value)
+    scatter_add_vec3_row(out_sum, sums, i1, value)
+    scatter_add_vec3_row(out_sum, sums, i2, value)
+
+
+@wp.kernel
 def scatter_weighted_sum_vec(
     values: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     weights: wp.array2d[wp.float32],
     out_sum: wp.array2d[wp.Float],
 ) -> None:
+    # ``scatter_sum_vec`` with each corner's weight; ``scatter_weighted_sum_vec_exact`` is the
+    # setting on, for the same reason.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
     value = values[f]
     peer_summed_add_vec3(out_sum, i0, value * weights[f, 0])
     peer_summed_add_vec3(out_sum, i1, value * weights[f, 1])
     peer_summed_add_vec3(out_sum, i2, value * weights[f, 2])
+
+
+@wp.kernel
+def scatter_weighted_sum_vec_exact(
+    values: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    weights: wp.array2d[wp.float32],
+    sums: GroupSumPass,
+    out_sum: wp.array2d[wp.Float],
+) -> None:
+    # ``scatter_weighted_sum_vec`` with the setting on, as ``scatter_sum_vec_exact``.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    value = values[f]
+    scatter_add_vec3_row(out_sum, sums, i0, value * weights[f, 0])
+    scatter_add_vec3_row(out_sum, sums, i1, value * weights[f, 1])
+    scatter_add_vec3_row(out_sum, sums, i2, value * weights[f, 2])
 
 
 @wp.func
@@ -1216,7 +1279,9 @@ SUM_SORTED_FACE_THIRDS: OverloadTable
 SCALE_FACE_SUMS: OverloadTable
 SCATTER_SUM_SCALAR: OverloadTable
 SCATTER_SUM_VEC: OverloadTable
+SCATTER_SUM_VEC_EXACT: OverloadTable
 SCATTER_WEIGHTED_SUM_VEC: OverloadTable
+SCATTER_WEIGHTED_SUM_VEC_EXACT: OverloadTable
 SCATTER_FACE_VALUES_SUM_AND_VALENCE: OverloadTable
 SCATTER_EDGES_SUM_AND_VALENCE: OverloadTable
 
@@ -1265,6 +1330,7 @@ def _register_overloads() -> None:
     )
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
+    global SCATTER_SUM_VEC_EXACT, SCATTER_WEIGHTED_SUM_VEC_EXACT
     DIVIDE_BY_DENSITY = OverloadTable(
         divide_by_density,
         {d: [wp.array3d[wp.float32], wp.float32, wp.array3d[d]] for d in _GRID_DTYPES},
@@ -1314,10 +1380,30 @@ def _register_overloads() -> None:
             for d in _VECTOR_ACCUMULATOR_DTYPES
         },
     )
+    SCATTER_SUM_VEC_EXACT = OverloadTable(
+        scatter_sum_vec_exact,
+        {
+            d: [wp.array[wp.vec3], wp.array[wp.int32], GroupSumPass, wp.array2d[d]]
+            for d in _VECTOR_ACCUMULATOR_DTYPES
+        },
+    )
     SCATTER_WEIGHTED_SUM_VEC = OverloadTable(
         scatter_weighted_sum_vec,
         {
             d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[wp.float32], wp.array2d[d]]
+            for d in _VECTOR_ACCUMULATOR_DTYPES
+        },
+    )
+    SCATTER_WEIGHTED_SUM_VEC_EXACT = OverloadTable(
+        scatter_weighted_sum_vec_exact,
+        {
+            d: [
+                wp.array[wp.vec3],
+                wp.array[wp.int32],
+                wp.array2d[wp.float32],
+                GroupSumPass,
+                wp.array2d[d],
+            ]
             for d in _VECTOR_ACCUMULATOR_DTYPES
         },
     )

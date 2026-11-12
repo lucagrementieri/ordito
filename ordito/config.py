@@ -27,6 +27,12 @@ deterministic either way):
 - the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.curvature.vertex_defects];
+- the vertex normals of [`vertex_normals`][ordito.normals.vertex_normals] and its module's other
+  normals, and those [`Trimesh`][ordito.mesh.Trimesh],
+  [`isotropic_remesh`][ordito.remesh.isotropic_remesh],
+  [`thicken_mesh`][ordito.levelset.thicken_mesh] and
+  [`filter_mut_dif_laplacian`][ordito.smoothing.filter_mut_dif_laplacian] sum on the way (exact
+  group sums when on);
 - the rotation right-hand side of every local step of
   [`arap`][ordito.parametrization.arap] (each vertex's edge terms added in ascending face order
   when on);
@@ -75,7 +81,7 @@ deterministic either way):
 What it does not govern:
 
 - the other floating-point atomic scatters, which stay in arrival order on CUDA whatever the
-  setting (the vertex areas and normals sum exactly, and so repeat anyway);
+  setting (the vertex areas and corner angles sum exactly in ``float64``, and so repeat anyway);
 - integer reductions and scans, which are exact in any order.
 
 The setting is read when a reduction launches. Two consequences follow:

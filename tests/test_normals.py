@@ -341,34 +341,54 @@ def test_vertex_normals_mwselr(scale: float, saddle_graded: tuple[tm.Trimesh, wp
     assert np.allclose(vertex_normals_explicit_wp.numpy(), vertex_normals_np, rtol=1e-5, atol=1e-5)
 
 
-def test_vertex_normals_are_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize("weighting", ["area", "angle", "mwselr", "mean"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "icosphere_poles"])
+def test_vertex_normals_are_reproducible(
+    request: pytest.FixtureRequest,
+    device: str,
+    mesh_name: str,
+    weighting: Literal["area", "angle", "mwselr", "mean"],
+) -> None:
     """
-    Ordito against ordito: the identical call, eight times, must return the identical buffer.
+    Ordito against ordito: under the deterministic setting the identical call repeats bit for bit.
 
     No reference library can carry this -- it is a claim about *this* implementation's summation
-    order, not about the quantity -- so the oracle for the values themselves is
-    ``test_vertex_normals_area_matches_igl_at_any_scale``, and this only pins repeatability on top
-    of it. A float atomic's order is the scheduler's and float addition is not associative, so the
-    ``float32`` accumulator this used to carry moved by one ULP (1.19e-07) between runs on CUDA
-    while the CPU device was exact. The accumulator is ``float64`` now, which drops the
-    disagreement between two orderings below what the ``float32`` answer can represent.
+    order, not about the quantity -- so the values' oracles are the library comparisons above, and
+    this pins repeatability on top of them. Off, a vertex's ``float32`` terms sum in a ``float64``
+    accumulator in the atomics' arrival order, which is not exact when one vertex's terms span
+    more than ``2^29``: on ``od.creation.icosphere(5)`` the poles' x terms are ``+-1.76e-2`` and
+    ``+-5.1e-11`` and their sum came out ``-3.5e-18``, ``0`` or ``3.5e-18`` by arrival order (11 of
+    40 angle-weighted calls differed on CUDA, so 32 runs miss it with odds under ``1e-4``). On,
+    the terms take the exact group sum. Off agrees with on to rounding.
 
-    Asserted as exact equality deliberately: the old behaviour fails it, a tolerance of 1e-6 would
-    not, and the whole point of the change is that there is nothing left to tolerate. The
-    downstream consumer this was found through is
-    ``test_principal_curvature_is_reproducible``.
+    Exact equality on purpose: the arrival-order form fails it on the icosphere, a tolerance of
+    1e-6 would not. ``test_principal_curvature_is_reproducible`` is the downstream consumer.
     """
-    _, mesh_wp = saddle_graded
+    if mesh_name == "icosphere_poles":
+        vertices_wp, faces_wp = od.creation.icosphere(subdivisions=5, device=device)
+    else:
+        _, mesh_wp = request.getfixturevalue(mesh_name)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    runs = [
-        od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy().copy() for _ in range(8)
-    ]
+    def normals() -> np.ndarray:
+        if weighting == "mean":
+            face_normals_wp, _ = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+            return od.normals.mean_vertex_normals(
+                vertices_wp.size, faces_wp, face_normals_wp
+            ).numpy()
+        return od.normals.vertex_normals(vertices_wp, faces_wp, weighting=weighting).numpy()
+
+    with od.config.deterministic(True):
+        runs = [normals() for _ in range(32)]
+    with od.config.deterministic(False):
+        arrival_np = normals()
 
     # Non-vacuity: an all-zero or constant buffer would compare equal to itself for free.
     assert np.allclose(np.linalg.norm(runs[0], axis=1), 1.0)
     assert np.ptp(runs[0], axis=0).max() > 1.0
     for other in runs[1:]:
         assert np.array_equal(runs[0], other)
+    assert np.allclose(arrival_np, runs[0], rtol=1e-5, atol=1e-5)
 
 
 def test_vertex_normals_guards_and_faceless_mwselr(

@@ -46,7 +46,13 @@ from warp.geometry import sparse_marching_cubes
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    scan_count,
+    scatter_normal_sums,
+)
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import levelset as kernel_levelset
@@ -1351,14 +1357,13 @@ def thicken_mesh(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     # ``vertex_normals(weighting="angle")`` with nothing precomputed is one angle-weighted scatter
-    # into a ``float64`` accumulator and one normalizing pass; the pass is folded into the shell
-    # kernel, which normalizes each vertex's row as it displaces it.
-    normal_sums = _launch.zeros((n_vertices, 3), dtype=wp.float64, device=device)
-    _launch.launch(
+    # (by the deterministic setting) and one normalizing pass; the pass is folded into the shell
+    # kernel, which normalizes each vertex's sum as it displaces it.
+    normal_sums, normal_pass = scatter_normal_sums(
+        n_vertices,
+        faces,
         kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
-        dim=n_faces,
-        inputs=[vertices, faces, normal_sums],
-        device=device,
+        [vertices, faces],
     )
     rim = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
     n_rim = int(rim.shape[0])
@@ -1368,7 +1373,15 @@ def thicken_mesh(
     _launch.launch(
         kernel_levelset.shell_mesh,
         dim=n_vertices + n_faces + n_rim,
-        inputs=[vertices, normal_sums, wp.float32(outside), wp.float32(thickness), faces, rim],
+        inputs=[
+            vertices,
+            normal_sums,
+            normal_pass,
+            wp.float32(outside),
+            wp.float32(thickness),
+            faces,
+            rim,
+        ],
         outputs=[out_vertices, out_faces],
         device=device,
     )

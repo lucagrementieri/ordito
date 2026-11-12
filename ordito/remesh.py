@@ -41,6 +41,7 @@ from ordito._common import (
     require_nonempty_mesh,
     require_same_device,
     scan_count,
+    scatter_normal_sums,
 )
 from ordito.config import is_deterministic
 from ordito.constants import INT64_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
@@ -1476,17 +1477,22 @@ def _smooth_pass(
     if unique_edges is None:
         unique_edges, _ = _edges_unique(faces, n_vertices)
     # ``normals.vertex_normals`` and ``laplacian.mass_matrix_entries`` from one pass over the
-    # faces, into one zeroed ``float64`` buffer: the normals' rows, then the exact area sums. Each
-    # reader finishes them where it reads them, so neither table is narrowed by a launch of its own.
-    face_sums = _launch.zeros(4 * n_vertices, dtype=wp.float64, device=device)
-    normal_sums = odt.as_dense(face_sums[: 3 * n_vertices]).reshape((n_vertices, 3))
-    area_sums = odt.as_dense(face_sums[3 * n_vertices :])
-    _launch.launch(
+    # faces: the exact area sums, and the normals' rows by the deterministic setting, with it off
+    # in the same zeroed ``float64`` buffer ahead of the areas. Each reader finishes them where it
+    # reads them, so neither table is narrowed by a launch of its own.
+    deterministic = is_deterministic()
+    rows = 0 if deterministic else 3 * n_vertices
+    face_sums = _launch.zeros(rows + n_vertices, dtype=wp.float64, device=device)
+    area_sums = odt.as_dense(face_sums[rows:])
+    normal_sums, normal_pass = scatter_normal_sums(
+        n_vertices,
+        faces,
         kernel_remesh.scatter_normal_and_area_sums,
-        dim=faces.size // 3,
-        inputs=[vertices, faces],
-        outputs=[normal_sums, area_sums],
-        device=device,
+        [vertices, faces],
+        outputs=[area_sums],
+        accumulator=None
+        if deterministic
+        else odt.as_dense(face_sums[:rows]).reshape((n_vertices, 3)),
     )
     # The same vertex-face CSR the collapse stage builds for its own fold veto, and for the same
     # reason: ``unique_edges`` above carries a vertex's *neighbours*, never its faces.
@@ -1535,6 +1541,7 @@ def _smooth_pass(
             faces,
             feature_count,
             normal_sums,
+            normal_pass,
             ring_sums,
             face_offsets,
             incident_faces,

@@ -24,6 +24,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
+from ordito.config import is_deterministic
 from ordito.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
@@ -1015,3 +1016,109 @@ def long_rings(offsets: wp.array[wp.int32]) -> wp.array[wp.int32] | None:
     read their count back (the CPU device, or ``vertex_one_rings`` with nothing to check).
     """
     return _LONG_RINGS.get(offsets)
+
+
+# ``kernels/normals``' normalizing kernels with the setting off and on, set by the first
+# ``accumulate_and_normalize``.
+_normalize_kernels: Any = None
+
+
+def accumulate_and_normalize(
+    n_vertices: int,
+    faces: wp.array[wp.int32],
+    kernel: Any,
+    inputs: Sequence[Any],
+    accumulator: odt.ArrayNd | None = None,
+    exact_kernel: Any = None,
+) -> wp.array[wp.vec3]:
+    """
+    Scatter vectors onto each face's corners and unit-normalize every vertex's sum.
+
+    The shared body of every normal in ``normals`` and of ``smoothing.filter_mut_dif_laplacian``'s:
+    the scatter kernel decides what each face contributes to each of its corners (a supplied
+    vector, scaled by a per-corner weight or not, or a weighted normal it forms from the geometry
+    so that no per-face table is written). The sums are
+    [`scatter_normal_sums`][ordito._common.scatter_normal_sums]' (its ``kernel``, ``inputs``,
+    ``accumulator`` and ``exact_kernel``), read by ``kernels/normals.normalize_accumulated_rows``
+    (``normalize_group_sum_rows`` with the setting on). A zero sum (an unreferenced vertex, a
+    cancelling fan) gives the zero vector. The launch ``dim`` is taken from ``faces``, the one
+    per-face array whose length also bounds the gather the scatter does; callers check the rest
+    agree (``normals._require_face_rows``).
+    """
+    sums, launch_pass = scatter_normal_sums(
+        n_vertices, faces, kernel, inputs, accumulator=accumulator, exact_kernel=exact_kernel
+    )
+    normals = _launch.empty(n_vertices, dtype=wp.vec3, device=faces.device)
+    global _normalize_kernels
+    if _normalize_kernels is None:
+        # Imported on first use, so importing ``_common`` builds no normal kernels.
+        from ordito.kernels import normals as kernel_normals
+
+        _normalize_kernels = (
+            kernel_normals.NORMALIZE_ACCUMULATED_ROWS[wp.float64],
+            kernel_normals.normalize_group_sum_rows,
+        )
+    if sums is not None:
+        _launch.launch(
+            _normalize_kernels[0], dim=n_vertices, inputs=[sums, normals], device=faces.device
+        )
+    else:
+        _launch.launch(
+            _normalize_kernels[1],
+            dim=n_vertices,
+            inputs=[launch_pass, normals],
+            device=faces.device,
+        )
+    return normals
+
+
+def scatter_normal_sums(
+    n_vertices: int,
+    faces: wp.array[wp.int32],
+    kernel: Any,
+    inputs: Sequence[Any],
+    outputs: Sequence[Any] = (),
+    accumulator: odt.ArrayNd | None = None,
+    exact_kernel: Any = None,
+) -> tuple[odt.ArrayNd | None, Any]:
+    """
+    Sum vectors onto each face's corners by the deterministic setting; return what a reader takes.
+
+    ``kernel`` runs a thread a face over ``(*inputs, pass, normal_sums, *outputs)`` and adds
+    through ``kernels/scatter.scatter_add_vec3_row``, which takes the mode from the pass. With
+    [`ordito.config.is_deterministic`][ordito.config.is_deterministic] off it is one launch into a
+    zeroed ``(n_vertices, 3)`` ``float64`` accumulator in arrival order (``accumulator`` when the
+    caller carved one, else one allocated here): steady in practice, but not for a normal whose
+    components cancel to near zero. With it on every vertex's terms go into an exact group sum,
+    one launch a pass, so the sums repeat bit for bit and ``normal_sums`` is ``None``; a kernel
+    with other ``outputs`` writes them in the last pass alone. The pair goes to
+    ``kernels/normals.accumulated_row_normal``. ``exact_kernel``, when given, is a twin taking the
+    pass that runs with the setting on, and ``kernel`` then takes no pass: a kernel whose work is
+    the scatter (``kernels/scatter.scatter_sum_vec``), where the on-mode branch slowed the CPU's
+    off mode.
+    """
+    device = faces.device
+    n_faces = faces.size // 3
+    if not is_deterministic():
+        sums = accumulator
+        if sums is None:
+            sums = _launch.zeros((n_vertices, 3), dtype=wp.float64, device=device)
+        launch_pass = _launch.empty_group_sum_pass()
+        if exact_kernel is not None:
+            _launch.launch(kernel, dim=n_faces, inputs=[*inputs, sums, *outputs], device=device)
+        else:
+            _launch.launch(
+                kernel, dim=n_faces, inputs=[*inputs, launch_pass, sums, *outputs], device=device
+            )
+        return sums, launch_pass
+    # A vertex receives at most one term a face.
+    exact = _launch.group_sums(n_vertices, wp.vec3, max(n_faces, 1), device, fused=True)
+    _launch.launch_group_sums(
+        kernel if exact_kernel is None else exact_kernel,
+        n_faces,
+        inputs,
+        exact,
+        outputs=outputs,
+        device=device,
+    )
+    return None, exact.launch_pass

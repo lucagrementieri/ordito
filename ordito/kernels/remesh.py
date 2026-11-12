@@ -53,7 +53,7 @@ from ordito.kernels.grouping import (
     sorted_run_of_length,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
-from ordito.kernels.normals import add_to_face_corners, normalized_accumulated_row
+from ordito.kernels.normals import accumulated_row_normal, add_to_face_corners
 from ordito.kernels.predicates import (
     delone_metrics,
     dihedral_angle,
@@ -69,6 +69,7 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
+    GroupSumPass,
     block_max,
     block_sum,
     group_sum_field,
@@ -3829,20 +3830,24 @@ def valence_flip_candidates(
 def scatter_normal_and_area_sums(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    sums: GroupSumPass,
     out_normal_sums: wp.array2d[wp.float64],
     out_area_sums: wp.array[wp.float64],
 ) -> None:
-    # The smoothing pass's two per-vertex face sums from one evaluation of each face, over zeroed
-    # ``float64`` sums: ``normals.scatter_area_weighted_normals``' area-weighted normal and
-    # ``scatter.scatter_face_areas_exact``'s area, each added exactly as those kernels add it. Their
-    # readers finish them where they read them -- ``normalized_accumulated_row`` for the normal,
+    # The smoothing pass's two per-vertex face sums from one evaluation of each face:
+    # ``normals.scatter_area_weighted_normals``' area-weighted normal, by the deterministic setting
+    # (``_common.scatter_normal_sums``), and ``scatter.scatter_face_areas_exact``'s area into zeroed
+    # ``float64`` sums, each added as those kernels add it. With the setting on the normal's group
+    # sum launches this twice, and the area is added in the second pass alone. Their readers finish
+    # them where they read them -- ``normals.accumulated_row_normal`` for the normal,
     # ``vertex_mass`` for the barycentric mass -- so neither is narrowed by a pass of its own.
     f = wp.int32(wp.tid())
     normal, area = face_normals_and_area(vertices, faces, f)
     value = normal * area
-    add_to_face_corners(out_normal_sums, faces, f, value, value, value)
-    exact = wp.float64(area)
-    add_corner_triple(out_area_sums, faces, f, exact, exact, exact)
+    add_to_face_corners(out_normal_sums, sums, faces, f, value, value, value)
+    if sums.words.shape[0] == 0 or sums.phase != 0:
+        exact = wp.float64(area)
+        add_corner_triple(out_area_sums, faces, f, exact, exact, exact)
 
 
 @wp.func
@@ -3973,6 +3978,7 @@ def smooth_free_vertices(
     faces: wp.array[wp.int32],
     feature_count: wp.array[wp.int32],
     normal_sums: wp.array2d[wp.float64],
+    sums: GroupSumPass,
     ring: wp.array[wp.vec4],
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
@@ -4011,7 +4017,7 @@ def smooth_free_vertices(
     proposed = tangential_smooth_step(
         vertices[v],
         finalize_vertex_codes(feature_count[v]),
-        normalized_accumulated_row(normal_sums, v),
+        accumulated_row_normal(normal_sums, sums, v),
         wp.vec3(ring_v[0], ring_v[1], ring_v[2]),
         ring_v[3],
         lam,

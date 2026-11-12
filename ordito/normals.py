@@ -24,13 +24,12 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_same_device
-from ordito.kernels import array as kernel_array
+from ordito._common import accumulate_and_normalize, require_same_device
 from ordito.kernels import normals as kernel_normals
 from ordito.kernels import scatter as kernel_scatter
 
-# The precision the vertex-normal accumulator runs at, and the key both of
-# ``_accumulate_and_normalize``'s launches look their kernel up by. ``float64`` so that the order
+# The precision the vertex-normal accumulator runs at (setting off), and the key every scatter
+# kernel is looked up by for ``_common.accumulate_and_normalize``. ``float64`` so that the order
 # the scatter's atomics happen to pick cannot reach the float32 answer -- the measurement is at
 # ``kernels.scatter.atomic_add_vec3``, and both kernels are generic over this, so moving it is a
 # one-line change here plus a registration row in each kernel module.
@@ -97,8 +96,12 @@ def mean_vertex_normals(
     """
     require_same_device(faces=faces, face_normals=face_normals)
     _require_face_rows(faces.size // 3, face_normals=face_normals)
-    return _accumulate_and_normalize(
-        n_vertices, faces, kernel_scatter.SCATTER_SUM_VEC, [face_normals, faces]
+    return accumulate_and_normalize(
+        n_vertices,
+        faces,
+        kernel_scatter.SCATTER_SUM_VEC[_ACCUMULATOR_DTYPE],
+        [face_normals, faces],
+        exact_kernel=kernel_scatter.SCATTER_SUM_VEC_EXACT[_ACCUMULATOR_DTYPE],
     )
 
 
@@ -166,76 +169,13 @@ def weighted_vertex_normals(
     """
     require_same_device(faces=faces, face_normals=face_normals, face_weights=face_weights)
     _require_face_rows(faces.size // 3, face_normals=face_normals, face_weights=face_weights)
-    return _accumulate_and_normalize(
+    return accumulate_and_normalize(
         n_vertices,
         faces,
-        kernel_scatter.SCATTER_WEIGHTED_SUM_VEC,
+        kernel_scatter.SCATTER_WEIGHTED_SUM_VEC[_ACCUMULATOR_DTYPE],
         [face_normals, faces, face_weights],
+        exact_kernel=kernel_scatter.SCATTER_WEIGHTED_SUM_VEC_EXACT[_ACCUMULATOR_DTYPE],
     )
-
-
-def _accumulate_and_normalize(
-    n_vertices: int,
-    faces: wp.array[wp.int32],
-    scatter_table: kernel_array.OverloadTable,
-    inputs: list[odt.ArrayNd | None],
-) -> wp.array[wp.vec3]:
-    """
-    Scatter per-face vectors onto their corners and unit-normalize the sums.
-
-    The shared body of every normal in the module: the scatter kernel decides what each face
-    contributes to each of its corners -- a supplied vector once or scaled by a per-corner weight,
-    or, for ``vertex_normals``' derived paths, a weighted normal it computes from the geometry
-    itself so that no per-face table is written just to be read back once.
-
-    Accumulation is ``float64`` in an ``(n_vertices, 3)`` buffer even though both the input and the
-    answer are ``float32``, which is what makes the result reproducible run to run on a CUDA device
-    -- a float atomic's summation order is the scheduler's, and a ``float32`` accumulator turns
-    that into about one ULP of movement per run. The reasoning and the measurements are at
-    ``kernels.scatter.atomic_add_vec3``. The narrowing is a real kernel rather than the zero-copy
-    ``wp.utils.array_cast`` reinterpretation a ``float32`` accumulator allowed, and it absorbs the
-    normalization, so this costs one launch fewer than the pair it replaced.
-
-    Parameters
-    ----------
-    n_vertices
-        Output length.
-    faces
-        Flat ``wp.int32`` triangle index buffer; reshaped to ``(f, 3)`` for the scatter.
-    scatter_table
-        Overload table of a kernel launched one thread per face that takes ``(*inputs,
-        out_sums)`` -- a ``kernels.scatter`` accumulator or one of ``kernels.normals``' fused
-        ones. All of them are generic over the accumulator's precision, so the table is keyed by
-        it.
-    inputs
-        The kernel's arguments before the accumulator, in its own order.
-
-    Returns
-    -------
-    wp.array[wp.vec3]
-        Length-``n_vertices`` unit normals; zero where the accumulated vector was zero.
-
-    Notes
-    -----
-    The launch ``dim`` is taken from ``faces``, not from any per-face input: every array here is
-    indexed by the face, and ``faces`` is the only one of them whose length also bounds the
-    *gather* the scatter kernel does. Callers guarantee the rest agree by calling
-    ``_require_face_rows`` first.
-    """
-    device = faces.device
-    n_faces = faces.size // 3
-    sums = _launch.zeros((n_vertices, 3), dtype=_ACCUMULATOR_DTYPE, device=device)
-    _launch.launch(
-        scatter_table[_ACCUMULATOR_DTYPE], dim=n_faces, inputs=[*inputs, sums], device=device
-    )
-    vec_normals = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_normals.NORMALIZE_ACCUMULATED_ROWS[_ACCUMULATOR_DTYPE],
-        dim=n_vertices,
-        inputs=[sums, vec_normals],
-        device=device,
-    )
-    return vec_normals
 
 
 def vertex_normals(
@@ -358,14 +298,17 @@ def vertex_normals(
         # product's magnitude. Either way one kernel forms the weights in registers and scatters
         # their products, so no normal or weight table is written.
         if face_normals is None:
-            return _accumulate_and_normalize(
-                n_vertices, faces, kernel_normals.SCATTER_MAX_WEIGHTED_NORMALS, [vertices, faces]
+            return accumulate_and_normalize(
+                n_vertices,
+                faces,
+                kernel_normals.SCATTER_MAX_WEIGHTED_NORMALS[_ACCUMULATOR_DTYPE],
+                [vertices, faces],
             )
         _require_face_rows(n_faces, face_normals=face_normals)
-        return _accumulate_and_normalize(
+        return accumulate_and_normalize(
             n_vertices,
             faces,
-            kernel_normals.SCATTER_MAX_WEIGHTED_UNIT_NORMALS,
+            kernel_normals.SCATTER_MAX_WEIGHTED_UNIT_NORMALS[_ACCUMULATOR_DTYPE],
             [vertices, faces, face_normals],
         )
 
@@ -381,7 +324,9 @@ def vertex_normals(
             if weighting == "angle"
             else kernel_normals.SCATTER_AREA_WEIGHTED_NORMALS
         )
-        return _accumulate_and_normalize(n_vertices, faces, derived, [vertices, faces])
+        return accumulate_and_normalize(
+            n_vertices, faces, derived[_ACCUMULATOR_DTYPE], [vertices, faces]
+        )
     key = (face_normals is not None, face_weights is not None)
     if weighting == "angle":
         supplied = kernel_normals.SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS[key]
@@ -390,8 +335,11 @@ def vertex_normals(
     else:
         supplied = kernel_normals.SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS[key]
     _require_face_rows(n_faces, face_normals=face_normals, face_weights=face_weights)
-    return _accumulate_and_normalize(
-        n_vertices, faces, supplied, [vertices, faces, face_normals, face_weights]
+    return accumulate_and_normalize(
+        n_vertices,
+        faces,
+        supplied[_ACCUMULATOR_DTYPE],
+        [vertices, faces, face_normals, face_weights],
     )
 
 

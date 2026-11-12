@@ -62,6 +62,7 @@ import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
 from ordito._common import (
+    accumulate_and_normalize,
     offsets_buffer,
     read_scalar,
     read_values,
@@ -2370,7 +2371,7 @@ def filter_mut_dif_laplacian(
     zeroed = _launch.carve(
         wp.float64,
         (
-            3 * n if derive_normals else 0,
+            3 * n if derive_normals and not deterministic else 0,
             1,
             volume_size,
             volume_size,
@@ -2405,20 +2406,13 @@ def filter_mut_dif_laplacian(
     if face_normals is None or face_areas is None:
         # ``mean_vertex_normals`` of the derived face normals, which the scatter forms in its own
         # thread, so no normal table is written; the areas only for the constraint's probe step.
-        normal_sums = normal_sums_flat.reshape((n, 3))
         n_faces = faces.size // 3
-        _launch.launch(
+        normals = accumulate_and_normalize(
+            n,
+            faces,
             kernel_normals.SCATTER_UNIT_NORMALS[wp.float64],
-            dim=n_faces,
-            inputs=[vertices, faces, normal_sums],
-            device=device,
-        )
-        normals = _launch.empty(n, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_normals.NORMALIZE_ACCUMULATED_ROWS[wp.float64],
-            dim=n,
-            inputs=[normal_sums, normals],
-            device=device,
+            [vertices, faces],
+            None if deterministic else normal_sums_flat.reshape((n, 3)),
         )
         face_areas = None
         if volume_constraint:

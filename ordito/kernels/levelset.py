@@ -17,9 +17,9 @@ from ordito.kernels.array import (
     unravel_index,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
-from ordito.kernels.normals import normalized_accumulated_row
+from ordito.kernels.normals import accumulated_row_normal
 from ordito.kernels.proximity import closest_offset_d, closest_point_query
-from ordito.kernels.reduce import block_max
+from ordito.kernels.reduce import GroupSumPass, block_max
 from ordito.kernels.triangles import corner_triple, face_vertices
 
 
@@ -1493,6 +1493,7 @@ def marching_cubes_emit_active(
 def shell_vertex(
     vertices: wp.array[wp.vec3],
     normal_sums: wp.array2d[wp.float64],
+    sums: GroupSumPass,
     outside: wp.float32,
     inside: wp.float32,
     v: wp.int32,
@@ -1501,11 +1502,11 @@ def shell_vertex(
     # Both layers of a thickened shell at vertex ``v``: the outward-displaced copy in the first
     # ``n_vertices`` slots and the inward-displaced one after it, so the second layer's vertex ``v``
     # is at ``v + n_vertices`` and the face emitters below can shift by a constant. The normal is
-    # ``vertex_normals``' normalizing pass taken here (``normalized_accumulated_row``) over its
-    # accumulator, so it is that function's normal bit for bit.
+    # ``vertex_normals``' normalizing pass taken here (``normals.accumulated_row_normal``) over its
+    # sums, so it is that function's normal bit for bit.
     n_vertices = vertices.shape[0]
     position = vertices[v]
-    normal = normalized_accumulated_row(normal_sums, v)
+    normal = accumulated_row_normal(normal_sums, sums, v)
     out_vertices[v] = position + outside * normal
     out_vertices[n_vertices + v] = position - inside * normal
 
@@ -1559,6 +1560,7 @@ def shell_band(
 def shell_mesh(
     vertices: wp.array[wp.vec3],
     normal_sums: wp.array2d[wp.float64],
+    sums: GroupSumPass,
     outside: wp.float32,
     inside: wp.float32,
     faces: wp.array[wp.int32],
@@ -1573,7 +1575,7 @@ def shell_mesh(
     n_vertices = vertices.shape[0]
     n_faces = faces.shape[0] // 3
     if t < n_vertices:
-        shell_vertex(vertices, normal_sums, outside, inside, t, out_vertices)
+        shell_vertex(vertices, normal_sums, sums, outside, inside, t, out_vertices)
     elif t < n_vertices + n_faces:
         shell_face(faces, n_vertices, t - n_vertices, out_faces)
     else:
