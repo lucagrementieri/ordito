@@ -1346,3 +1346,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **The fused `transform_mesh_buffers` loses on large CPU meshes** (2026-11-12): one thread
+  writing a vertex and a face (`transform.transform_mesh` with a host matrix, and
+  `Trimesh.transform`'s `kernels/mesh.transform_mesh_and_directions`) ran 2.8-2.9 ms on `dragon`
+  on the CPU against 1.8-2.3 ms for the point map plus a face pass (rigid and mirror), while
+  winning on `sphere_small` (57 against 58-71 us). The device-matrix CPU path keeps the two passes
+  (`transform._transform_mesh_two_pass`); a CPU size gate for the host-matrix path is unpriced
+  (the box was loaded).

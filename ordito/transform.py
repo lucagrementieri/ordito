@@ -40,13 +40,12 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import cast
 
 import numpy as np
 import warp as wp
 
 import ordito.typing as odt
-from ordito import _launch
+from ordito import _common, _launch
 from ordito._common import require_same_device
 from ordito.kernels import repair as kernel_repair
 from ordito.kernels import transform as kernel_transform
@@ -59,6 +58,11 @@ from ordito.kernels import transform as kernel_transform
 # few dozen composed float32 rotations; past that a caller should pass ``assume=`` rather than
 # loosen this.
 ORTHOGONALITY_RTOL = 1e-5
+
+# The bottom row of an affine matrix and the identity block, which
+# [`classify_transform`][ordito.transform.classify_transform] compares a transform against.
+_AFFINE_ROW = np.array([0.0, 0.0, 0.0, 1.0])
+_EYE3 = np.eye(3)
 
 
 class TransformKind(StrEnum):
@@ -428,13 +432,65 @@ def transform_mesh(
         out_vertices=out_vertices,
         out_faces=out_faces,
     )
-    if not isinstance(matrix, wp.array):
-        return _transform_mesh_host_matrix(vertices, faces, matrix, out_vertices, out_faces)
-    new_vertices = transform_points(vertices, matrix, out=out_vertices)
+    new_vertices = _alloc_or_out(out_vertices, vertices.size, wp.vec3, vertices.device)
+    if new_vertices.size != vertices.size:
+        raise ValueError(
+            f"transform_points: out must have length {vertices.size}, got {new_vertices.size}"
+        )
     new_faces = _alloc_or_out(out_faces, faces.size, wp.int32, faces.device)
     if new_faces.size != faces.size:
         raise ValueError(
             f"transform_mesh: out_faces must have length {faces.size}, got {new_faces.size}"
+        )
+    face_mode = (
+        kernel_transform.FACES_COPY if new_faces.ptr != faces.ptr else kernel_transform.FACES_KEEP
+    )
+    if isinstance(matrix, wp.array):
+        if matrix.size != 1:
+            raise ValueError(
+                "transform_mesh: matrix must be a length-1 wp.array[wp.mat44], got shape "
+                f"{tuple(matrix.shape)}"
+            )
+        if not wp.get_device(vertices.device).is_cuda:
+            return _transform_mesh_two_pass(vertices, faces, matrix, new_vertices, new_faces)
+        # The winding is decided in the kernel, so a fitted transform never leaves the device.
+        kernel = kernel_transform.transform_mesh_buffers_device
+    else:
+        if reverses_orientation(matrix):
+            face_mode = kernel_transform.FACES_REVERSE
+        kernel = kernel_transform.transform_mesh_buffers
+    n = max(vertices.size, faces.size // 3)
+    if n > 0:
+        _launch.launch(
+            kernel,
+            dim=n,
+            inputs=[vertices, faces, matrix, face_mode],
+            outputs=[new_vertices, new_faces],
+            device=vertices.device,
+        )
+    return new_vertices, new_faces
+
+
+def _transform_mesh_two_pass(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.array[wp.mat44],
+    new_vertices: wp.array[wp.vec3],
+    new_faces: wp.array[wp.int32],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    [`transform_mesh`][ordito.transform.transform_mesh] for a CPU device matrix, in two passes.
+
+    The points map, then a face reversal or copy decided on the host. On the CPU the reading is
+    a view, and these passes run faster than one ``transform_mesh_buffers`` launch on a large
+    mesh, whose thread writes both a vertex and a face.
+    """
+    if vertices.size > 0:
+        _launch.launch(
+            kernel_transform.apply_transform_mat44,
+            dim=vertices.size,
+            inputs=[vertices, matrix, new_vertices],
+            device=vertices.device,
         )
     n_faces = faces.size // 3
     if reverses_orientation(matrix):
@@ -447,47 +503,6 @@ def transform_mesh(
             )
     elif new_faces.ptr != faces.ptr:
         _launch.copy(new_faces, faces)
-    return new_vertices, new_faces
-
-
-def _transform_mesh_host_matrix(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    matrix: wp.mat44,
-    out_vertices: wp.array[wp.vec3] | None,
-    out_faces: wp.array[wp.int32] | None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    [`transform_mesh`][ordito.transform.transform_mesh] for a host matrix, in one launch.
-
-    The points and the (copied or reversed) faces are written by one
-    ``kernels/transform.transform_mesh_buffers`` launch; a device matrix keeps the two-pass form.
-    """
-    new_vertices = _alloc_or_out(out_vertices, vertices.size, wp.vec3, vertices.device)
-    if new_vertices.size != vertices.size:
-        raise ValueError(
-            f"transform_points: out must have length {vertices.size}, got {new_vertices.size}"
-        )
-    new_faces = _alloc_or_out(out_faces, faces.size, wp.int32, faces.device)
-    if new_faces.size != faces.size:
-        raise ValueError(
-            f"transform_mesh: out_faces must have length {faces.size}, got {new_faces.size}"
-        )
-    if reverses_orientation(matrix):
-        face_mode = kernel_transform.FACES_REVERSE
-    elif new_faces.ptr != faces.ptr:
-        face_mode = kernel_transform.FACES_COPY
-    else:
-        face_mode = kernel_transform.FACES_KEEP
-    n = max(vertices.size, faces.size // 3)
-    if n > 0:
-        _launch.launch(
-            kernel_transform.transform_mesh_buffers,
-            dim=n,
-            inputs=[vertices, faces, matrix, face_mode],
-            outputs=[new_vertices, new_faces],
-            device=vertices.device,
-        )
     return new_vertices, new_faces
 
 
@@ -818,15 +833,16 @@ def classify_transform(
     # The bottom row has to be [0, 0, 0, 1] for the map to be affine at all. A projective matrix
     # is not merely "some other affine map": ``wp.transform_point`` applies it without the
     # perspective divide, so nothing downstream is meaningful -- report the bottom rung.
-    if not np.allclose(host[3], np.array([0.0, 0.0, 0.0, 1.0]), rtol=rtol, atol=rtol):
+    if not _allclose(host[3], _AFFINE_ROW, rtol, rtol):
         return TransformKind.SINGULAR
 
-    gram = linear @ linear.T
-    scale_sq = _scale_sq_from_gram(gram)
-    determinant = float(np.linalg.det(linear))
     if _is_singular(linear, rtol):
         return TransformKind.SINGULAR
-    if not np.allclose(gram, scale_sq * np.eye(3), rtol=rtol, atol=rtol * scale_sq):
+    gram = linear @ linear.T
+    scale_sq = _scale_sq_from_gram(gram)
+    # A non-finite ``scale_sq`` makes the reference's off-diagonal ``inf * 0`` a NaN, which
+    # ``np.allclose`` never calls close: AFFINE either way, and ``_allclose`` needs it finite.
+    if not math.isfinite(scale_sq) or not _allclose(gram, scale_sq * _EYE3, rtol, rtol * scale_sq):
         return TransformKind.AFFINE
 
     # Scale is tested before the determinant sign, so a *mirroring* similarity (a uniform scale
@@ -836,12 +852,24 @@ def classify_transform(
     # [`transform_mesh`][ordito.transform.transform_mesh] does.
     if abs(scale_sq - 1.0) > rtol:
         return TransformKind.SIMILARITY
-    if determinant < 0.0:
+    if float(np.linalg.det(linear)) < 0.0:
         return TransformKind.REFLECTION
-    if np.allclose(linear, np.eye(3), rtol=rtol, atol=rtol):
-        translates = not np.allclose(offset, 0.0, rtol=rtol, atol=rtol)
+    if _allclose(linear, _EYE3, rtol, rtol):
+        translates = not _allclose(offset, 0.0, rtol, rtol)
         return TransformKind.TRANSLATION if translates else TransformKind.IDENTITY
     return TransformKind.RIGID
+
+
+def _allclose(values: np.ndarray, reference: np.ndarray | float, rtol: float, atol: float) -> bool:
+    """
+    ``np.allclose(values, reference, rtol=rtol, atol=atol)`` for a finite ``reference``.
+
+    The same test, ``|values - reference| <= atol + rtol * |reference|`` with a NaN never close,
+    without ``np.allclose``'s broadcasting and non-finite bookkeeping, which cost
+    [`classify_transform`][ordito.transform.classify_transform] most of its time on a ``4x4``.
+    An infinite ``values`` entry is not close either way, so only ``reference`` must be finite.
+    """
+    return bool((np.abs(values - reference) <= atol + rtol * np.abs(reference)).all())
 
 
 def transform_scale(matrix: wp.mat44 | wp.array[wp.mat44]) -> float:
@@ -938,11 +966,7 @@ def as_mat44(matrix: wp.mat44 | wp.array[wp.mat44]) -> wp.mat44:
     """
     if not isinstance(matrix, wp.array):
         return matrix
-    if matrix.size != 1:
-        raise ValueError(
-            f"as_mat44 requires a length-1 wp.array[wp.mat44], got shape {tuple(matrix.shape)}"
-        )
-    return cast(wp.mat44, matrix.list()[0])
+    return _launch.matrix(wp.mat44, _device_matrix_rows(matrix))
 
 
 def matrix_to_numpy(matrix: wp.mat44 | wp.array[wp.mat44]) -> np.ndarray:
@@ -984,7 +1008,30 @@ def matrix_to_numpy(matrix: wp.mat44 | wp.array[wp.mat44]) -> np.ndarray:
     print(host[:3, 3])  # [1. 2. 3.]
     ```
     """
-    return np.array(as_mat44(matrix), dtype=np.float64).reshape(4, 4)
+    if not isinstance(matrix, wp.array):
+        return np.array(matrix, dtype=np.float64).reshape(4, 4)
+    return np.array(_device_matrix_rows(matrix), dtype=np.float64)
+
+
+def _device_matrix_rows(matrix: wp.array[wp.mat44]) -> list[list[float]]:
+    """
+    Read the four rows of a ``(1,)`` device matrix back in one small copy.
+
+    [`as_mat44`][ordito.transform.as_mat44] and
+    [`matrix_to_numpy`][ordito.transform.matrix_to_numpy] read through this rather than
+    ``matrix.list()``, whose fresh host array costs several times the copy.
+
+    Raises
+    ------
+    ValueError
+        If ``matrix`` does not hold exactly one entry.
+    """
+    if matrix.size != 1:
+        raise ValueError(
+            f"as_mat44 requires a length-1 wp.array[wp.mat44], got shape {tuple(matrix.shape)}"
+        )
+    # The caller decides on the host (a classification, a winding, a host matrix to build).
+    return _common.read_values(matrix, 0, 1)[0]
 
 
 def reverses_orientation(matrix: wp.mat44 | wp.array[wp.mat44]) -> bool:

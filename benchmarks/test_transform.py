@@ -173,6 +173,27 @@ def test_transform_mesh(bench_case: BenchCase) -> None:
     assert moved_f.shape == faces_wp.shape
 
 
+@pytest.mark.benchmark(group="transform_mesh_device_matrix")
+@pytest.mark.benchlibs("ordito")
+def test_transform_mesh_device_matrix(bench_case: BenchCase) -> None:
+    """
+    ``transform_mesh`` with the mirror in a ``(1,)`` device array, as a fitted transform arrives.
+
+    The winding decision is the matrix's determinant sign, so this row prices deciding it without
+    reading the matrix back. ordito-only: no reference takes its matrix on the device.
+    """
+    mirror_np = tm.transformations.reflection_matrix([0.2, 0.1, 0.0], [0.3, 0.5, 0.81])
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    mirror_wp = wp.array(
+        [wp.mat44(*mirror_np.flatten().tolist())], dtype=wp.mat44, device=vertices_wp.device
+    )
+    moved_v, moved_f = bench_case.run(
+        lambda: od.transform.transform_mesh(vertices_wp, faces_wp, mirror_wp)
+    )
+    assert moved_v.shape == vertices_wp.shape
+    assert np.array_equal(moved_f.numpy().reshape(-1, 3), faces_wp.numpy().reshape(-1, 3)[:, ::-1])
+
+
 @pytest.mark.benchmark(group="transform_normals")
 @pytest.mark.benchlibs("ordito", "pyvista")
 def test_transform_normals(bench_case: BenchCase) -> None:

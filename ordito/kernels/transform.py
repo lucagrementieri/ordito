@@ -10,7 +10,7 @@ apply it would cost the readback [`ordito.registration`][ordito.registration] ex
 
 import warp as wp
 
-from ordito.kernels.predicates import normalize_or_zero
+from ordito.kernels.predicates import normalize_or_zero, orient3d_sign_f32
 from ordito.kernels.triangles import corner_triple, write_corner_triple_reversible
 
 wp.set_module_options({"enable_backward": False})
@@ -97,3 +97,37 @@ def transform_mesh_buffers(
     # thread reads its own rows before writing them, so it runs in place.
     i = wp.int32(wp.tid())
     transform_mesh_row(vertices, faces, matrix, face_mode, i, out_vertices, out_faces)
+
+
+@wp.func
+def mirrors_mat44(matrix: wp.mat44) -> wp.bool:
+    # ``transform.reverses_orientation`` on the device: the linear block's determinant is negative,
+    # as the exact sign of ``orient3d(0, r0, r1, r2) = det(r0, r1, r2)`` (``float32`` filter first,
+    # so nearly every thread decides in a few ``float32`` operations). The host's ``np.linalg.det``
+    # is rounded, so the two can part only for a block singular to within rounding.
+    r0 = wp.vec3(matrix[0, 0], matrix[0, 1], matrix[0, 2])
+    r1 = wp.vec3(matrix[1, 0], matrix[1, 1], matrix[1, 2])
+    r2 = wp.vec3(matrix[2, 0], matrix[2, 1], matrix[2, 2])
+    return orient3d_sign_f32(wp.vec3(0.0, 0.0, 0.0), r0, r1, r2) < 0
+
+
+@wp.kernel
+def transform_mesh_buffers_device(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.array[wp.mat44],
+    face_mode: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``transform_mesh_buffers`` for a matrix in a ``(1,)`` device array (a fitted transform),
+    # which differs only in deciding the winding here: ``face_mode`` (``FACES_KEEP`` or
+    # ``FACES_COPY``) becomes ``FACES_REVERSE`` when the matrix mirrors, so the call reads nothing
+    # back. CUDA only (0.22x on sphere_small and dragon, 0.96x on lucy). On the CPU the
+    # per-thread sign test cost 1.1-4.6x the old two passes (sphere_small to dragon) and reading
+    # the matrix there instead still lost 1.26-1.54x on dragon: one thread writing a vertex and a
+    # face runs slower on the CPU than the map and the face pass apart, so the CPU keeps them.
+    i = wp.int32(wp.tid())
+    m = matrix[0]
+    mode = wp.where(mirrors_mat44(m), FACES_REVERSE, face_mode)
+    transform_mesh_row(vertices, faces, m, mode, i, out_vertices, out_faces)

@@ -7257,6 +7257,13 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_transform.py::test_transform_mesh_device_matrix[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
  "benchmarks/test_transform.py::test_transform_normals[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,

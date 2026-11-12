@@ -7929,7 +7929,6 @@
  },
  "benchmarks/test_transform.py::test_as_mat44[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
@@ -7938,7 +7937,6 @@
  },
  "benchmarks/test_transform.py::test_classify_transform[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
@@ -7947,7 +7945,6 @@
  },
  "benchmarks/test_transform.py::test_matrix_to_numpy[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
@@ -7956,7 +7953,6 @@
  },
  "benchmarks/test_transform.py::test_normal_matrix[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
@@ -7965,7 +7961,6 @@
  },
  "benchmarks/test_transform.py::test_reverses_orientation[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
@@ -7976,6 +7971,12 @@
   "counts": {}
  },
  "benchmarks/test_transform.py::test_transform_mesh[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_transform.py::test_transform_mesh_device_matrix[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
    "alloc": 2
@@ -8000,7 +8001,6 @@
  },
  "benchmarks/test_transform.py::test_transform_scale[ordito-cuda-device]": {
   "counts": {
-   "alloc": 1,
    "d2h": 1
   }
  },
