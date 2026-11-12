@@ -8140,8 +8140,8 @@
  },
  "benchmarks/test_validation.py::test_edge_winding_consistent_mask[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 5,
-   "alloc": 4,
+   "launch": 3,
+   "alloc": 2,
    "d2h": 1,
    "scan": 1,
    "sort": 1

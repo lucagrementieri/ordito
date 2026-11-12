@@ -10,6 +10,7 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
+from ordito.kernels.array import scanned_count
 from ordito.kernels.grouping import count_edge_key
 from ordito.kernels.halfedge import (
     halfedge_destination,
@@ -56,17 +57,33 @@ def directed_edge(
     return halfedge_endpoints(faces, e)
 
 
+@wp.func
+def pair_traversed_opposite(
+    faces: wp.array[wp.int32], edges: wp.array2d[wp.int32], h0: wp.int32, h1: wp.int32
+) -> wp.bool:
+    # Whether the two halfedges of a shared edge run it in opposite directions: the per-pair test
+    # of ``emit_sorted_pair_winding`` and ``mate_pair_violated``, which differ in where the pair
+    # comes from (the sorted key runs, the halfedge mates).
+    _a0, b0 = directed_edge(faces, edges, h0)
+    a1, _b1 = directed_edge(faces, edges, h1)
+    return b0 == a1
+
+
 @wp.kernel
-def edge_pair_winding_mask(
+def emit_sorted_pair_winding(
     faces: wp.array[wp.int32],
     edges: wp.array2d[wp.int32],
-    edge_groups: wp.array2d[wp.int32],
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
     out_consistent: wp.array[wp.bool],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    _a0, b0 = directed_edge(faces, edges, edge_groups[tid, 0])
-    a1, _b1 = directed_edge(faces, edges, edge_groups[tid, 1])
-    out_consistent[tid] = b0 == a1
+    # ``adjacency.emit_sorted_face_pairs``' compaction over the scanned exact-pair starts, writing
+    # each pair's winding flag where that kernel writes its face pair, so no group table exists.
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    out_consistent[row] = pair_traversed_opposite(faces, edges, order[i], order[i + 1])
 
 
 @wp.func
@@ -82,7 +99,7 @@ def mate_pair_violated(
     Whether halfedge ``h`` breaks "every edge shared by two faces, traversed both ways".
 
     With ``require_opposite``, a pair's lower halfedge fails when the pair's two faces traverse
-    their edge the same way (``edge_pair_winding_mask``'s per-pair test, read off the halfedge
+    their edge the same way (``pair_traversed_opposite``, read off the halfedge
     mates); with ``require_pairs`` a halfedge fails when its edge is not shared by exactly two
     faces. Shared by ``mate_pair_winding_violation`` and ``closed_signed_volume``.
     """
@@ -90,9 +107,7 @@ def mate_pair_violated(
     if mate < 0:
         return require_pairs
     if require_opposite and mate > h:
-        _a0, b0 = directed_edge(faces, edges, h)
-        a1, _b1 = directed_edge(faces, edges, mate)
-        return b0 != a1
+        return not pair_traversed_opposite(faces, edges, h, mate)
     return False
 
 

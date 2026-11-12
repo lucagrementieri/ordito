@@ -246,6 +246,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "first occurrence off the stable sort as unique_rows does, where unique_1d plus "
         "first_occurrence_indices pays a scatter pass and a filled buffer for it"
     ),
+    ("validation", "adjacency._sorted_pair_scan"): (
+        "edge_winding_consistent_mask writes each pair's winding flag in the run emit; "
+        "face_adjacency would store the pair table for a second launch to read"
+    ),
     ("repair", "validation._face_flip_words"): (
         "make_winding_consistent applies each face's flip in the pass that reads it off the parity "
         "words; face_flip_mask would store the mask for a second launch to read back"

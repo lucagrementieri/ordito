@@ -19,9 +19,9 @@ from ordito._common import (
     require_same_device,
     require_valid_faces,
 )
+from ordito.adjacency import _sorted_pair_scan  # pyright: ignore[reportPrivateUsage]
 from ordito.config import is_deterministic
-from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
-from ordito.kernels import adjacency as kernel_adjacency
+from ordito.constants import TILE_1D
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import reduce as kernel_reduce
@@ -888,20 +888,18 @@ def edge_winding_consistent_mask(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    # Neither edge table is built when not given: the keys come straight off ``faces`` and the
-    # kernel reads each directed edge from its face corner, the row ``faces_to_edges`` would hold.
-    edge_groups = od.grouping.group(_halfedge_keys(faces), 2)
-    n_groups = int(edge_groups.shape[0])
-    if n_groups == 0:
-        return _launch.empty(0, dtype=wp.bool, device=device)
-
-    consistent = _launch.empty(n_groups, dtype=wp.bool, device=device)
-    _launch.launch(
-        kernel_validation.edge_pair_winding_mask,
-        dim=n_groups,
-        inputs=[faces, edges, edge_groups, consistent],
-        device=device,
-    )
+    # The pairs are ``face_adjacency``'s: the keys come straight off ``faces`` into the sort, and
+    # each pair's flag is written by the run emit, so neither an edge table nor a group table is
+    # built; the kernel reads each directed edge from its face corner when ``edges`` is not given.
+    order, inclusive, n_pairs = _sorted_pair_scan(faces, None)
+    consistent = _launch.empty(n_pairs, dtype=wp.bool, device=device)
+    if n_pairs > 0:
+        _launch.launch(
+            kernel_validation.emit_sorted_pair_winding,
+            dim=inclusive.size,
+            inputs=[faces, edges, inclusive, order, consistent],
+            device=device,
+        )
     return consistent
 
 
@@ -1968,22 +1966,3 @@ def _vertex_manifold_check(
         inputs=[faces, labels, min_label, wp.int32(require_referenced), mask, violation],
         device=device,
     )
-
-
-def _halfedge_keys(faces: wp.array[wp.int32]) -> wp.array[wp.uint64]:
-    """
-    Pack the undirected key of every halfedge, in halfedge order, against ``INDEX_RADIX_PAIR``.
-
-    Read straight off ``faces``: it is the rows ``hash_indices_rows`` of ``edges_sorted`` would
-    give, for less.
-    """
-    n_faces = faces.size // 3
-    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
-    _launch.launch(
-        kernel_adjacency.face_edge_keys,
-        dim=n_faces,
-        inputs=[faces, wp.uint64(INDEX_RADIX_PAIR)],
-        outputs=[keys],
-        device=faces.device,
-    )
-    return keys
