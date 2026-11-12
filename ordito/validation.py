@@ -1073,11 +1073,13 @@ def is_orientable(
 
     A mesh is orientable when each face can be assigned a flip bit so that every pair of
     edge-adjacent faces traverses their shared edge in opposite directions. This is a topological
-    property independent of the current winding, matching Open3D's ``IsOrientable``.
+    property independent of the current winding. Only edges shared by exactly two faces constrain
+    the bits; a boundary edge, an edge shared by three or more faces, and a degenerate face's edge
+    run both ways by that face alone constrain nothing.
 
-    Each face-adjacency edge carries a Z2 flip bit; the check seeds one bit per connected component,
-    propagates bits across adjacencies, then verifies that no adjacency violates its constraint (a
-    contradiction means non-orientable).
+    Each face-adjacency edge carries a Z2 constraint on its two faces' flip bits; a parity
+    union-find joins the faces and reports a non-orientable mesh as soon as an edge contradicts the
+    bits its faces already hold.
 
     Parameters
     ----------
@@ -1111,7 +1113,9 @@ def is_orientable(
 
     Notes
     -----
-    Equivalent to ``open3d.geometry.TriangleMesh.is_orientable``. Unlike
+    Equal to ``open3d.geometry.TriangleMesh.is_orientable`` on edge-manifold meshes without
+    degenerate faces. Elsewhere Open3D orients by a traversal whose answer can change with the order
+    of the faces alone, so the two are not comparable there. Unlike
     [`is_winding_consistent`][ordito.validation.is_winding_consistent], orientability allows
     individual faces to be flipped, so a consistently-orientable mesh with inconsistent winding
     still returns ``True``.
