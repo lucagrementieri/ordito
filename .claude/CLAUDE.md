@@ -1364,6 +1364,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bit-identical) also fits a query whose distance the caller can bound: `remesh.reproject_vertices`
   / `clamp_to_surface_band` by the smoothing drift, `levelset`'s band-node queries by a
   neighbour's distance plus the spacing; neither carries the bound yet, unpriced.
+- **`is_watertight` reads back twice** (2026-11-12): the manifold flag, then the
+  self-intersection flag, so a non-manifold mesh skips the BVH build and the broad phase. Reading
+  both at once (the broad phase issued before the first read) saves a sync on watertight input
+  and pays a BVH build and a broad phase on every other; unpriced. Price it on `sphere_med`,
+  `tangle_2` and an open mesh at two sizes before building it.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
