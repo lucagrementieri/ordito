@@ -1295,6 +1295,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   hub row over SMs needs a list of the long rows, which the operator pattern does not carry (the
   rings' list, `_common.long_rings`, is keyed by the ring offsets). The explicit smoothing passes'
   warp walk ~0.4 ms a hub.
+- **`corner_normals` is quadratic in a smooth group's size** (2026-11-12): every corner walks its
+  whole group, so `fan_hub` costs 12.5 ms (no creases) to 74 ms (creased) against ~0.1 ms on a
+  uniform mesh, and a 2 k-face cone already 0.26 ms. Refuted (`kernels/triangles.corner_normals`):
+  forming each visited face's weighted normal in the thread (2.7-3.6x on small cones), and a long
+  group summed and written by its lowest corner alone (hubs 3.1-4.2x: one thread's dependent
+  chain over the fan; dragon 1.19-1.29x). Open: rank a long fan by rulers in a block
+  (`halfedge.rank_long_rings`) and take a segmented sum, without touching the short-group path
+  (ordinary meshes must stay byte-identical).
 - **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
   ~7.7 us a round (65 536-point star: 14 404 rounds, 111 ms). The walks left are the two
   neighbours a clip reclasses (an empty triangle's verdict is cached until then, `EAR_UNBLOCKED`),

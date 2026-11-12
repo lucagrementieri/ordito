@@ -965,6 +965,19 @@ def corner_normals(
     # with no creases every corner of a vertex gets that vertex's angle-weighted normal, and with
     # every edge a crease each corner gets its own face's normal. Those two are exact identities and
     # are what the test pins.
+    #
+    # Every corner walks its whole group, so a hub's corners cost the square of its valence
+    # (``fan_hub`` 12.5 ms against ~0.1 ms on a uniform mesh of its size). Two forms lost
+    # (2026-11-12, CUDA new/old):
+    # - each visited face's normal and weight formed in the thread from positions (no table
+    #   launch): sphere_small 0.76-0.88x, par on bunny, 1.1-1.45x from 327 k faces, 1.6-1.75x
+    #   scrambled, and 2.7-3.6x on cones of 2-8 k faces, where the hub walk recomputes a table
+    #   read; a face-count gate cannot see valence;
+    # - a group over 64 faces summed once by its lowest corner (found by walking both ways to the
+    #   nearest lower corner, ``O(k log k)``) and written to every member: hubs 3.1-4.2x, since one
+    #   thread's chain of dependent loads over 40 k faces is slower than 40 k threads re-walking
+    #   it from cache, and the restructured loop cost dragon 1.19-1.29x. A hub wants its fan
+    #   ranked by rulers in a block (``halfedge.rank_long_rings``) and a segmented sum.
     corner = wp.int32(wp.tid())
     face = corner // 3
     total = face_normals[face] * corner_weight(corner_weights, weights_per_corner, corner)

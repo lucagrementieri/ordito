@@ -71,8 +71,10 @@ def face_normals_and_areas(
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
-    out_normal = _launch.empty(f, dtype=wp.vec3, device=vertices.device)
-    out_area = _launch.empty(f, dtype=wp.float32, device=vertices.device)
+    # Both outputs carved from one allocation: the normals' ``3 f`` floats, then the areas.
+    storage = _launch.empty(4 * f, dtype=wp.float32, device=vertices.device)
+    out_normal = _launch.alias(storage, wp.vec3, 0, f)
+    out_area = _launch.alias(storage, wp.float32, 12 * f, f)
     _launch.launch(
         kernel_triangles.face_normals_and_areas,
         dim=f,
