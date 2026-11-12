@@ -387,7 +387,8 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     # One launch: the (uncentred) Gram matrix G = sum_j outer(x_j, x_j), whose last block takes
     # its SVD and writes the axis.
     out_axis = _scatter_fit(points, None, 1.0, kernel_points.SCATTER_FIT_LINE, 1)
-    return cast(wp.vec3, out_axis.list()[0])
+    # The axis is the host return value.
+    return wp.vec3(*read_values(out_axis, 0, 1)[0])
 
 
 def centered_covariance(

@@ -5438,7 +5438,7 @@
  "benchmarks/test_points.py::test_fit_line[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 3,
+   "alloc": 2,
    "memset": 1,
    "d2h": 1
   }
