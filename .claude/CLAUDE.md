@@ -1363,6 +1363,16 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `bounds.py`'s `bool_flags` compaction through `flatnonzero`'s ballot bits from `2**23`; a
   leading-slot zero in `_common.offsets_buffer` where its producer writes every count; other
   producers whose keys run in column order taking `_column_ordered_key_cols` (none found yet).
+- **`voxels` sweep leftovers** (2026-11-13): every remaining voxels row sits at
+  `Volume.allocate_by_voxels`' ~0.22 ms floor a build (morphology, set algebra, `fill_*`,
+  `revoxelize`: 0.35-0.75 ms calls of one or two builds); the lever is a topology the package
+  builds itself from sorted unique cells, unbuilt and unpriced. Unpriced smaller items: `union`
+  handing the builder only `b`'s cells `a` lacks (one probe a cell); `voxelize_mesh`'s box read
+  when the caller passed the grid (~40 us of the deduplicated path) folded into the count launch;
+  the CPU's one loss of the deduplicated build, `icosphere(2)` at 256 cells (1.03-1.06x). Outside
+  the module, awaiting a go-ahead: `reduce.scatter_min` / `scatter_max`
+  (`kernels/scatter.commit_extremum`) through a generic `scatter.peer_extremum_vec3`, which took
+  voxel max pooling 0.27x on lucy.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
