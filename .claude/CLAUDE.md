@@ -1357,12 +1357,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **`array` sweep leftovers** (2026-11-13), each unpriced: `isin`'s two min/max launches as one
-  (one launch of an ~85 us call; `isin` has no in-repo device caller); `wp.copy(dst, src[idx])`
-  at `selection.py:319`, `intersection.py:2424`, `repair.py:5152` through `array.gather`;
-  `bounds.py`'s `bool_flags` compaction through `flatnonzero`'s ballot bits from `2**23`; a
-  leading-slot zero in `_common.offsets_buffer` where its producer writes every count; other
-  producers whose keys run in column order taking `_column_ordered_key_cols` (none found yet).
+- **`reduce.minmax`'s tiled 1-D kernel is slow on CUDA** (2026-11-13): `MINMAX1D_TILED` took
+  15 / 18 / 547 us a launch on 15 k / 2.6 M / 84 M `int32` where the lane-strided
+  `MINMAX_PAIR_1D` (an empty second array) took 5.7 / 6.6 / 204 us (0.6 against 1.6 TB/s). Open:
+  route `reduce.minmax`'s CUDA `axis=None` path through a lane-strided fold, checking floats'
+  NaN and `-0.0` handling and the CPU, where the tiled form vectorizes and wins (1.27-1.44x).
 - **`voxels` sweep leftovers** (2026-11-13): every remaining voxels row sits at
   `Volume.allocate_by_voxels`' ~0.22 ms floor a build (morphology, set algebra, `fill_*`,
   `revoxelize`: 0.35-0.75 ms calls of one or two builds); the lever is a topology the package

@@ -796,6 +796,10 @@ def offsets_buffer(n: int, device: wp.DeviceLike) -> tuple[wp.array[wp.int32], w
     ([`scan_count`][ordito._common.scan_count]) then leaves the total-terminated offsets, the
     leading zero being the first one, with no separate count buffer. ``n`` must be positive.
     """
+    # Declined (2026-11-13): zeroing only the leading slot, as ``array.counts_to_offsets`` does on
+    # long buffers. The whole memset is ~34 us at 28 M entries on CUDA and 0.2 ms on the CPU over
+    # dragon's 437 k points, where its ``query_ball`` takes 2.4 s (0.01 %): the per-query count
+    # passes filling these tails dwarf it.
     offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     return offsets, _launch.view(offsets, 1, n + 1)
 

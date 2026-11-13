@@ -1067,6 +1067,8 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
     Compact the points ``mask`` keeps, in index order.
 
     ``gather(points, flatnonzero(mask))`` without the index list or the gathered copy between them.
+    Declined (2026-11-13, CUDA): ``flatnonzero``'s counted ballot bits in place of the ``int32``
+    flags, 115 -> 74 us on ``lucy``'s 14 M points, 0.6 % of its 7.0 ms ``oriented_bounding_box``.
     """
     device = points.device
     n = points.size
