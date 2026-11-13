@@ -27,6 +27,7 @@ from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_r
 from ordito.kernels.array import (
     append_slot,
     append_slot_if,
+    atomic_max_unless_above,
     binary_search_index,
     cube_corner_offset,
     curve_cell,
@@ -36,7 +37,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.grouping import hash_slot_words3, key_set_insert, next_slot
 from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
-from ordito.kernels.reduce import GroupSumPass, peer_counted_add
+from ordito.kernels.reduce import GroupSumPass, peer_counted_add, warp_min_at_lead
 from ordito.kernels.scatter import (
     ARRIVAL_POOL_PEERS,
     EXTREMUM_MAX,
@@ -162,6 +163,12 @@ def triangle_lattice_window(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3) -> tuple[wp.v
     )
 
 
+# The bias of ``count_triangle_candidates``' box keys: past any int32 cell's magnitude.
+CELL_BOX_BIAS = wp.int64(1 << 40)
+# What ``warp_min_at_lead`` hands every lane but the lead.
+INT32_MAX_VALUE = wp.int32(2147483647)
+
+
 @wp.kernel
 def count_triangle_candidates(
     vertices: wp.array[wp.vec3],
@@ -170,6 +177,7 @@ def count_triangle_candidates(
     inverse_size: wp.float32,
     over_budget: wp.int64,
     out_counts: wp.array[wp.int64],
+    out_box: wp.array[wp.int64],
 ) -> None:
     # Each triangle's window size, exact up to ``over_budget`` (the caller's budget plus one) and
     # saturated there: any saturated count already puts the scanned total over the budget, and a
@@ -177,6 +185,19 @@ def count_triangle_candidates(
     f = wp.int32(wp.tid())
     p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
     lo, hi = triangle_lattice_window(p0, p1, p2)
+    # The box of every window, for the deduplicated build's keys, when ``out_box`` has its six
+    # caller-zeroed slots (none where the caller holds the bounds): ``CELL_BOX_BIAS - lo`` and
+    # ``CELL_BOX_BIAS + hi`` raised there, positive for any int32 cell, so a maximum from zero
+    # needs no seed. Each warp's windows are reduced first and its lead bids, skipping a bid the
+    # slot already beats: a scan's windows keep widening the box along its order, and a bid a
+    # lane cost dragon's call 1.24-1.42x.
+    if out_box.shape[0] > 0:
+        for axis in range(3):
+            low = warp_min_at_lead(lo[axis])
+            high = warp_min_at_lead(-hi[axis])
+            if low != INT32_MAX_VALUE:
+                atomic_max_unless_above(out_box, axis, CELL_BOX_BIAS - wp.int64(low))
+                atomic_max_unless_above(out_box, axis + 3, CELL_BOX_BIAS - wp.int64(high))
     # Each axis span widens to int64 *before* the subtraction, not after, so the subtraction itself
     # cannot already overflow int32 for a triangle whose window is that wide (the convention
     # ``kernels/graph.py``'s packed labels key uses: widen the operands, not their difference).

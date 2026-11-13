@@ -229,7 +229,8 @@ def voxelize_mesh(
 
     device = vertices.device
     n_faces = faces.size // 3
-    # A default grid reads the box anyway; it is kept for the deduplicated build.
+    # A default grid reads the bounds anyway, and they bound the deduplicated build's keys; a grid
+    # the caller passed has the count launch reduce its windows' box instead, read with its total.
     bounds = (
         od.bounds.aabb(vertices)
         if (voxel_size is None or origin is None) and n_faces > 0 and vertices.size > 0
@@ -243,17 +244,23 @@ def voxelize_mesh(
 
     # The counts go straight into the tail of the ``n_faces + 1`` offsets buffer and are scanned in
     # place, in int64: each count saturates just past the budget, so the scanned total is exact
-    # whenever it is within the budget and over it otherwise, for any ``voxel_size``.
-    offsets = _launch.zeros(n_faces + 1, dtype=wp.int64, device=device)
-    counts = odt.as_dense(offsets[1:])
+    # whenever it is within the budget and over it otherwise, for any ``voxel_size``. Without the
+    # bounds, six slots past them take the windows' box (``kernels/voxels.CELL_BOX_BIAS``).
+    n_box = 6 if bounds is None else 0
+    buffer = _launch.zeros(n_faces + 1 + n_box, dtype=wp.int64, device=device)
+    offsets = _launch.view(buffer, 0, n_faces + 1)
+    counts = _launch.view(buffer, 1, n_faces + 1)
     _launch.launch(
         kernel_voxels.count_triangle_candidates,
         dim=n_faces,
-        inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), max_candidates + 1, counts],
+        inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), max_candidates + 1],
+        outputs=[counts, _launch.view(buffer, n_faces + 1, n_faces + 7) if n_box else None],
         device=device,
     )
     _launch.array_scan(counts, counts, inclusive=True)
-    total = int(read_scalar(offsets, index=-1))  # checks the budget and sizes the candidate launch
+    # One readback: the total checks the budget and sizes the candidate launch, the box keys the
+    # deduplicated build.
+    total, *box = (int(value) for value in read_values(buffer, n_faces, 1 + n_box))
     if total > max_candidates:
         raise ValueError(
             f"voxelize_mesh would test more than max_candidates={max_candidates} (triangle, cell) "
@@ -267,11 +274,17 @@ def voxelize_mesh(
     if total >= (
         _UNIQUE_ITEMS_FROM_CPU if wp.get_device(device).is_cpu else _UNIQUE_CANDIDATES_FROM
     ):
+        if bounds is None:
+            bias = int(kernel_voxels.CELL_BOX_BIAS)
+            lower = [bias - box[axis] for axis in range(3)]
+            cell_box = (lower, [box[axis + 3] - bias - lower[axis] + 1 for axis in range(3)])
+        else:
+            cell_box = _cell_box(bounds, origin, voxel_size)
         grid = _unique_cells_grid(
             kernel_voxels.append_unique_triangle_cells,
             total,
             [vertices, faces, offsets, origin, wp.float32(1.0 / voxel_size)],
-            od.bounds.aabb(vertices) if bounds is None else bounds,
+            cell_box,
             voxel_size,
             origin,
             device,
@@ -379,7 +392,7 @@ def voxelize_points(
             kernel_voxels.append_unique_point_cells,
             n_points,
             [points, origin, wp.float32(1.0 / voxel_size)],
-            bounds,
+            _cell_box(bounds, origin, voxel_size),
             voxel_size,
             origin,
             device,
@@ -393,7 +406,7 @@ def _unique_cells_grid(
     kernel: odt.Kernel,
     dim: int,
     inputs: list[object],
-    bounds: tuple[wp.vec3, wp.vec3],
+    box: tuple[list[int], list[int]],
     voxel_size: float,
     origin: wp.vec3,
     device: wp.DeviceLike,
@@ -402,30 +415,19 @@ def _unique_cells_grid(
     Build the grid of a producer's distinct cells, or ``None`` when its box has too many cells.
 
     ``kernel`` (``kernels/voxels.append_unique_cell``'s producers) launched over ``dim`` items
-    appends each kept cell once, keyed by its rank in the box of the cells ``bounds`` can reach,
-    so the builder sorts the distinct cells alone. The key set holds at most ``min(dim, box)``
-    keys and the builder takes the appended prefix after one count read.
+    appends each kept cell once, keyed by its rank in ``box``, the ``(lower, shape)`` of the cells
+    it can reach, so the builder sorts the distinct cells alone. The key set holds at most
+    ``min(dim, box cells)`` keys and the builder takes the appended prefix after one count read.
     """
-    inverse = float(np.float32(1.0 / voxel_size))
-    lower: list[int] = []
-    shape: list[int] = []
-    for axis in range(3):
-        low = (float(bounds[0][axis]) - float(origin[axis])) * inverse
-        high = (float(bounds[1][axis]) - float(origin[axis])) * inverse
-        # The kernels round a float32 lattice position, which can land a cell past the float64
-        # quotient here, and a triangle's window reaches one cell below its box: two cells of
-        # slack a side, more where float32 cannot resolve a cell.
-        slack = 2 + math.ceil(max(abs(low), abs(high)) * 2.0**-22)
-        lower.append(math.floor(low) - slack)
-        shape.append(math.floor(high) + slack - lower[-1] + 1)
-    box = shape[0] * shape[1] * shape[2]
-    if box >= 1 << 62 or min(lower) < -INT32_MAX or max(lower) + max(shape) > INT32_MAX:
+    lower, shape = box
+    n_box = shape[0] * shape[1] * shape[2]
+    if n_box >= 1 << 62 or min(lower) < -INT32_MAX or max(lower) + max(shape) > INT32_MAX:
         return None
-    mask = kernel_grouping.hash_table_mask(min(dim, box))
+    mask = kernel_grouping.hash_table_mask(min(dim, n_box))
     slot_key, counter = _launch.carve_typed(
         ((wp.int64, mask + 1), (wp.int32, 1)), device, zeroed=True
     )
-    cells = odt.empty_2d((min(dim, box), 3), wp.int32, device=device)
+    cells = odt.empty_2d((min(dim, n_box), 3), wp.int32, device=device)
     _launch.launch(
         kernel,
         dim=dim,
@@ -434,6 +436,27 @@ def _unique_cells_grid(
         device=device,
     )
     return _allocate_appended(cells, counter, voxel_size, origin)
+
+
+def _cell_box(
+    bounds: tuple[wp.vec3, wp.vec3], origin: wp.vec3, voxel_size: float
+) -> tuple[list[int], list[int]]:
+    """
+    Return the ``(lower, shape)`` box of every cell a point inside ``bounds`` falls in.
+
+    The kernels round a float32 lattice position, which can land a cell past the float64 quotient
+    here: two cells of slack a side, more where float32 cannot resolve a cell.
+    """
+    inverse = float(np.float32(1.0 / voxel_size))
+    lower: list[int] = []
+    shape: list[int] = []
+    for axis in range(3):
+        low = (float(bounds[0][axis]) - float(origin[axis])) * inverse
+        high = (float(bounds[1][axis]) - float(origin[axis])) * inverse
+        slack = 2 + math.ceil(max(abs(low), abs(high)) * 2.0**-22)
+        lower.append(math.floor(low) - slack)
+        shape.append(math.floor(high) + slack - lower[-1] + 1)
+    return lower, shape
 
 
 @overload
