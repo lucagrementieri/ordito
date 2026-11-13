@@ -107,6 +107,14 @@ _UNIQUE_CANDIDATES_FROM = 1 << 19
 _UNIQUE_POINTS_FROM = 1 << 20
 _UNIQUE_ITEMS_FROM_CPU = 1 << 12
 
+# Rows from which ``union`` on CUDA hands the builder each cell once instead of both grids' cells:
+# below it the builder's sort of the overlap is near its floor, which a probe launch and a count
+# read do not repay (1.06-1.25x up to 0.9 M rows; 0.81-0.86x at 3.3-7.1 M, dragon and lucy solids
+# at 512 cells across, 2026-11-13). The CPU builder sorts on the host: 0.75-0.98x from 7 k rows to
+# 200 k, 1.3-1.45x at a few hundred.
+_UNION_UNIQUE_FROM = 1 << 21
+_UNION_UNIQUE_FROM_CPU = 1 << 13
+
 # The one connectivity at which ``closing`` / ``opening`` run their inner pair as one pass
 # (``_morphology_pair``). The pass tests a cell's whole neighbourhood against the other operation's
 # stencil, ``connectivity * (connectivity + 1)`` probes, where the two passes paid a grid build:
@@ -2040,8 +2048,8 @@ def union(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     Cells occupied in either grid: ``a | b``.
 
     trimesh's ``ops.boolean_sparse`` under ``numpy.logical_or``, and the cheapest of the three set
-    operations here -- the two cell arrays are concatenated and the builder collapses the overlap,
-    so there is no membership test and no unique pass to write.
+    operations here -- the two cell arrays are concatenated and the builder collapses the overlap.
+    Large grids drop ``b``'s cells that ``a`` holds first, by one membership probe each.
 
     Parameters
     ----------
@@ -2104,7 +2112,26 @@ def union(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     # active row.
     capacity_a = a.get_voxel_count() if n_a > 0 else 0
     capacity_b = b.get_voxel_count() if n_b > 0 else 0
-    both = odt.empty_2d((max(capacity_a, n_a + capacity_b), 3), wp.int32, device=a.device)
+    device = a.device
+    if (
+        n_a > 0
+        and n_b > 0
+        and n_a + n_b
+        >= (_UNIQUE_ITEMS_FROM_CPU if wp.get_device(device).is_cpu else _UNION_UNIQUE_FROM)
+    ):
+        # A large union hands the builder each cell once: ``a``'s rows, then ``b``'s cells ``a``
+        # lacks, appended behind them, at one probe a cell and the count's read.
+        both = odt.empty_2d((max(capacity_a, n_a + n_b), 3), wp.int32, device=device)
+        a.get_voxels(out=cast("wp.array[wp.int32]", both))
+        counter = _launch.full(1, n_a, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_voxels.append_cells_by_occupancy,
+            dim=n_b,
+            inputs=[a.id, cells(b), False, counter, both],
+            device=device,
+        )
+        return _allocate_appended(both, counter, voxel_size, origin)
+    both = odt.empty_2d((max(capacity_a, n_a + capacity_b), 3), wp.int32, device=device)
     if n_a > 0:
         a.get_voxels(out=cast("wp.array[wp.int32]", both))
     if n_b > 0:

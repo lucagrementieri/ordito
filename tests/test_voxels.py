@@ -89,16 +89,18 @@ def sphere(
 @pytest.fixture(params=["masked", "deduplicated"])
 def grid_build(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Run a voxelization through each of its two grid builds.
+    Run a voxelization or a union through each of its two grid builds.
 
-    ``voxelize_mesh`` and ``voxelize_points`` hand the builder every row below an item count and
-    each distinct cell once from it; the fixtures here sit below those counts, so the
+    ``voxelize_mesh``, ``voxelize_points`` and ``union`` hand the builder every row below an item
+    count and each distinct cell once from it; the fixtures here sit below those counts, so the
     ``"deduplicated"`` arm lowers them to zero. Both arms must give the reference's cells.
     """
     if request.param == "deduplicated":
         monkeypatch.setattr("ordito.voxels._UNIQUE_CANDIDATES_FROM", 0)
         monkeypatch.setattr("ordito.voxels._UNIQUE_POINTS_FROM", 0)
         monkeypatch.setattr("ordito.voxels._UNIQUE_ITEMS_FROM_CPU", 0)
+        monkeypatch.setattr("ordito.voxels._UNION_UNIQUE_FROM", 0)
+        monkeypatch.setattr("ordito.voxels._UNION_UNIQUE_FROM_CPU", 0)
 
 
 def _cloud(
@@ -1233,6 +1235,7 @@ def _shifted(grid: wp.Volume, offset: tuple[int, int, int]) -> wp.Volume:
     "trimesh's ops.boolean_sparse is the other candidate row and needs the optional `sparse` "
     "package, which is not a test dependency here.",
 )
+@pytest.mark.usefixtures("grid_build")
 def test_set_algebra_matches_meshlib(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
 ):
@@ -2132,6 +2135,7 @@ def test_every_entry_point_survives_an_empty_input(device: str):
     assert od.voxels.sample_grid_trilinear(field_wp, no_points).size == 0
 
 
+@pytest.mark.usefixtures("grid_build")
 def test_rebuildable_grids_report_and_merge_only_their_active_voxels(device: str):
     """
     Not a library comparison: ``cells`` and ``union`` read a rebuildable grid's active voxels only.

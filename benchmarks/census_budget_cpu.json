@@ -7893,7 +7893,9 @@
  },
  "benchmarks/test_voxels.py::test_union[sphere_small-ordito-cpu]": {
   "counts": {
-   "alloc": 1
+   "launch": 1,
+   "alloc": 3,
+   "readback": 1
   }
  },
  "benchmarks/test_voxels.py::test_voxel_corners[sphere_small-ordito-cpu]": {
