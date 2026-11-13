@@ -840,6 +840,9 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
+- Kernel-scope unary minus is `T(0.0) - x` (`warp/native/builtin.h` `neg`), so `-wp.float64(0.0)`
+  is `+0.0`; a negative zero is the literal `wp.float64(-0.0)`, which emits `-0.0` (2026-11-13: a
+  list started at `-wp.float64(0.0)` turned four `-0.0` entries of a sum to `+0.0`).
 - Gate an angle near pi on the angle (`atan2` form, `predicates.vector_angle`), not on its `float32` cosine: the cosine is flat there, so every threshold above ~179.98° rounded to `cos == -1` and the fold gate of `face_defective_mask` / `remove_folded_faces` never flagged an exactly folded-back pair (fixed 2026-10-26; MeshLib, which tests `dot <= cos`, is inclusive at the threshold where ordito is strict).
 - A degeneracy tolerance carries the units of the quantity it bounds: `predicates.point_triangle_offset`'s
   absolute `1e-12` on `|ab x ac|^2` (a length^4) sent every interior point of a face under ~1e-3
@@ -1017,6 +1020,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   byte-identical at par, CPU byte-identical. A heavy row body called through a `@wp.func` instead
   of written in the kernel cost 1.25-1.4x device time at the same register count
   (`connection_laplacian_rows`), so that one keeps its short row inline.
+- **A one-block pass waits on its slowest warp, which a long row's lane sets only past a gate**
+  (2026-11-13, `kernels/algorithms/conjugate_gradient.ONE_BLOCK_WARP_ROWS_FROM`): a pass is ~5 000
+  cycles of latency a lane, and a 78-entry factor row held its warp to ~9 800 on a hub patch. The
+  warp walks rows of 24 or more only in a block holding one of 48 (one block reduction a launch,
+  a `float32` shuffle sum): the solve 0.80x, calls 0.92x, below the gate bit-identical and at
+  par. A 35-entry row was off the critical path and walking it cost 1.01-1.06x; ungated, the
+  ballot cost 1.07x where no row is long. Rows that crowd a warp (an `M^T M` hub's 2-ring) stay
+  a lane each: the warp walking them in turn lost 1.22x.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
   next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
@@ -1302,6 +1313,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   per call in both arms before attributing a CPU row that moves with what ran before it, and read
   each regime alone: `MALLOC_MMAP_THRESHOLD_=131072` faults every call in, a threshold of 1 GiB
   with `MALLOC_TRIM_THRESHOLD_` at its maximum keeps every page resident.
+- **Generated kernel variants need their own `@wp.func` names.** Probe modules that each defined a
+  `@wp.func` of one name all compiled against the last one defined (2026-11-13: every walk
+  threshold timed alike, until the emitted `.cu` showed one constant); suffix every function per
+  variant and grep the generated source for the constant. Keep a do-nothing control from the same
+  generator too: an untaken warp-loop arm made the original loop 0.91-0.96x in its module, a
+  code-generation effect that duplicating the loop did not reproduce and that whole calls did not
+  show.
 - **Pin the B arm to a worktree, not the live tree.** Another session committing and editing in the live tree during a sweep changed that arm's code mid-run (the 1.19 A/B: its heat and mesh rows, and a cold compile that hit a half-written kernel). Check `git log` and file mtimes against the run's timestamps before trusting a live-tree arm.
 - **`wp.timing_begin` sees no graph-replayed kernels**, so every CG solve reads host-bound. Re-run with capture disabled and carry the device total back. It misses `capture_while` passes too, and `TIMING_KERNEL` omits memcpys: price a fusion that replaces a `wp.copy` with `TIMING_ALL`.
 - **Every group has a census row:** scan-mesh rows (`bunny` to `lucy`) run only at `--size medium`, so every scan sweep also runs its ordito rows on `sphere_small` (`CENSUS_MESH`, `benchmarks/conftest.py`), the rows the gate counts; a test with nothing to do on a closed smooth sphere names another small feature mesh with `@pytest.mark.censusmesh(name)` (`saddle_small` for rims, `tangle_torus_small` for creases). A census row that skips leaves its group outside the gate. The census keeps only the smallest mesh of each size axis a test sweeps (`benchmarks/census.py`, `_SIZE_AXES`): of 120 size-axis tests, 91 counted the same at every size and 20 more only ran more rounds (CG iterations, Cholesky panels); the other branches on size are kept with `@pytest.mark.censuskeep` (k-NN deferral, chunked geodesic ball, multi-block polyline reduction, longest-edge split selection). Feature-axis meshes are different inputs and all stay, except a row `@pytest.mark.censusskip` names whose counts equal a cheaper row's by construction (`thickness_interior`'s `max_sphere` on `sphere_med`: in-kernel iterations, 75x `shells_8`'s time for its exact counts). `screened_poisson` keeps depth 7 only. `sample_surface_poisson_disk`'s rounds replay as one graph on CUDA and run in thread order on the CPU, so its row is gated like any other. The stitch rows assert their band size, since a band of two parallel half-strips once stitched nothing.
@@ -1317,13 +1335,13 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **A hole fill's hub patch holds the one-block solve** (2026-11-11): `refine_and_smooth_region`'s
-  smooth solve (`cg_one_block`) costs 162 us a round on `saddle_small` against 71 on bunny at the
-  same step count, tracking the patch's hub valence (82 against 11); 5.3 of the call's ~13 ms.
-  Neither the hub's factor rows nor the long `M^T M` rows set it (warp-walked: 1.02-1.22x, declined
-  at `cg_one_block`); find what does before tuning. `normal_equations_rows` (1.5 ms there) sorts a
-  hub's 2-ring by insertion in one thread; an order-keeping rewrite is priced at ~0.5 ms
-  (`reference/component-status.md`, 16.8).
+- **`normal_equations_rows` on a hole fill's hub patch** (2026-11-13): 1.54 ms of
+  `refine_and_smooth_region`'s ~12.4 ms on `saddle_small` (0.72 on `hemisphere`), the launch
+  being the hub row's one thread. Its cost is read-after-write latency in the row's segment, not
+  the insertion's shift count: a record-sort-bisect form with the same sums (bit-identical) cost
+  as much (refuted, `reference/component-status.md`, 16.8). A thread an entry merging two sorted
+  1-rings would keep the order; what is open is finding the hub row's distinct columns without
+  one thread.
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),

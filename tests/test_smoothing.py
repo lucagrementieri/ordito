@@ -29,6 +29,7 @@ from benchmarks.meshes import BUILDERS
 from ordito.kernels import array as kernel_array
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import smoothing as kernel_smoothing
+from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
 from tests.comparisons import assert_provenance_describes, meshlab_umbrella
 from tests.conftest import (
     MESHES,
@@ -2615,17 +2616,22 @@ def test_smooth_region_matches_meshlib(
 
 
 @pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
+@pytest.mark.parametrize("spokes", [40, 80])
 @pytest.mark.parity("smooth_region", "meshlib")
-def test_smooth_region_on_a_hub_matches_meshlib(device: str, edge_weights: str) -> None:
+def test_smooth_region_on_a_hub_matches_meshlib(
+    device: str, edge_weights: str, spokes: int
+) -> None:
     """
-    Class A: ``positionVertsSmoothly`` on a region whose pole has 40 neighbours.
+    Class A: ``positionVertsSmoothly`` on a region whose pole has 40 or 80 neighbours.
 
     The sphere region of the test above has valences of about six; a hole fill's refined patch
     keeps fan hubs like this pole, whose normal-equation row spans its 2-ring and whose
-    preconditioner row is ten times a typical one. Every vertex but the cap's outer two rings is
+    preconditioner row is ten times a typical one. At 80 spokes the pole's factor row passes
+    ``conjugate_gradient.ONE_BLOCK_WARP_ROWS_FROM``, so the one-block solve's polynomial passes
+    hand it to its warp on CUDA; at 40 they do not. Every vertex but the cap's outer two rings is
     free, and the answer must move them, so the comparison is not of the input.
     """
-    spokes = 40
+    assert (spokes + 1 >= int(kernel_cg.ONE_BLOCK_WARP_ROWS_FROM)) == (spokes == 80)
     vertices_np, faces_np = _hub_cap(spokes=spokes, rings=8, theta=1.0)
     vertices_np = vertices_np * np.random.default_rng(3).uniform(0.97, 1.03, (len(vertices_np), 1))
     vertices_np = vertices_np.astype(np.float32).astype(np.float64)

@@ -51,7 +51,18 @@ import warp as wp
 from ordito.kernels.algorithms.multigrid import chebyshev_polynomial_column, chebyshev_update
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable, csr_row_long
 from ordito.kernels.linalg import csr_row_dot, jacobi_row
-from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
+from ordito.kernels.reduce import (
+    block_barrier,
+    block_chunk_1d,
+    block_max,
+    block_sum,
+    device_is_cpu,
+    warp_ballot,
+    warp_broadcast,
+    warp_lane_rank,
+    warp_lanes_sum_float32,
+    warp_lowest_lane,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1043,6 +1054,70 @@ ONE_BLOCK_NARROW_T = 1
 ONE_BLOCK_NARROW_MID = 4
 ONE_BLOCK_NARROW_SLOTS = 5
 
+# A polynomial factor row of ``ONE_BLOCK_WARP_ROW`` entries or more is walked by its warp, but only
+# in a block whose factors hold a row of ``ONE_BLOCK_WARP_ROWS_FROM`` or more (``cg_one_block``
+# reads the longest once a launch). A pass is a latency chain a lane long, about 5 000 cycles,
+# and a warp waits on its slowest lane: on a hole fill's hub patch (``saddle_small``, factor rows
+# to 78 entries) the warp holding the hub row took ~9 800 cycles, every pass (clock-instrumented,
+# 2026-11-13), so a round of the polynomial's 22 passes cost ~150 us against bunny's ~70, whose
+# factor rows stop at 11; truncating only the four rows past 48 entries recovered 21 us a round.
+# Walked by the warp: the solve's device time 0.80x on ``saddle_small`` (6.20 -> 4.97 ms),
+# ``refine_and_smooth_region`` and ``fill_smooth`` 0.92x; ``hemisphere`` and bunny, below the
+# gate, 0.97-0.99x and bit-identical. Below the gate the rows are not the critical path and the
+# warp loop only costs: ``hemisphere``'s longest rows (34, 35) lost 1.01x / 1.06x gated at 32 /
+# 16. The walk threshold is flat from 16 to 32 on ``saddle_small``.
+ONE_BLOCK_WARP_ROWS_FROM = wp.int32(48)
+ONE_BLOCK_WARP_ROW = wp.int32(24)
+
+
+@wp.func
+def one_block_chebyshev_store(
+    coefficients: wp.vec4f,
+    row: wp.int32,
+    ax: wp.float32,
+    current_base: wp.int32,
+    previous_base: wp.int32,
+    source_base: wp.int32,
+    target_base: wp.int32,
+    wide_base: wp.int32,
+    widen: wp.bool,
+    narrow: wp.array[wp.float32],
+    scratch: wp.array[wp.float64],
+) -> None:
+    # Row ``row`` of a ``one_block_chebyshev`` step from its ``(A x)`` entry ``ax``, written
+    # ``float32`` into the target slot or, with ``widen``, ``float64`` into ``scratch``. Shared by
+    # the pass's two loops, which differ only in who walks a row.
+    value = chebyshev_update(
+        coefficients,
+        narrow[current_base + row],
+        narrow[previous_base + row],
+        narrow[source_base + row],
+        ax,
+    )
+    if widen:
+        scratch[wide_base + row] = wp.float64(value)
+    else:
+        narrow[target_base + row] = value
+
+
+@wp.func
+def csr_row_dot_warp(
+    row: wp.int32,
+    x_offset: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    rank: wp.int32,
+) -> wp.float32:
+    # ``linalg.csr_row_dot`` by a whole warp, every lane of which calls it with its ``rank``: each
+    # strides the row from its rank and the partial sums take ``reduce.warp_lanes_sum_float32``'s
+    # fixed tree, which leaves the row's sum in the warp's first lane only.
+    part = wp.float32(0.0)
+    for k in range(offsets[row] + rank, offsets[row + 1], 32):
+        part += values[k] * x[x_offset + columns[k]]
+    return warp_lanes_sum_float32(-1, part)
+
 
 @wp.func
 def one_block_chebyshev(
@@ -1056,6 +1131,7 @@ def one_block_chebyshev(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
     steps: wp.array[wp.vec4d],
+    warp_rows: wp.int32,
     lane: wp.int32,
     narrow: wp.array[wp.float32],
     scratch: wp.array[wp.float64],
@@ -1067,7 +1143,13 @@ def one_block_chebyshev(
     # ``scratch`` instead. The iterates rotate through the three ``ONE_BLOCK_NARROW_T`` slots --
     # step ``k`` writes slot ``k % 3``, and reads the two before it, or ``source`` for the first
     # two, as ``chebyshev_step`` does -- so no step writes what it reads.
+    #
+    # With ``warp_rows`` set (CUDA only) the rows run in a loop whose trip count is the same for
+    # every lane of a warp, and each row of ``ONE_BLOCK_WARP_ROW`` entries or more is walked by
+    # the warp after its lanes' own rows, lowest lane first; its sum is the warp's tree, not the
+    # row's order. Without it every row is its lane's, in row order.
     n_steps = steps.shape[0]
+    n_warps = (n + 31) // 32
     source_base = source * total + column_base
     for k in range(n_steps):
         wide = steps[k]
@@ -1088,19 +1170,64 @@ def one_block_chebyshev(
         previous_base = previous * total + column_base
         target_base = target * total + column_base
         wide_base = widen_to * total + column_base
-        for row in range(lane, n, wp.block_dim()):
-            ax = csr_row_dot(row, current_base, offsets, columns, values, narrow)
-            value = chebyshev_update(
-                coefficients,
-                narrow[current_base + row],
-                narrow[previous_base + row],
-                narrow[source_base + row],
-                ax,
-            )
-            if last and widen_to >= 0:
-                scratch[wide_base + row] = wp.float64(value)
-            else:
-                narrow[target_base + row] = value
+        widen = last and widen_to >= 0
+        if warp_rows == 0:
+            for row in range(lane, n, wp.block_dim()):
+                ax = csr_row_dot(row, current_base, offsets, columns, values, narrow)
+                one_block_chebyshev_store(
+                    coefficients,
+                    row,
+                    ax,
+                    current_base,
+                    previous_base,
+                    source_base,
+                    target_base,
+                    wide_base,
+                    widen,
+                    narrow,
+                    scratch,
+                )
+        else:
+            rank = warp_lane_rank(-1)
+            for slot in range(lane, n_warps * 32, wp.block_dim()):
+                row = wp.min(slot, n - 1)
+                long_row = slot < n and offsets[row + 1] - offsets[row] >= ONE_BLOCK_WARP_ROW
+                if slot < n and not long_row:
+                    ax = csr_row_dot(row, current_base, offsets, columns, values, narrow)
+                    one_block_chebyshev_store(
+                        coefficients,
+                        row,
+                        ax,
+                        current_base,
+                        previous_base,
+                        source_base,
+                        target_base,
+                        wide_base,
+                        widen,
+                        narrow,
+                        scratch,
+                    )
+                long_rows = warp_ballot(-1, wp.where(long_row, 1, 0))
+                while long_rows != 0:
+                    walked = warp_broadcast(-1, row, warp_lowest_lane(long_rows))
+                    ax = csr_row_dot_warp(
+                        walked, current_base, offsets, columns, values, narrow, rank
+                    )
+                    if rank == 0:
+                        one_block_chebyshev_store(
+                            coefficients,
+                            walked,
+                            ax,
+                            current_base,
+                            previous_base,
+                            source_base,
+                            target_base,
+                            wide_base,
+                            widen,
+                            narrow,
+                            scratch,
+                        )
+                    long_rows = long_rows & (long_rows - 1)
         block_barrier()
 
 
@@ -1117,6 +1244,7 @@ def one_block_precondition(
     transpose_columns: wp.array[wp.int32],
     transpose_values: wp.array[wp.float32],
     steps: wp.array[wp.vec4d],
+    warp_rows: wp.int32,
     lane: wp.int32,
     narrow: wp.array[wp.float32],
     scratch: wp.array[wp.float64],
@@ -1142,6 +1270,7 @@ def one_block_precondition(
             transpose_columns,
             transpose_values,
             steps,
+            warp_rows,
             lane,
             narrow,
             scratch,
@@ -1157,6 +1286,7 @@ def one_block_precondition(
             factor_columns,
             factor_values,
             steps,
+            warp_rows,
             lane,
             narrow,
             scratch,
@@ -1210,14 +1340,16 @@ def cg_one_block(
     # reads all three from one buffer and needs no integer one. On the CPU device a block is
     # one lane, which walks every row: the lane-free form that backend wants anyway.
     #
-    # Declined (2026-11-11): handing a long row to its warp (a ballot a row, the warp's lanes
-    # striding the row, a shuffle sum), on ``smoothing.refine_and_smooth_region``'s fills, whose
-    # fan hubs make a round of the smooth solve cost 152 us on ``saddle_small`` against 71 on
-    # bunny at the same step count. In the polynomial's passes, factor rows of 32 entries or more
-    # (5 of 1 000, the longest 78): the solve 1.07-1.15x, bunny with no such row 1.07x (the ballot
-    # in every pass). In the round's mat-vec, ``M^T M`` rows from 64 / 96 / 128 entries (to 223):
-    # 1.22x / 1.02x / 1.02x on ``saddle_small``, par elsewhere. Neither the hub's lane nor the long
-    # system rows set the round's time.
+    # The polynomial's passes hand a long factor row to its warp, only in a block whose factors
+    # hold a row of ``ONE_BLOCK_WARP_ROWS_FROM`` entries (``warp_rows``, read with one block
+    # reduction before the first pass): a hole fill's hub patch, whose hub warp otherwise sets
+    # every pass. Ungated, the ballot in every pass cost bunny's patch 1.07x (2026-11-11).
+    #
+    # Declined (2026-11-11 / 2026-11-13): the same for the round's mat-vec, whose ``M^T M`` rows
+    # on ``saddle_small`` run to 223 entries, 201 of its 1 000 rows past 64, crowding the hub's
+    # warps: 1.22x / 1.02x / 1.02x from 64 / 96 / 128 entries. Nor a wider chunk a lane for those
+    # rows (eight or sixteen entries a step past 32): par on ``saddle_small`` and bunny,
+    # 1.03-1.04x on ``hemisphere``.
     c, lane = wp.tid()
     total = n_columns * n
     column_base = c * n
@@ -1231,7 +1363,16 @@ def cg_one_block(
     zero = wp.float64(0.0)
 
     b_norm_sq = zero
+    longest = wp.int32(0)
     for row in range(lane, n, wp.block_dim()):
+        if polynomial != 0:
+            longest = wp.max(
+                longest,
+                wp.max(
+                    factor_offsets[row + 1] - factor_offsets[row],
+                    transpose_offsets[row + 1] - transpose_offsets[row],
+                ),
+            )
         residual = rhs[column_base + row] - csr_row_dot(
             row, column_base, offsets, columns, values, out_x
         )
@@ -1246,6 +1387,9 @@ def cg_one_block(
             narrow[narrow_r_base + row] = wp.float32(residual)
         b_norm_sq += rhs[column_base + row] * rhs[column_base + row]
     atol_sq = cg_threshold(tol_sq, zero, block_sum(b_norm_sq))
+    warp_rows = wp.int32(0)
+    if polynomial != 0 and device_is_cpu() == 0:
+        warp_rows = wp.where(block_max(longest) >= ONE_BLOCK_WARP_ROWS_FROM, 1, 0)
     one_block_precondition(
         polynomial,
         n,
@@ -1258,6 +1402,7 @@ def cg_one_block(
         transpose_columns,
         transpose_values,
         steps,
+        warp_rows,
         lane,
         narrow,
         scratch,
@@ -1317,6 +1462,7 @@ def cg_one_block(
             transpose_columns,
             transpose_values,
             steps,
+            warp_rows,
             lane,
             narrow,
             scratch,
