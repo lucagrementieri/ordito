@@ -25,6 +25,7 @@ from ordito.kernels.array import (
     KernelTable,
     atomic_min_packed_box,
     csr_row_long,
+    device_is_cpu,
     is_close_scalar,
     is_close_vec3,
     ordered_double_bits,
@@ -1504,6 +1505,12 @@ def _reduce_1d_tiled(
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
 
+    A sum on CUDA folds each block's chunk lane-strided instead and reduces it once (the
+    ``device_is_cpu`` arm): the tiles' barriers held 84 M ``float32`` at 1.05 TB/s against 1.65,
+    and ``reduce.sum`` took 0.70x on small arrays, 0.66x on ``lucy``'s corners (2026-11-13). The
+    CPU keeps the tiles, which vectorize there, and min / max keep them everywhere (CUDA takes
+    ``extrema_1d``'s kernels).
+
     With ``partials=True`` the block's result is *stored* at ``out_result[block]`` instead of
     committed with ``atomic`` (which is then unused): the deterministic float sum's first stage,
     and, launched over its own output, the fold of those partials. A float ``atomic_add`` commits
@@ -1542,6 +1549,8 @@ def _reduce_1d_tiled(
     """
     element = array_term if term is None else term
     value_dtype = dtype if term is None else term_dtype
+    is_sum = scalar is wp.add
+    accumulator_type = value_dtype
     is_last = last_ticket_vector if wp.types.type_is_vector(value_dtype) else last_ticket
 
     def _k(source: Any, out_result: Any) -> None:
@@ -1556,31 +1565,46 @@ def _reduce_1d_tiled(
         if wp.static(term is not None):
             local = wp.tile_arange(TILE_1D, dtype=wp.int32, storage="register")
 
-        # First chunk seeds the accumulator (both branches assign it -- Warp's conditional
-        # scoping).
-        if remaining >= TILE_1D:
-            if wp.static(term is None):
-                tile = wp.tile_load(source, shape=TILE_1D, offset=base, storage="register")
-            else:
-                tile = wp.tile_map(term, local, base, source)
-            result = tile_reduce(tile)[0]
+        if wp.static(is_sum) and device_is_cpu() == 0:
+            # A sum on CUDA: each lane folds its stride of the chunk, then one block reduction,
+            # where the tiled walk below ends each of its tiles in a barrier (84 M ``float32``:
+            # 1.05 against 1.65 TB/s). A fixed order, so the total still repeats bit for bit.
+            # The typed constructor makes the constant zero a mutable accumulator (a bare
+            # ``wp.static`` value is a constant in the loop).
+            lane_sum = accumulator_type(wp.static(value_dtype(0)))
+            # ``remaining`` runs to the end of the array; the block owns its chunk's width.
+            count = wp.min(remaining, tiles_per_block * TILE_1D)
+            for k in range(t, count, wp.block_dim()):
+                lane_sum = scalar(lane_sum, element(k, base, source))
+            result = block_sum(lane_sum)
         else:
-            result = element(0, base, source)
-            for k in range(1, remaining):
-                result = scalar(result, element(k, base, source))
-
-        for s in range(1, tiles_per_block):
-            offset = base + s * TILE_1D
-            rest = n - offset
-            if rest >= TILE_1D:
+            # First chunk seeds the accumulator (both branches assign it -- Warp's conditional
+            # scoping).
+            if remaining >= TILE_1D:
                 if wp.static(term is None):
-                    chunk = wp.tile_load(source, shape=TILE_1D, offset=offset, storage="register")
+                    tile = wp.tile_load(source, shape=TILE_1D, offset=base, storage="register")
                 else:
-                    chunk = wp.tile_map(term, local, offset, source)
-                result = scalar(result, tile_reduce(chunk)[0])
-            elif rest > 0:
-                for k in range(rest):
-                    result = scalar(result, element(k, offset, source))
+                    tile = wp.tile_map(term, local, base, source)
+                result = tile_reduce(tile)[0]
+            else:
+                result = element(0, base, source)
+                for k in range(1, remaining):
+                    result = scalar(result, element(k, base, source))
+
+            for s in range(1, tiles_per_block):
+                offset = base + s * TILE_1D
+                rest = n - offset
+                if rest >= TILE_1D:
+                    if wp.static(term is None):
+                        chunk = wp.tile_load(
+                            source, shape=TILE_1D, offset=offset, storage="register"
+                        )
+                    else:
+                        chunk = wp.tile_map(term, local, offset, source)
+                    result = scalar(result, tile_reduce(chunk)[0])
+                elif rest > 0:
+                    for k in range(rest):
+                        result = scalar(result, element(k, offset, source))
 
         if wp.static(folded):
             store_folded_total(i, t, result, out_result, 0, 1, is_last)
@@ -1618,6 +1642,7 @@ def _weighted_sum_1d_tiled(name, dtype, partials=False, folded=False):
     it through ``store_folded_total``, as in ``_reduce_1d_tiled``.
     """
     is_last = last_ticket_vector if wp.types.type_is_vector(dtype) else last_ticket
+    accumulator_type = dtype
 
     def _k(
         values: wp.array[wp.Scalar], weights: wp.array[wp.float32], out_sum: wp.array[wp.Scalar]
@@ -1628,25 +1653,34 @@ def _weighted_sum_1d_tiled(name, dtype, partials=False, folded=False):
         if remaining <= 0:
             return
 
-        if remaining >= TILE_1D:
-            v_tile = wp.tile_load(values, shape=TILE_1D, offset=base, storage="register")
-            w_tile = wp.tile_load(weights, shape=TILE_1D, offset=base, storage="register")
-            result = wp.tile_sum(v_tile * w_tile)[0]
+        if device_is_cpu() == 0:
+            # CUDA: ``_reduce_1d_tiled``'s lane-strided fold and one block reduction.
+            lane_sum = accumulator_type(wp.static(dtype(0)))
+            for k in range(t, wp.min(remaining, ITEMS_PER_BLOCK_1D), wp.block_dim()):
+                lane_sum = lane_sum + values[base + k] * weights[base + k]
+            result = block_sum(lane_sum)
         else:
-            result = values[base] * weights[base]
-            for k in range(1, remaining):
-                result = result + values[base + k] * weights[base + k]
+            if remaining >= TILE_1D:
+                v_tile = wp.tile_load(values, shape=TILE_1D, offset=base, storage="register")
+                w_tile = wp.tile_load(weights, shape=TILE_1D, offset=base, storage="register")
+                result = wp.tile_sum(v_tile * w_tile)[0]
+            else:
+                result = values[base] * weights[base]
+                for k in range(1, remaining):
+                    result = result + values[base + k] * weights[base + k]
 
-        for s in range(1, TILES_PER_BLOCK_1D):
-            offset = base + s * TILE_1D
-            rest = n - offset
-            if rest >= TILE_1D:
-                v_chunk = wp.tile_load(values, shape=TILE_1D, offset=offset, storage="register")
-                w_chunk = wp.tile_load(weights, shape=TILE_1D, offset=offset, storage="register")
-                result = result + wp.tile_sum(v_chunk * w_chunk)[0]
-            elif rest > 0:
-                for k in range(rest):
-                    result = result + values[offset + k] * weights[offset + k]
+            for s in range(1, TILES_PER_BLOCK_1D):
+                offset = base + s * TILE_1D
+                rest = n - offset
+                if rest >= TILE_1D:
+                    v_chunk = wp.tile_load(values, shape=TILE_1D, offset=offset, storage="register")
+                    w_chunk = wp.tile_load(
+                        weights, shape=TILE_1D, offset=offset, storage="register"
+                    )
+                    result = result + wp.tile_sum(v_chunk * w_chunk)[0]
+                elif rest > 0:
+                    for k in range(rest):
+                        result = result + values[offset + k] * weights[offset + k]
 
         if wp.static(folded):
             store_folded_total(i, t, result, out_sum, 0, 1, is_last)
