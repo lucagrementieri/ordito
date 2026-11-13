@@ -107,6 +107,15 @@ _UNIQUE_CANDIDATES_FROM = 1 << 19
 _UNIQUE_POINTS_FROM = 1 << 20
 _UNIQUE_ITEMS_FROM_CPU = 1 << 12
 
+# The one connectivity at which ``closing`` / ``opening`` run their inner pair as one pass
+# (``_morphology_pair``). The pass tests a cell's whole neighbourhood against the other operation's
+# stencil, ``connectivity * (connectivity + 1)`` probes, where the two passes paid a grid build:
+# at 6 it took the pair 0.62-0.92x (CUDA, icosphere(5) to lucy, shells and solids); at 18 closing
+# lost 2.4-3.4x and at 26 3-6x, opening 0.8-3.8x (2026-11-13). The CPU runs the probes one thread
+# after another: closing still wins there (0.68-0.95x), opening, which tests a voxel's erosion
+# again for each stencil row, lost 1.9-2.7x and keeps its two passes.
+_MORPHOLOGY_PAIR_CONNECTIVITY = 6
+
 
 def voxelize_mesh(
     vertices: wp.array[wp.vec3],
@@ -2763,11 +2772,17 @@ def closing(
     print(od.voxels.cells(od.voxels.closing(grid)).shape[0])  # 27
     ```
     """
-    return erode(
-        dilate(grid, connectivity=connectivity, iterations=iterations),
-        connectivity=connectivity,
-        iterations=iterations,
-    )
+    _check_iterations(connectivity, iterations)
+    if iterations == 0 or connectivity != _MORPHOLOGY_PAIR_CONNECTIVITY:
+        return erode(
+            dilate(grid, connectivity=connectivity, iterations=iterations),
+            connectivity=connectivity,
+            iterations=iterations,
+        )
+    # The innermost dilation and erosion run as one pass, which never builds the grid between them.
+    grid = dilate(grid, connectivity=connectivity, iterations=iterations - 1)
+    grid = _morphology_pair(grid, connectivity, kernel_voxels.closing_cells)
+    return erode(grid, connectivity=connectivity, iterations=iterations - 1)
 
 
 def opening(
@@ -2830,11 +2845,54 @@ def opening(
     print(od.voxels.cells(opened).shape[0])  # 7
     ```
     """
-    return dilate(
-        erode(grid, connectivity=connectivity, iterations=iterations),
-        connectivity=connectivity,
-        iterations=iterations,
+    _check_iterations(connectivity, iterations)
+    if (
+        iterations == 0
+        or connectivity != _MORPHOLOGY_PAIR_CONNECTIVITY
+        or wp.get_device(grid.device).is_cpu
+    ):
+        return dilate(
+            erode(grid, connectivity=connectivity, iterations=iterations),
+            connectivity=connectivity,
+            iterations=iterations,
+        )
+    # The innermost erosion and dilation run as one pass, which never builds the grid between them.
+    grid = erode(grid, connectivity=connectivity, iterations=iterations - 1)
+    grid = _morphology_pair(grid, connectivity, kernel_voxels.opening_cells)
+    return dilate(grid, connectivity=connectivity, iterations=iterations - 1)
+
+
+def _morphology_pair(grid: wp.Volume, connectivity: int, kernel: odt.Kernel) -> wp.Volume:
+    """
+    Run one closing or opening step, ``kernel``, over ``grid``'s voxels and their stencils.
+
+    ``kernels/voxels.closing_cells`` / ``opening_cells`` test the composite from ``grid`` itself
+    and append each kept cell once, so one grid is built where the two passes built two.
+    """
+    voxel_size, origin = grid_transform(grid)
+    device = grid.device
+    voxels = cells(grid)
+    n_voxels = int(voxels.shape[0])
+    if n_voxels == 0:
+        return _empty_grid(voxel_size, origin, device)
+    stencil = _stencil(connectivity, device, include_self=True)
+    n_offsets = int(stencil.shape[0])
+    candidates = odt.empty_2d((n_voxels * n_offsets, 3), wp.int32, device=device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel,
+        dim=(n_voxels, n_offsets),
+        inputs=[
+            grid.id,
+            voxels,
+            stencil,
+            _stencil(connectivity, device, include_self=False),
+            counter,
+            candidates,
+        ],
+        device=device,
     )
+    return _allocate_appended(candidates, counter, voxel_size, origin)
 
 
 def surface_voxels(grid: wp.Volume, *, connectivity: Literal[6, 18, 26] = 6) -> wp.Volume:

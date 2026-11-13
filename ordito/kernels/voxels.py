@@ -1011,6 +1011,89 @@ def neighborhood_complete_cells(
 
 
 @wp.func
+def stencil_offset(stencil: wp.array2d[wp.int32], m: wp.int32) -> wp.vec3i:
+    di, dj, dk = row_triple(stencil, m)
+    return wp.vec3i(di, dj, dk)
+
+
+@wp.func
+def dilated(volume: wp.uint64, cell: wp.vec3i, stencil: wp.array2d[wp.int32]) -> wp.int32:
+    # ``1`` when ``cell`` is in the grid's dilation by ``stencil`` (with its zero row): some voxel
+    # reaches it, ``cell - stencil[m]`` occupied. ``dilation_candidates``' set, read without
+    # building it.
+    for m in range(stencil.shape[0]):
+        p = cell - stencil_offset(stencil, m)
+        if wp.volume_lookup_index(volume, p[0], p[1], p[2]) >= 0:
+            return 1
+    return 0
+
+
+@wp.func
+def eroded(volume: wp.uint64, cell: wp.vec3i, neighbors: wp.array2d[wp.int32]) -> wp.int32:
+    # ``1`` when ``cell`` is in the grid's erosion by ``neighbors`` (no zero row): it and every
+    # neighbour are occupied, ``neighborhood_complete_cells``' interior test, read without building
+    # it.
+    if wp.volume_lookup_index(volume, cell[0], cell[1], cell[2]) < 0:
+        return 0
+    for m in range(neighbors.shape[0]):
+        p = cell + stencil_offset(neighbors, m)
+        if wp.volume_lookup_index(volume, p[0], p[1], p[2]) < 0:
+            return 0
+    return 1
+
+
+@wp.kernel
+def closing_cells(
+    volume: wp.uint64,
+    voxels: wp.array2d[wp.int32],
+    stencil: wp.array2d[wp.int32],
+    neighbors: wp.array2d[wp.int32],
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
+) -> None:
+    # One closing step, the erosion of the dilation, from the grid itself: a dilated cell
+    # (``voxel + stencil[m]``) whose ``neighbors`` all lie in the dilation too, appended at the
+    # next slot of ``counter[0]``. Each cell is taken by the lowest stencil row reaching it from a
+    # voxel, so it is tested and appended once. The dilation is never built: what the pair of
+    # passes paid for it was a grid build, its count read and its cell copy. Arrival order decides
+    # nothing (the builder sorts). ``opening_cells`` is the other order of the pair. Taken at
+    # connectivity 6 only: the probes grow as its square (``voxels._MORPHOLOGY_PAIR_CONNECTIVITY``).
+    v, m = wp.tid()
+    cell = neighbor_cell(voxels, v, stencil, m)
+    for j in range(m):
+        p = cell - stencil_offset(stencil, j)
+        if wp.volume_lookup_index(volume, p[0], p[1], p[2]) >= 0:
+            return
+    for n in range(neighbors.shape[0]):
+        if dilated(volume, cell + stencil_offset(neighbors, n), stencil) == 0:
+            return
+    write_row_triple(out_cells, append_slot(counter, 0), cell[0], cell[1], cell[2])
+
+
+@wp.kernel
+def opening_cells(
+    volume: wp.uint64,
+    voxels: wp.array2d[wp.int32],
+    stencil: wp.array2d[wp.int32],
+    neighbors: wp.array2d[wp.int32],
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
+) -> None:
+    # One opening step, the dilation of the erosion, from the grid itself: ``voxel + stencil[m]``
+    # for a voxel the erosion keeps, taken by the lowest stencil row reaching it from a kept voxel
+    # and appended at the next slot of ``counter[0]``. ``closing_cells`` is the other order.
+    v, m = wp.tid()
+    i, j, k = row_triple(voxels, v)
+    if eroded(volume, wp.vec3i(i, j, k), neighbors) == 0:
+        return
+    cell = neighbor_cell(voxels, v, stencil, m)
+    for r in range(m):
+        if eroded(volume, cell - stencil_offset(stencil, r), neighbors) != 0:
+            return
+    write_row_triple(out_cells, append_slot(counter, 0), cell[0], cell[1], cell[2])
+
+
+@wp.func
 def span_cell(axis: wp.int32, a: wp.int32, b: wp.int32, t: wp.int32) -> wp.vec3i:
     # ``(a, b)`` index the two axes other than ``axis``, ``t`` runs along ``axis``.
     if axis == 0:

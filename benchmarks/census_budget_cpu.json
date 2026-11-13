@@ -7719,9 +7719,9 @@
  },
  "benchmarks/test_voxels.py::test_closing[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 6,
-   "readback": 2
+   "launch": 1,
+   "alloc": 3,
+   "readback": 1
   }
  },
  "benchmarks/test_voxels.py::test_difference[sphere_small-ordito-cpu]": {
