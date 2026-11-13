@@ -1198,6 +1198,32 @@ def resampled_cell_candidates(
 
 
 @wp.kernel
+def append_owned_corners(
+    volume: wp.uint64,
+    voxels: wp.array2d[wp.int32],
+    counter: wp.array[wp.int32],
+    out_corners: wp.array2d[wp.int32],
+) -> None:
+    # Every corner of the grid's cells once, for the corner grid's build: corner ``c`` of voxel
+    # ``v`` is appended by ``v`` unless an active voxel reaches the same corner through a lower
+    # corner index (the voxel ``corner - cube_corner_offset(j)``, ``j < c``), so each corner has
+    # one owner and the builder sorts the distinct corners alone, not all eight a voxel. Arrival
+    # order decides nothing (the builder sorts). ``counter`` is scratch carried out to the build.
+    v, c = wp.tid()
+    o = cube_corner_offset(c)
+    corner = wp.vec3i(voxels[v, 0] + o[0], voxels[v, 1] + o[1], voxels[v, 2] + o[2])
+    owned = wp.int32(1)
+    for j in range(c):
+        p = corner - cube_corner_offset(j)
+        if wp.volume_lookup_index(volume, p[0], p[1], p[2]) >= 0:
+            owned = wp.int32(0)
+            break
+    slot = append_slot_if(counter, 0, owned)
+    if slot >= 0:
+        write_row_triple(out_corners, slot, corner[0], corner[1], corner[2])
+
+
+@wp.kernel
 def cell_corner_indices(
     corner_volume: wp.uint64, voxels: wp.array2d[wp.int32], out_corners: wp.array2d[wp.int32]
 ) -> None:

@@ -2161,26 +2161,24 @@ def test_rebuildable_grids_report_and_merge_only_their_active_voxels(device: str
     assert np.array_equal(lexsort_rows(od.voxels.cells(merged).numpy()), lexsort_rows(expected_np))
 
 
-def test_voxels_imports_warp_fem_lazily():
+def test_voxels_does_not_import_warp_fem():
     """
-    ``warp.fem`` is imported inside [`voxel_corners`][ordito.voxels.voxel_corners], not at scope.
+    ``ordito.voxels`` builds its corner grid itself and never imports ``warp.fem``.
 
-    That import is a real fixed cost every caller of the module would otherwise pay.
+    That import is a real fixed cost every caller would otherwise pay, and ``warp.fem.Nanogrid``'s
+    setup was most of [`voxel_corners`][ordito.voxels.voxel_corners]' time.
 
     Checked statically rather than through ``sys.modules``: ``ordito/kernels/curvature.py`` imports
     ``warp.fem.linalg`` at module scope, which drags the whole ``warp.fem`` package in regardless of
     what this module does, so a runtime probe could never fail.
     """
-    import ast
     import inspect
 
-    tree = ast.parse(inspect.getsource(od.voxels))
-    module_scope_imports = [
-        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
-    ] + [node.module for node in tree.body if isinstance(node, ast.ImportFrom) and node.module]
-    assert not any(name.startswith("warp.fem") for name in module_scope_imports)
-    # ...and it really is imported somewhere, so this is not vacuous.
-    assert "import warp.fem" in inspect.getsource(od.voxels)
+    assert "warp.fem" not in "\n".join(
+        line
+        for line in inspect.getsource(od.voxels).splitlines()
+        if line.lstrip().startswith(("import ", "from "))
+    )
 
 
 def test_invalid_arguments_raise(device: str):

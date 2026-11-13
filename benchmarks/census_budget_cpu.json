@@ -7873,9 +7873,8 @@
  "benchmarks/test_voxels.py::test_to_boxes[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 12,
-   "h2h": 1,
-   "readback": 1,
+   "alloc": 9,
+   "readback": 2,
    "scan": 1
   }
  },
@@ -7901,8 +7900,8 @@
  "benchmarks/test_voxels.py::test_voxel_corners[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 8,
-   "h2h": 1
+   "alloc": 5,
+   "readback": 1
   }
  },
  "benchmarks/test_voxels.py::test_voxel_down_sample[sphere_small-ordito-cpu-256]": {

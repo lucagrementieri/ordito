@@ -3172,10 +3172,10 @@ def voxel_corners(grid: wp.Volume) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
     """
     Build the deduplicated corner lattice of the voxel set, plus each voxel's eight corners.
 
-    ``igl.unique_sparse_voxel_corners``. The lattice is not computed here: ``warp.fem``'s sparse
-    nanogrid geometry derives its own vertex grid from the cell grid, and that grid *is* the
-    deduplicated corner set — so this is eight ``O(1)`` probes per voxel and no ``8 * n_voxels``
-    candidate buffer, no unique pass, and no hand-built dual grid.
+    ``igl.unique_sparse_voxel_corners``. The corner lattice is an index grid of its own, the vertex
+    grid ``warp.fem``'s sparse nanogrid geometry derives from the cell grid: each corner is taken
+    once, from the voxel that reaches it through the lowest corner index, and each voxel's eight
+    corners are then ``O(1)`` probes of that grid.
 
     Corner ``(i, j, k)`` is the **lower** corner of cell ``(i, j, k)``, at world position
     ``origin + (i, j, k) * voxel_size``.
@@ -3209,9 +3209,6 @@ def voxel_corners(grid: wp.Volume) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
     igl numbers a cell's corners in ``yxz`` binary-counting order, a fixed permutation of the order
     used here.
 
-    ``warp.fem`` is imported inside this function, not at module scope, since nothing else in this
-    module needs it.
-
     Examples
     --------
     Two face-adjacent voxels share four of their sixteen corners:
@@ -3243,11 +3240,25 @@ def _voxel_corners(
             (0, 8), wp.int32, device=device
         )
 
-    # Deferred: importing ``warp.fem`` here, not at module scope, since only this path needs it.
-    import warp.fem as fem
-
-    corner_grid = fem.Nanogrid(grid).vertex_grid
-    n_corners = int(corner_grid.get_active_stats().voxel_count)
+    # The corner grid ``warp.fem.Nanogrid(grid).vertex_grid`` builds -- the same corners, cell width
+    # and (default) translation, so the same volume -- from each corner once rather than all eight
+    # a voxel, and without the geometry's other setup.
+    counter = _launch.zeros(1, dtype=wp.int32, device=device)
+    owned = odt.empty_2d((8 * n_voxels, 3), wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.append_owned_corners,
+        dim=(n_voxels, 8),
+        inputs=[grid.id, voxels, counter],
+        outputs=[owned],
+        device=device,
+    )
+    # The one readback: the builder takes the corner count as its point count.
+    n_corners = int(read_scalar(counter, 0))
+    corner_grid = wp.Volume.allocate_by_voxels(
+        cast("wp.array[wp.int32]", owned[:n_corners]),
+        voxel_size=grid.get_voxel_size(),
+        device=device,
+    )
     corner_cells = odt.as_array2d(odt.as_dense(corner_grid.get_voxels()[:n_corners]), wp.int32)
     cell_corners = odt.empty_2d((n_voxels, 8), wp.int32, device=device)
     _launch.launch(
