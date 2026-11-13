@@ -208,6 +208,50 @@ def envelope_relaxed_label(
     return best, lowest
 
 
+@wp.func
+def envelope_relaxed_label_chunked(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    labels: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.float32]:
+    # ``envelope_relaxed_label`` four entries a step (``array.row_chunk_slots``), for the CUDA
+    # passes: a step's column, weight and gathered label loads are in flight together, where an
+    # entry a step waited on each gather before the next column's load. The entries are taken in
+    # row order with the same comparisons, so both forms return the same bits; the CPU's serial
+    # and Dijkstra kernels keep the plain walk.
+    best = labels[i]
+    lowest = wp.float32(0.0)
+    end = offsets[i + 1]
+    for k in range(offsets[i], end, 4):
+        slots = kernel_array.row_chunk_slots(k, end)
+        w0 = weights[slots[0]]
+        w1 = weights[slots[1]]
+        w2 = weights[slots[2]]
+        w3 = weights[slots[3]]
+        r0 = labels[columns[slots[0]]] + w0
+        r1 = labels[columns[slots[1]]] + w1
+        r2 = labels[columns[slots[2]]] + w2
+        r3 = labels[columns[slots[3]]] + w3
+        lowest = wp.min(lowest, w0)
+        if r0 < best:
+            best = r0
+        if k + 1 < end:
+            lowest = wp.min(lowest, w1)
+            if r1 < best:
+                best = r1
+        if k + 2 < end:
+            lowest = wp.min(lowest, w2)
+            if r2 < best:
+                best = r2
+        if k + 3 < end:
+            lowest = wp.min(lowest, w3)
+            if r3 < best:
+                best = r3
+    return best, lowest
+
+
 @wp.kernel
 def shortest_path_envelope_pass(
     offsets: wp.array[wp.int32],
@@ -254,7 +298,12 @@ def shortest_path_envelope_pass(
     # ever goes 0 -> 1 within a round, so every writer writes the same value. A negative weight
     # raises ``ENVELOPE_NEGATIVE_WEIGHT`` the same way, for the wrapper's read after the first pass.
     i = wp.int32(wp.tid())
-    best, lowest = envelope_relaxed_label(i, offsets, columns, weights, labels)
+    best = wp.float32(0.0)
+    lowest = wp.float32(0.0)
+    if kernel_array.device_is_cpu() != 0:
+        best, lowest = envelope_relaxed_label(i, offsets, columns, weights, labels)
+    else:
+        best, lowest = envelope_relaxed_label_chunked(i, offsets, columns, weights, labels)
     if lowest < 0.0:
         out_state[ENVELOPE_NEGATIVE_WEIGHT] = 1
     if best < labels[i]:
@@ -291,6 +340,11 @@ def shortest_path_envelope_patch_pass(
     # the graph's own order a block is no patch and the rounds lost (declined at
     # ``shortest_path_envelope_pass``); ``flip_geodesics.relax_distances`` is the same pass over a
     # halfedge mesh, which won there in Hilbert order.
+    #
+    # Declined (2026-11-13): the rounds' row walk four entries a step
+    # (``envelope_relaxed_label_chunked``, which the plain pass takes): the ordered call 0.84-0.87x
+    # on ``bunny_decimated`` but 1.06x on ``sphere_med`` and 1.00-1.03x on ``dragon``, where a
+    # round's barrier, not its loads, sets the pass.
     block, lane = wp.tid()
     i = block * wp.block_dim() + lane
     v = wp.int32(-1)
