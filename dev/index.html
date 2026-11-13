@@ -5640,6 +5640,8 @@
       
         
       
+        
+      
     
     
     
@@ -5873,6 +5875,33 @@
 
                 
               
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./api/ordito/precompile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  precompile
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
             </ul>
           </nav>
         
@@ -6079,6 +6108,8 @@ and falls back to CPU otherwise, with the same code.</p>
 <p>Requires Python ≥ 3.11 and <code>warp-lang</code> ≥ 1.18. A CUDA-capable GPU is recommended but not required.
 Mesh file I/O via <a href="https://github.com/nschloe/meshio">meshio</a> is an optional extra:
 <code>pip install "ordito[io]"</code>.</p>
+<p>Kernels compile on first use; to ship them precompiled in a container image or a CI cache, run
+<code>python -m ordito.precompile</code> (see <a href="getting-started/#precompiling-for-deployment">Precompiling for deployment</a>).</p>
 <h2 id="quickstart">Quickstart</h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 

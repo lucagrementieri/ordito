@@ -5771,6 +5771,8 @@
       
         
       
+        
+      
     
     
     
@@ -5995,6 +5997,33 @@
     
   
   config
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/precompile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  precompile
 
     
   </span>
@@ -6533,6 +6562,14 @@ print is checked, so the output shown is the output you will get.</p>
 <td>per-group means, minima and maxima (<code>minimum.at</code>, <code>maximum.reduceat</code>)</td>
 <td><a class="autorefs autorefs-internal" title="scatter_mean" href="../api/ordito/reduce/#ordito.reduce.scatter_mean"><code>reduce.scatter_mean</code></a>, <a class="autorefs autorefs-internal" title="scatter_min" href="../api/ordito/reduce/#ordito.reduce.scatter_min"><code>scatter_min</code></a>, <a class="autorefs autorefs-internal" title="scatter_max" href="../api/ordito/reduce/#ordito.reduce.scatter_max"><code>scatter_max</code></a>, <a class="autorefs autorefs-internal" title="segment_mean" href="../api/ordito/reduce/#ordito.reduce.segment_mean"><code>segment_mean</code></a>, <a class="autorefs autorefs-internal" title="segment_min" href="../api/ordito/reduce/#ordito.reduce.segment_min"><code>segment_min</code></a>, <a class="autorefs autorefs-internal" title="segment_max" href="../api/ordito/reduce/#ordito.reduce.segment_max"><code>segment_max</code></a></td>
 </tr>
+<tr>
+<td><strong>Deploy</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>compile every kernel ahead of time for a container image or CI (no GPU needed)</td>
+<td><a class="autorefs autorefs-internal" title="ordito.precompile" href="../api/ordito/precompile/#ordito.precompile"><code>precompile</code></a>: <code>python -m ordito.precompile --arch 86,89</code>, <a class="autorefs autorefs-internal" title="precompile" href="../api/ordito/precompile/#ordito.precompile.precompile"><code>precompile.precompile</code></a></td>
+</tr>
 </tbody>
 </table>
 <h2 id="modules">Modules</h2>
@@ -6866,6 +6903,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td><a href="../api/ordito/config/">config</a></td>
 <td>Runtime settings: whether float reductions and scans repeat bit for bit on CUDA (<code>od.set_deterministic</code>, <code>with od.deterministic(False):</code>); see <a href="../reproducibility/">Reproducible results</a>.</td>
+</tr>
+<tr>
+<td><a href="../api/ordito/precompile/">precompile</a></td>
+<td>Ahead-of-time kernel builds: fill Warp's kernel cache for given GPU architectures and the CPU without running a workload (<code>python -m ordito.precompile</code>), for container images and CI.</td>
 </tr>
 </tbody>
 </table>

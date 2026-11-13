@@ -637,6 +637,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#precompiling-for-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Precompiling for deployment
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -5670,6 +5681,8 @@
       
         
       
+        
+      
     
     
     
@@ -5903,6 +5916,33 @@
 
                 
               
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/precompile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  precompile
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
             </ul>
           </nav>
         
@@ -5988,6 +6028,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         The first call compiles
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#precompiling-for-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Precompiling for deployment
       </span>
     </span>
   </a>
@@ -6121,8 +6172,21 @@ what would move it up the table.</p>
 and caches the result on disk (<code>~/.cache/warp</code> by default; <code>wp.config.kernel_cache_dir</code> moves it).
 Right after installing or upgrading, the first call of a function takes about a second for each
 kernel module it touches; every later call, in this process or any later one, loads the cached
-binary. When you time something, time the second call. In a service or a container, warm the cache
-at build time by running the pipeline on a small input, and keep the cache directory.</p>
+binary. When you time something, time the second call.</p>
+<p>In a service, a container or CI, build the whole cache ahead of time instead: see
+<a href="#precompiling-for-deployment">Precompiling for deployment</a>.</p>
+<h3 id="precompiling-for-deployment">Precompiling for deployment</h3>
+<p><code>python -m ordito.precompile</code> compiles every kernel ordito launches into a cache directory, with
+no workload and no GPU needed on the build machine, so the processes that use it compile nothing:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-m<span class="w"> </span>ordito.precompile<span class="w"> </span>--arch<span class="w"> </span><span class="m">86</span>,89<span class="w"> </span>--cache-dir<span class="w"> </span>/opt/warp-cache
+</code></pre></div>
+<p><code>--arch</code> takes the compute capabilities of the GPUs that will run the image (<code>86</code> for <code>sm_86</code>;
+omitted, those of the build machine's GPUs). The CPU device is built too, since a GPU process
+also loads a few CPU modules; those objects serve only the build machine's CPU type, so build on
+the CPU type that will run the image, or pass <code>--no-cpu</code> when none will. <code>--jobs</code> sets the number of
+worker processes. The processes that use the cache set <code>WARP_CACHE_PATH=/opt/warp-cache</code>. The
+cache holds what the installed Warp and ordito compile, so rebuild it when either is upgraded. See
+<a class="autorefs autorefs-internal" title="ordito.precompile" href="../api/ordito/precompile/#ordito.precompile"><code>ordito.precompile</code></a> for what it covers.</p>
 <h2 id="the-five-minute-mental-model">The five-minute mental model</h2>
 <p>ordito has no scene graph, no viewer, and no mandatory mesh object. A mesh is two
 <a href="https://nvidia.github.io/warp/modules/runtime.html#arrays"><code>warp.array</code></a> buffers — vertex
