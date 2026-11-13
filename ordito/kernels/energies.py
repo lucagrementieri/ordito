@@ -414,7 +414,11 @@ EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_
 # whatever the size (28-37 us from 15 k to 983 k terms). At 4: ``normal_consistency_loss``
 # 0.76-0.79x on ``sphere_small`` and 0.96x on ``sphere_large``, ``laplacian_smoothing_loss``
 # 0.87-0.94x at every size, ``dragon`` and the CPU at par. 1 lost 1.16x on ``dragon``; 2 matched
-# 4 within noise.
+# 4 within noise. Re-swept once CUDA sums folded lane-strided (2026-11-13, calls against 4):
+# 4 stays. 1-2 win only on ``sphere_small`` (0.89-0.98x) and lose 1.07-1.19x from
+# ``sphere_med`` / ``sphere_large`` up; 8-16 win only ``edge_length_loss`` on ``dragon`` / ``lucy``
+# (0.96-0.98x) and lose 1.02-1.19x small; 16 costs 1.13-1.19x on ``sphere_small``. A width per
+# size (two kernels a sum) was declined for ~10 us on the smallest meshes.
 HEAVY_TERM_TILES_PER_BLOCK = 4
 
 

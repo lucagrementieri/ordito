@@ -1357,11 +1357,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **Mapped term sums' fold widths predate the lane-strided sum** (2026-11-13): on CUDA
-  `_reduce_1d_tiled`'s sums now fold a block's chunk lane-strided, so §13.2's `tiles_per_block`
-  narrowing (4 for `normal_consistency_loss` and `laplacian_smoothing_loss`, measured on the
-  tiled walk) and the `spanned_blocks_1d` choices are unpriced in the new form. Open: re-sweep
-  the width for the narrowed `TermSum`s.
 - **`voxels` grid builds sit at `Volume.allocate_by_voxels`' floor** (2026-11-13): morphology,
   set algebra, `fill_*` and `revoxelize` are 0.35-0.75 ms calls of one or two builds. The
   builder is host-bound: 0.13 ms at 100 cells, 0.23-0.25 ms from 10 k, the same issued back to
