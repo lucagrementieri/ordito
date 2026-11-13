@@ -102,7 +102,10 @@ _STENCIL_CACHE: dict[tuple[str, int, bool], odt.Array2dInt32] = {}
 # handing the builder every row: below them the builder's cost is near its floor, which a key set,
 # a box read and a count read do not repay. On CUDA tri-box candidates and points cross over apart
 # (the builder sorts a scan's points, which arrive coherent, faster than a mesh's candidates); the
-# CPU builder sorts on the host, dear from a few thousand rows.
+# CPU builder sorts on the host, dear from a few thousand rows. One CPU input loses, and is left
+# to it: triangles far wider than a cell (``icosphere(1)``, 80 faces, at 256 cells across, ~60 k
+# candidates a face), 1.05-1.08x, where the tri-box tests are the call and a cell rarely repeats;
+# gating it would take a candidates-a-face bound for ~5 % on that input (2026-11-13).
 _UNIQUE_CANDIDATES_FROM = 1 << 19
 _UNIQUE_POINTS_FROM = 1 << 20
 _UNIQUE_ITEMS_FROM_CPU = 1 << 12

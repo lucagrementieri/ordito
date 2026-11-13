@@ -1362,16 +1362,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `MINMAX_PAIR_1D` (an empty second array) took 5.7 / 6.6 / 204 us (0.6 against 1.6 TB/s). Open:
   route `reduce.minmax`'s CUDA `axis=None` path through a lane-strided fold, checking floats'
   NaN and `-0.0` handling and the CPU, where the tiled form vectorizes and wins (1.27-1.44x).
-- **`voxels` sweep leftovers** (2026-11-13): every remaining voxels row sits at
-  `Volume.allocate_by_voxels`' ~0.22 ms floor a build (morphology, set algebra, `fill_*`,
-  `revoxelize`: 0.35-0.75 ms calls of one or two builds); the lever is a topology the package
-  builds itself from sorted unique cells, unbuilt and unpriced. Unpriced smaller items: `union`
-  handing the builder only `b`'s cells `a` lacks (one probe a cell); `voxelize_mesh`'s box read
-  when the caller passed the grid (~40 us of the deduplicated path) folded into the count launch;
-  the CPU's one loss of the deduplicated build, `icosphere(2)` at 256 cells (1.03-1.06x). Outside
-  the module, awaiting a go-ahead: `reduce.scatter_min` / `scatter_max`
-  (`kernels/scatter.commit_extremum`) through a generic `scatter.peer_extremum_vec3`, which took
-  voxel max pooling 0.27x on lucy.
+- **`voxels` grid builds sit at `Volume.allocate_by_voxels`' floor** (2026-11-13): morphology,
+  set algebra, `fill_*` and `revoxelize` are 0.35-0.75 ms calls of one or two builds. The
+  builder is host-bound: 0.13 ms at 100 cells, 0.23-0.25 ms from 10 k, the same issued back to
+  back, ~0.02 ms of device work visible and three blocking device-to-host copies inside Warp's
+  native builder. A NanoVDB index grid the package assembles itself would still pay a sort, a
+  few launches and a count read (~0.08-0.1 ms), so at most ~0.1-0.15 ms a build; unbuilt, the
+  risk being the format's correctness across Warp versions.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
