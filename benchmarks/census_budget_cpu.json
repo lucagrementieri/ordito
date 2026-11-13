@@ -5553,7 +5553,7 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-octree-7]": {
   "counts": {
-   "launch": 130,
+   "launch": 129,
    "alloc": 64,
    "h2h": 10,
    "readback": 16,

@@ -1681,8 +1681,7 @@ def _screened_poisson_octree(
     )
     density = _launch.finish_group_sums(density_sums)
 
-    # The depth estimates and both weight terms in one allocation; the area terms' slots take the
-    # iso-value's terms once the weights are summed.
+    # The depth estimates and both weight terms in one allocation.
     sample_depths, area_terms, count_terms = _launch.carve(wp.float32, [n_samples] * 3, device)
     _launch.launch(
         kernel_octree.octree_sample_weights,
@@ -1781,16 +1780,19 @@ def _screened_poisson_octree(
     # call's memory would otherwise peak.
     del coarse_b, finest_b, screen
 
-    iso_terms = area_terms
-    _launch.launch(
-        kernel_octree.octree_iso_terms,
-        dim=n_samples,
-        inputs=[sample_counts, sample_positions, fields, nodes.bricks, depth],
-        outputs=[iso_terms],
-        device=device,
+    # The samples' iso terms summed as they are formed, in ``float64``.
+    iso_terms = kernel_octree.IsoSampleTerms()
+    iso_terms.n = n_samples
+    iso_terms.sample_counts = sample_counts
+    iso_terms.sample_positions = sample_positions
+    iso_terms.fields = fields
+    iso_terms.node_bricks = nodes.bricks
+    iso_terms.depth = depth
+    iso_total = od.reduce.sum_of_terms(
+        kernel_octree.ISO_SAMPLE_SUM, [iso_terms], n_samples, device=device
     )
     # The extraction takes the iso-value as a host scalar.
-    iso = od.reduce.sum(iso_terms) / n_merged
+    iso = float(read_scalar(iso_total, 0)) / n_merged
     segments = _octree_segments(fields, nodes, iso, depth, full_depth, flags, cells, cell_offsets)
     # The solve's tables are dead once the segments are: released before the loops and faces.
     del fields, nodes, flags, cells, cell_tables, occupancy

@@ -88,7 +88,7 @@ from ordito.kernels.reconstruction import (
     poisson_lerp_corners,
     poisson_restrict_weight,
 )
-from ordito.kernels.reduce import GroupSumPass
+from ordito.kernels.reduce import GroupSumPass, term_sum_1d
 from ordito.kernels.scatter import ARRIVAL_POOL_UNIFORM, scatter_add, scatter_add_vector
 
 wp.set_module_options({"enable_backward": False})
@@ -2382,21 +2382,33 @@ def octree_gauss_seidel_depth(
                         )  # fmt: skip
 
 
-@wp.kernel
-def octree_iso_terms(
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
-    fields: wp.array[wp.float32],
-    node_bricks: wp.array[wp.int32],
-    depth: wp.int32,
-    out_terms: wp.array[wp.float32],
-) -> None:
-    # A sample's count times the finest field at its centroid; their sum over the point count is
-    # the iso-value.
-    s = wp.int32(wp.tid())
-    count = wp.float32(sample_counts[s])
-    g = sample_positions[s] / count * wp.float32(1 << depth)
-    out_terms[s] = count * stored_sample(fields, node_bricks, depth, g)
+@wp.struct
+class IsoSampleTerms:
+    """The merged samples and the finest field ``ISO_SAMPLE_SUM`` sums the iso terms over."""
+
+    n: wp.int32
+    sample_counts: wp.array[wp.int32]
+    sample_positions: wp.array[wp.vec3]
+    fields: wp.array[wp.float32]
+    node_bricks: wp.array[wp.int32]
+    depth: wp.int32
+
+
+@wp.func
+def iso_sample_term(local: wp.int32, offset: wp.int32, terms: IsoSampleTerms) -> wp.float64:
+    # Sample ``offset + local``'s count times the finest field at its centroid, widened: their sum
+    # over the point count is the iso-value. Summed in ``float64``, so the iso-value does not move
+    # with the order its ``float32`` terms are added in (a ``float32`` sum's last bits moved the
+    # extraction by retriangulated cells' areas, 3.9e-6 of open3d's on ``saddle_graded``).
+    s = offset + local
+    count = wp.float32(terms.sample_counts[s])
+    g = terms.sample_positions[s] / count * wp.float32(1 << terms.depth)
+    return wp.float64(count * stored_sample(terms.fields, terms.node_bricks, terms.depth, g))
+
+
+ISO_SAMPLE_SUM = term_sum_1d(
+    iso_sample_term, IsoSampleTerms, "poisson_octree_iso_sum", dtype=wp.float64
+)
 
 
 # ---------------------------------------------------------------------------------------------
