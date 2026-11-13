@@ -1346,10 +1346,18 @@ def test_bit_ranks_is_the_scan_of_the_word_populations(device: str, n_words: int
 
 
 @pytest.mark.parity("counts_to_offsets", "numpy")
-def test_counts_to_offsets(device: str) -> None:
-    """Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero."""
+@pytest.mark.parametrize("head_only", [False, True], ids=["zeroed", "head-zeroed"])
+def test_counts_to_offsets(device: str, head_only: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero.
+
+    Both buffer forms: wholly zeroed, and (forced below its size gates) only its leading slot.
+    """
+    gate = 0 if head_only else 1 << 62
+    monkeypatch.setattr(od.array, "_HEAD_ZERO_FROM_CUDA", gate)
+    monkeypatch.setattr(od.array, "_HEAD_ZERO_FROM_CPU", gate)
     rng = np.random.default_rng(41)
-    counts_np = rng.integers(0, 7, size=32).astype(np.int32)
+    counts_np = rng.integers(0, 7, size=100_003).astype(np.int32)
     counts_wp = wp.array(counts_np, dtype=wp.int32, device=device)
     offsets_wp, total = od.array.counts_to_offsets(counts_wp)
 

@@ -3252,10 +3252,23 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     device = counts.device
     if n == 0:
         return _launch.zeros(1, dtype=wp.int32, device=device), 0
-    # The leading zero from ``wp.zeros`` is the first exclusive offset; the inclusive scan fills the
-    # rest, so ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets.
-    buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+    # The leading zero is the first exclusive offset; the inclusive scan fills the rest, so
+    # ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets. A long buffer zeroes
+    # that one slot rather than all of them.
+    if n >= (_HEAD_ZERO_FROM_CUDA if wp.get_device(device).is_cuda else _HEAD_ZERO_FROM_CPU):
+        buffer = _launch.empty(n + 1, dtype=wp.int32, device=device)
+        _launch.zero_(_launch.view(buffer, 0, 1))
+    else:
+        buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     return buffer, _scan_into_tail(buffer, counts, _launch.view(buffer, 1, n + 1))
+
+
+# ``counts_to_offsets`` zeroes only its leading slot from this many counts, and the whole buffer
+# below: a memset of one slot costs ~1 us of host beside the ``empty``, a whole one its bytes.
+# New/old, interleaved in one process: CUDA 1.02-1.04x to 4 M counts, 0.83-0.86x at 8 M and 28 M;
+# CPU 1.06-1.10x to 16 k, par at 32 k, 0.95x at 69 k, 0.77-0.79x at 871 k and 4 M.
+_HEAD_ZERO_FROM_CUDA = 1 << 23
+_HEAD_ZERO_FROM_CPU = 1 << 16
 
 
 def _scan_into_tail(
