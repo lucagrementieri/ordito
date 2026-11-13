@@ -1511,14 +1511,17 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
     device = blocks[0].device
     n_rows = sum(int(block.nrow) for block in blocks)
     capacity = sum(block.values.size for block in blocks)
-    descriptors = []
-    for block in blocks:
-        descriptor = kernel_array.CsrBlock()
-        descriptor.offsets = block.offsets
-        descriptor.columns = block.columns
-        descriptor.values = block.values
-        descriptor.n_rows = int(block.nrow)
-        descriptors.append(descriptor)
+    # The descriptor table filled as host records and uploaded as words, so Warp never rebuilds the
+    # struct's record layout to convert a list of instances.
+    records = _launch.struct_records(kernel_array.CsrBlock, len(blocks))
+    for name in ("offsets", "columns", "values"):
+        field = records[name]
+        arrays = [getattr(block, name) for block in blocks]
+        field["data"] = [int(arr.ptr) for arr in arrays]
+        field["shape"][:, 0] = [int(arr.shape[0]) for arr in arrays]
+        field["strides"][:, 0] = [int(arr.strides[0]) for arr in arrays]
+        field["ndim"] = 1
+    records["n_rows"] = [int(block.nrow) for block in blocks]
     offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(capacity, dtype=wp.int32, device=device)
     values = _launch.empty(capacity, dtype=wp.float64, device=device)
@@ -1528,7 +1531,7 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
         _launch.launch(
             kernel_array.stack_block_diagonal,
             dim=n_rows,
-            inputs=[_launch.array(descriptors, dtype=kernel_array.CsrBlock, device=device)],
+            inputs=[_launch.struct_array(records, kernel_array.CsrBlock, device)],
             outputs=[offsets, columns, values],
             device=device,
         )
