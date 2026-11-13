@@ -2804,7 +2804,10 @@ def ear_clip_tail(
     # a lane each. A walk that finds its corner's triangle empty marks it ``EAR_UNBLOCKED``, and
     # the corner is graded without a walk until a clip beside it reclasses it: on the star the
     # walks halved (52 138 -> 28 810, every one of them unblocked), leaving a round about the two
-    # neighbours its clip reclassed.
+    # neighbours its clip reclassed. Those walks cannot be inferred: a reclassed corner's new
+    # triangle (la, a, b) is not covered by its old one (la, a, i) and the clipped ear (a, i, b)
+    # even in exact arithmetic (both lie on the same side of a-i), and walking only its part beyond
+    # la-i keeps 92 % of the star's candidate points (2026-11-13).
     #
     # ``lists`` holds the good list in its first ``n_ring`` entries and the thin list in its
     # second, each at most one entry a corner (``EAR_IN_GOOD`` / ``EAR_IN_THIN``) and compacted in

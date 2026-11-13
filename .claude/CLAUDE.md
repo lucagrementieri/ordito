@@ -1307,16 +1307,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   chain over the fan; dragon 1.19-1.29x). Open: rank a long fan by rulers in a block
   (`halfedge.rank_long_rings`) and take a segmented sum, without touching the short-group path
   (ordinary meshes must stay byte-identical).
-- **Ear-clip tail round floor** (2026-11-10): `kernels/polyline.ear_clip_tail` takes the zipper at
-  ~7.7 us a round (65 536-point star: 14 404 rounds, 111 ms). The walks left are the two
-  neighbours a clip reclasses (an empty triangle's verdict is cached until then, `EAR_UNBLOCKED`),
-  every one of them unblocked on the star, and each phase's own latency chain is most of the rest
-  (a barrier ~0.3 us). Declined: inferring a reclassed corner's empty triangle from the two empty
-  ones it lies in (its old one and the clipped ear's, when their quadrilateral is convex): the
-  float32 `orient2d` behind `point_in_triangle` is not exact, so a vertex within rounding of the
-  shared diagonal can read inside the new triangle and outside both, changing faces. Open: an
-  exact containment predicate would make that inference sound. The packed multi-ring loop
-  (`_triangulate_long_rings`) has no tail.
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
   landmark an iteration (its radius the distance to its last match since 2026-11-10,
   `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on
