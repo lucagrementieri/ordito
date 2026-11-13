@@ -29,10 +29,10 @@ _MODULE = "ordito.kernels.measures"
 
 
 def test_precompile_without_a_target_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no GPU, no ``arch`` and no ``cpu`` there is nothing to build, and it says so."""
+    """With no GPU, no ``arch`` and ``cpu`` off there is nothing to build, and it says so."""
     monkeypatch.setattr(wp, "get_cuda_device_count", lambda: 0)
-    with pytest.raises(ValueError, match=r"no CUDA device found and no arch given.*--cpu"):
-        od.precompile()
+    with pytest.raises(ValueError, match=r"no CUDA device found and no arch given.*--no-cpu"):
+        od.precompile(cpu=False)
 
 
 @pytest.mark.parametrize(
@@ -76,6 +76,25 @@ def test_targets_default_to_this_machines_gpus(caplog: pytest.LogCaptureFixture)
     compile_arch = wp.get_cuda_device(0).get_cuda_compile_arch()
     assert compile_arch in {target.arch for target in targets}
     assert "no arch given: building for sm_" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("argv", "cpu"),
+    [pytest.param([], True, id="default"), pytest.param(["--no-cpu"], False, id="no-cpu")],
+)
+def test_command_line_builds_the_cpu_unless_told_not_to(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], cpu: bool
+) -> None:
+    """The CPU is a default target of the command line; ``--no-cpu`` turns it off."""
+    requests: list[bool] = []
+
+    def record(_arch: object, *, cpu: bool, **_options: object) -> od.PrecompileReport:
+        requests.append(cpu)
+        return od.PrecompileReport(targets=(), cache_dir="", built=0, cached=0, failed=())
+
+    monkeypatch.setattr(od, "precompile", record)
+    assert od._main(argv) == 0  # pyright: ignore[reportPrivateUsage]
+    assert requests == [cpu]
 
 
 def test_command_line_rejects_a_non_integer_arch() -> None:

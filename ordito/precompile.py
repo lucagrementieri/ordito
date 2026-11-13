@@ -8,7 +8,7 @@ seconds to minutes in all. [`precompile`][ordito.precompile.precompile] pays the
 parallel and without running any workload, so a container image or a CI job can ship a warm cache:
 
 ```bash
-python -m ordito.precompile --arch 86,89 --cpu --cache-dir /opt/warp-cache --jobs 16
+python -m ordito.precompile --arch 86,89 --cache-dir /opt/warp-cache --jobs 16
 ```
 
 and the processes that use it run with ``WARP_CACHE_PATH=/opt/warp-cache``.
@@ -26,9 +26,11 @@ Targets:
   build machine without one can serve any architecture. A cache entry serves its exact
   architecture only.
 - Without ``arch``, the build is for the GPUs of the machine it runs on, in the format Warp would
-  load on them; with none, only for the CPU when ``cpu`` is set.
-- ``cpu`` adds the CPU device. Warp compiles CPU code for the instruction set of the machine it
-  runs on, so build the CPU objects on the CPU type that will use them.
+  load on them; with none, for the CPU alone.
+- ``cpu`` (on by default; ``--no-cpu`` turns it off) adds the CPU device, which a GPU process also
+  loads for host-side work. Warp compiles CPU code for the instruction set of the machine it runs
+  on and keys the cache entry by it, so the objects serve only machines of that CPU type; on
+  another, those modules compile on first use as they would without the cache.
 
 From the command line, ``python -m ordito.precompile --help`` lists the options; ``--arch`` takes a
 comma-separated list and may repeat.
@@ -77,7 +79,7 @@ class PrecompileReport:
     ```python
     import ordito as od
 
-    report = od.precompile.precompile(cpu=True)
+    report = od.precompile.precompile()
     print(report.targets[-1])  # cpu
     print(report.failed)  # ()
     ```
@@ -93,7 +95,7 @@ class PrecompileReport:
 def precompile(
     arch: int | Sequence[int] | None = None,
     *,
-    cpu: bool = False,
+    cpu: bool = True,
     cache_dir: str | os.PathLike[str] | None = None,
     jobs: int | None = None,
 ) -> PrecompileReport:
@@ -111,7 +113,9 @@ def precompile(
         CUDA compute capabilities to build for (``86`` for ``sm_86``); no GPU is needed.
         ``None`` builds for the GPUs of this machine, or for none when it has none.
     cpu
-        Also build for the CPU device, for this machine's instruction set.
+        Also build for the CPU device, for this machine's instruction set. A process on a GPU
+        loads some CPU modules too, so leave it on unless no process using the cache runs on this
+        CPU type.
     cache_dir
         Kernel cache directory, the value the processes using it set as ``WARP_CACHE_PATH``
         (Warp adds its version below it). ``None`` is the cache Warp uses by default.
@@ -138,7 +142,7 @@ def precompile(
     ```python
     import ordito as od
 
-    report = od.precompile.precompile(cpu=True)
+    report = od.precompile.precompile()
     print(report.built + report.cached > 100)  # True
     ```
     """
@@ -250,7 +254,7 @@ def _targets(arch: int | Sequence[int] | None, cpu: bool) -> list[_Target]:
             if not cpu:
                 raise ValueError(
                     "no CUDA device found and no arch given: pass the compute capabilities to "
-                    "build for (--arch 86,89), or cpu=True (--cpu) for the CPU alone"
+                    "build for (--arch 86,89), or cpu=True (drop --no-cpu) for the CPU alone"
                 )
             _LOGGER.warning(
                 "precompile: no arch given and no CUDA device found: building no CUDA kernels, "
@@ -393,7 +397,12 @@ def _main(argv: Sequence[str] | None = None) -> int:
         help="CUDA compute capabilities to build for, e.g. 86,89 (repeatable); "
         "default: this machine's GPUs",
     )
-    parser.add_argument("--cpu", action="store_true", help="also build for the CPU device")
+    parser.add_argument(
+        "--cpu",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="also build for the CPU device, for this machine's CPU type (default: on)",
+    )
     parser.add_argument(
         "--cache-dir", default=None, help="kernel cache directory (WARP_CACHE_PATH at run time)"
     )

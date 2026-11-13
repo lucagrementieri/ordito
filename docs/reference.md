@@ -98,7 +98,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | per-group sums (`bincount` with weights, `add.reduceat`), reproducible under the deterministic setting | [`reduce.scatter_sum`][ordito.reduce.scatter_sum], [`reduce.segment_sum`][ordito.reduce.segment_sum] |
 | per-group means, minima and maxima (`minimum.at`, `maximum.reduceat`) | [`reduce.scatter_mean`][ordito.reduce.scatter_mean], [`scatter_min`][ordito.reduce.scatter_min], [`scatter_max`][ordito.reduce.scatter_max], [`segment_mean`][ordito.reduce.segment_mean], [`segment_min`][ordito.reduce.segment_min], [`segment_max`][ordito.reduce.segment_max] |
 | **Deploy** | |
-| compile every kernel ahead of time for a container image or CI (no GPU needed) | [`precompile`][ordito.precompile]: `python -m ordito.precompile --arch 86,89 --cpu`, [`precompile.precompile`][ordito.precompile.precompile] |
+| compile every kernel ahead of time for a container image or CI (no GPU needed) | [`precompile`][ordito.precompile]: `python -m ordito.precompile --arch 86,89`, [`precompile.precompile`][ordito.precompile.precompile] |
 
 ## Modules
 

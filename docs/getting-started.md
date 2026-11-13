@@ -56,12 +56,13 @@ In a service or a container, build the whole cache ahead of time instead, with n
 GPU needed on the build machine:
 
 ```bash
-python -m ordito.precompile --arch 86,89 --cpu --cache-dir /opt/warp-cache
+python -m ordito.precompile --arch 86,89 --cache-dir /opt/warp-cache
 ```
 
 `--arch` takes the compute capabilities of the GPUs that will run the image (`86` for `sm_86`;
-omitted, those of the build machine's GPUs), `--cpu` adds the CPU device (for the build machine's
-instruction set, so build it on the CPU type that will run it), and `--jobs` sets the number of
+omitted, those of the build machine's GPUs). The CPU device is built too, since a GPU process
+also loads a few CPU modules; those objects serve only the build machine's CPU type, so build on
+the CPU type that will run the image, or pass `--no-cpu` when none will. `--jobs` sets the number of
 worker processes. The processes that use the cache set `WARP_CACHE_PATH=/opt/warp-cache`. The
 cache holds what the installed Warp and ordito compile, so rebuild it when either is upgraded. See
 [`ordito.precompile`][ordito.precompile] for what it covers.

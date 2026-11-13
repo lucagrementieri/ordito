@@ -888,7 +888,9 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
   nothing stops it) and writes the identifier a GPU process loads, the module hash being the same
   with and without a device. It builds at the module's default `block_dim` only: set the module
   option for another width (`Module.load` hashes the width) and restore it. The CPU loads every
-  module at width 1, and its objects are `-march=native`. `kernel_cache_dir` and `WARP_CACHE_PATH`
+  module at width 1, and its objects are `-march=native`, keyed in the cache by the host's ISA
+  features (`_get_cpu_target_hash`), so another CPU type misses and compiles rather than faulting;
+  `precompile` therefore builds the CPU by default (`--no-cpu` opts out). `kernel_cache_dir` and `WARP_CACHE_PATH`
   both append Warp's version. Every module ordito lists (159, 220 widths) for `sm_120`, 32 workers,
   no GPU: 89 s wall, 206 MB; `kernels/reduce` alone takes 67 s and sets the floor. The whole CUDA
   census on that cache compiled no CUDA module (153 loads, all cached); 5 CPU modules some CUDA rows
