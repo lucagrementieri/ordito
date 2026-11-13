@@ -1335,14 +1335,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`normal_equations_rows` on a hole fill's hub patch** (2026-11-13): 1.21 ms of
-  `refine_and_smooth_region`'s ~12.2 ms on `saddle_small`, the launch being the hub row's one
-  thread building its sorted list in global memory, every step a load of what it just stored
-  (clock: insertion 0.85 M cycles, bisection 0.43 M, adds 0.11 M of the row). Refuted: a
-  record-sort-bisect thread, an eight-way search, and a warp per long row (column discovery by
-  first terms, rank sort, a lane an entry: 5.7x slower, its lanes' ring bisections the same
-  latency chains). What is left needs the row's list out of global memory (block-shared), not
-  another one-thread or one-warp schedule (`reference/component-status.md`, 16.8).
 - **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
   in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
   row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
