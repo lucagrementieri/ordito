@@ -52,8 +52,13 @@ Right after installing or upgrading, the first call of a function takes about a 
 kernel module it touches; every later call, in this process or any later one, loads the cached
 binary. When you time something, time the second call.
 
-In a service or a container, build the whole cache ahead of time instead, with no workload and no
-GPU needed on the build machine:
+In a service, a container or CI, build the whole cache ahead of time instead: see
+[Precompiling for deployment](#precompiling-for-deployment).
+
+### Precompiling for deployment
+
+`python -m ordito.precompile` compiles every kernel ordito launches into a cache directory, with
+no workload and no GPU needed on the build machine, so the processes that use it compile nothing:
 
 ```bash
 python -m ordito.precompile --arch 86,89 --cache-dir /opt/warp-cache

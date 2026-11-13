@@ -102,6 +102,10 @@ wheel is pure Python and `warp-lang` supports Windows, so ordito is expected to 
 is not verified — see
 [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
+Kernels compile on first use. To ship them precompiled in a container image or a CI cache, run
+`python -m ordito.precompile` — see
+[Precompiling for deployment](https://lucagrementieri.github.io/ordito/getting-started/#precompiling-for-deployment).
+
 ## Quickstart
 
 ```python

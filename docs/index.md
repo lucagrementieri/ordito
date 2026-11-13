@@ -87,6 +87,9 @@ Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recomme
 Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
 `pip install "ordito[io]"`.
 
+Kernels compile on first use; to ship them precompiled in a container image or a CI cache, run
+`python -m ordito.precompile` (see [Precompiling for deployment](getting-started.md#precompiling-for-deployment)).
+
 ## Quickstart
 
 ```python
