@@ -2850,6 +2850,30 @@ def launched_flag_or_bit(
     return launched_set_bit(words, word_ranks, t, by_rank)
 
 
+@wp.kernel
+def mask_ballot_bits(
+    mask: wp.array[wp.bool], out_words: wp.array[wp.uint32], out_word_counts: wp.array[wp.int32]
+) -> None:
+    # ``bool_flags`` as a counted ballot bit (``store_counted_ballot_bit``): a 32nd of the bytes
+    # written and scanned, for ``array.flatnonzero`` once the flags' traffic is the call's time.
+    i = wp.int32(wp.tid())
+    store_counted_ballot_bit(out_words, out_word_counts, i, mask[i])
+
+
+@wp.kernel
+def set_bit_positions(
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
+    out_positions: wp.array[wp.int32],
+) -> None:
+    # ``scatter.scatter_index_where_scanned`` over a ranked bitmask: each set bit's position at its
+    # rank, launched over the set bits or the positions (``launched_set_bit``).
+    p, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
+    if flagged:
+        out_positions[slot] = p
+
+
 @wp.func
 def float_order_bits(value: wp.float32) -> wp.uint64:
     # A **non-negative** float reinterpreted as the high half of a sortable integer key. The

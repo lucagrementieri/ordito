@@ -1227,6 +1227,27 @@ def test_flatnonzero_matches_numpy_across_scan_blocks(device: str, first: bool) 
     assert np.array_equal(ranks_wp.numpy(), np.cumsum(mask_np) - mask_np)
 
 
+@pytest.mark.parametrize("density", [0.4, 0.05], ids=["by-position", "by-rank"])
+def test_flatnonzero_bits_matches_numpy(
+    device: str, density: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A: a large mask's ballot-bit compaction equals ``numpy.flatnonzero``.
+
+    The CUDA bitmask paths are forced on (below its size gate) over ``2**20 + 3`` entries, so the
+    last word is partial, and the two densities take its compaction a thread a position and a
+    thread a set bit (``_launch.set_bit_launch``). The CPU device keeps the flags either way.
+    """
+    monkeypatch.setattr(od.array, "_FLATNONZERO_BITS_FROM", 0)
+    rng = np.random.default_rng(37)
+    mask_np = rng.random((1 << 20) + 3) < density
+    mask_np[-1] = True
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    assert np.array_equal(od.array.flatnonzero(mask_wp).numpy(), np.flatnonzero(mask_np))
+    empty_wp = wp.zeros(mask_np.size, dtype=wp.bool, device=device)
+    assert od.array.flatnonzero(empty_wp).size == 0
+
+
 def test_flatnonzero_indices_to_mask_round_trip(device: str) -> None:
     """
     The two are inverses: each recovers the other's input.

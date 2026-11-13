@@ -2595,6 +2595,8 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     if n == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
 
+    if values.dtype == wp.bool and wp.get_device(device).is_cuda and n >= _FLATNONZERO_BITS_FROM:
+        return _flatnonzero_bits(cast("wp.array[wp.bool]", values))
     # One buffer for the flags and their scan: the flags are written into it and scanned in place.
     inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     if values.dtype == wp.bool:
@@ -2607,6 +2609,42 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
         _launch.map(kernel_array.nonzero_flag, values, out=inclusive)
 
     return flatnonzero_in_place(inclusive)
+
+
+# A mask's flags as counted ballot bits on CUDA from this many entries
+# (``kernels/array.mask_ballot_bits``, ``set_bit_positions``): the bits' zeroed buffer and views
+# cost ~10 us of host over the flags' ``empty``, and they save the flags' 16 bytes an entry of
+# writing, scanning and reading. CUDA bits/flags, interleaved in one process: 1.32-1.38x to 1 M
+# entries, 1.15-1.29x at 2-2.6 M, 0.88-0.98x at 8 M, 0.27-0.48x at 84 M (lucy's corners), at
+# 50 % and 1 % selected. The CPU device keeps the flags: its bits cost 1.05-1.39x from 64 k to
+# 4 M (an ``atomic_or`` and an ``atomic_add`` a position).
+_FLATNONZERO_BITS_FROM = 1 << 20
+
+
+def _flatnonzero_bits(mask: wp.array[wp.bool]) -> wp.array[wp.int32]:
+    """``flatnonzero`` of a mask through its ranked bitmask: a 32nd of the flags' bytes."""
+    device = mask.device
+    n = mask.size
+    n_words = (n + 31) // 32
+    buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    ranks = _launch.view(buffer, n_words, 2 * n_words)
+    _launch.launch(
+        kernel_array.mask_ballot_bits, dim=n, inputs=[mask], outputs=[words, ranks], device=device
+    )
+    # The set-bit count sizes the output.
+    count = scan_count(ranks)
+    out_indices = _launch.empty(count, dtype=wp.int32, device=device)
+    if count > 0:
+        dim, by_rank = _launch.set_bit_launch(n, count, device)
+        _launch.launch(
+            kernel_array.set_bit_positions,
+            dim=dim,
+            inputs=[words, ranks, by_rank],
+            outputs=[out_indices],
+            device=device,
+        )
+    return out_indices
 
 
 def flatnonzero_in_place(flags: wp.array[wp.int32]) -> wp.array[wp.int32]:
@@ -3076,7 +3114,11 @@ def mask_to_compact_ranks(
         return _launch.zeros(0, dtype=wp.int32, device=device), 0
     # The flags are written straight into the tail of the ``n + 1`` offsets buffer, with its
     # leading zero, and scanned there in place, so the separate flag buffer ``counts_to_offsets``
-    # would take them from is never allocated.
+    # would take them from is never allocated. Declined (2026-11-13, CUDA, interleaved in one
+    # process): ``flatnonzero``'s counted ballot bits and a rank pass a position
+    # (``kernels/array.bit_slot``) in place of the scan of ``n`` flags, 1.5-1.6x up to 2.6 M
+    # entries, 1.12-1.28x at 8-16 M, 0.69-0.72x from 32 M, where the flags leave L2. Every caller
+    # ranks a vertex mask (``linalg.free_partition``, smoothing), under that size on ``lucy``.
     buffer = _launch.empty(n + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_array.mask_rank_flags, dim=n, inputs=[mask, bool(invert), buffer], device=device
