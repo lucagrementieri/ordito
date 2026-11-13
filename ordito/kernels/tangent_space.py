@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
-from ordito.kernels.array import device_is_cpu
+from ordito.kernels.array import declare_block_dims, device_is_cpu
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev, ring_long_from
 from ordito.kernels.normals import (
     gathered_angle_weighted_sums,
@@ -763,3 +763,12 @@ def halfedge_transport_rotations(
     # rows read (``laplacian.connection_offdiagonal``), for a caller that needs no angle.
     h = wp.int32(wp.tid())
     out_rotations[h] = polar_unit(transport_angle(twins, tangent_angles, h))
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(park_corner_angles, (PARK_LANES,))
+    declare_block_dims(vertex_tangent_frames_long, (FRAME_LONG_LANES,))
+
+
+_declare_block_dims()

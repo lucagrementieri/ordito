@@ -165,3 +165,4 @@ Shelving decisions that are not obvious from the section titles:
         * [typing](api/ordito/typing.md)
         * [constants](api/ordito/constants.md)
         * [config](api/ordito/config.md)
+        * [precompile](api/ordito/precompile.md)

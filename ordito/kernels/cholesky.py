@@ -36,6 +36,7 @@ from ordito.kernels.array import (
     binary_search_index,
     binary_search_index_left,
     csr_row_long,
+    declare_block_dims,
     lower_triangle_pair,
     ordered_float_bits,
     scanned_count,
@@ -3434,3 +3435,11 @@ def farthest_seeds(
         else:
             seed = wp.int32(wp.uint32(0xFFFFFFFF) - wp.uint32(key[c] & wp.uint64(0xFFFFFFFF)))
     out_seed[c] = seed
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(update_panel_tiles, (UPDATE_TILES_BLOCK_DIM,))
+
+
+_declare_block_dims()

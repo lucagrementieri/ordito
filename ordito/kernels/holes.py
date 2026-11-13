@@ -5,6 +5,7 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
+    declare_block_dims,
     loop_next_slot,
     loop_owner,
     loop_point,
@@ -2811,3 +2812,14 @@ def join_rounds(
             out_patch,
         )
         block_barrier()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(
+        __name__,
+        (HOLE_DP_BLOCK, HOLE_DP_BLOCK_LONG, STITCH_DP_TILE, ROW_ARGMIN_BLOCK, CLOSEST_PAIR_BLOCK),
+    )
+
+
+_declare_block_dims()

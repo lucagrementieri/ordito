@@ -21,7 +21,7 @@ distance the geometry computes.
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
-from ordito.kernels.array import atomic_min_packed_box, binary_search_index_left
+from ordito.kernels.array import atomic_min_packed_box, binary_search_index_left, declare_block_dims
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -539,3 +539,11 @@ def fold_totals_of_pair(first_blocks: wp.int32, out_totals: wp.array[wp.float32]
     if lane == 0:
         out_totals[0] = totals[0]
         out_totals[1] = totals[1]
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

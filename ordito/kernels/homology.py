@@ -72,7 +72,7 @@ import warp as wp
 
 from ordito.constants import INT32_MAX, TILE_1D, UINT64_MAX_CONSTANT
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
-from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND
+from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND, declare_block_dims
 from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
 
 wp.set_module_options({"enable_backward": False})
@@ -683,3 +683,11 @@ def write_generator_loops(
         out_loops[back] = node
         back = back - 1
         node = parents[node]
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

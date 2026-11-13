@@ -5,6 +5,9 @@ import warp as wp
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     OverloadTable,
+    declare_lazy_kernels,
+    declare_map_signatures,
+    map_probe,
     pack_edge_key,
     pack_triangle_key,
     sorted_run_end_galloping,
@@ -869,3 +872,10 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures([(pack_vec3, (dense(wp.vec3),), wp.uint64)])

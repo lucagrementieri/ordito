@@ -47,6 +47,7 @@ the sample-scale dimples the fine system has (``bunny_decimated`` depth 9: 0.92x
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.algorithms.conjugate_gradient import (
     cg_coefficients_column,
     cg_publish_round_dots,
@@ -57,6 +58,7 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 from ordito.kernels.array import (
     LOOP_CONDITION,
     cube_corner_offset,
+    declare_block_dims,
     ravel_index,
     trilinear_cell,
     trilinear_corner,
@@ -1476,3 +1478,11 @@ def embed_band_data(
     idx = band_node(target_map, nbk, g[0], g[1], g[2])
     out_b[idx] = b[n]
     out_weights[idx] = weights[n]
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

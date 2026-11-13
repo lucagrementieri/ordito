@@ -1,12 +1,13 @@
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.adjacency import (
     edge_endpoints,
     write_edge_row,
     write_face_edge_keys,
     write_face_edge_keys_and_order,
 )
-from ordito.kernels.array import sorted_run_start, unpack_edge_key
+from ordito.kernels.array import declare_block_dims, sorted_run_start, unpack_edge_key
 from ordito.kernels.grouping import insert_face_edge_keys, store_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb
@@ -378,3 +379,11 @@ def face_edge_lengths(
     # One thread a face: ``store_face_edge_lengths``.
     f = wp.int32(wp.tid())
     store_face_edge_lengths(vertices, faces, f, out_lengths)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

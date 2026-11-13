@@ -1,6 +1,12 @@
 import warp as wp
 
-from ordito.kernels.array import append_slot, declare_map_signatures, map_probe, map_probe_single
+from ordito.kernels.array import (
+    append_slot,
+    declare_lazy_kernels,
+    declare_map_signatures,
+    map_probe,
+    map_probe_single,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -149,3 +155,23 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (
+                first_hit,
+                (wp.uint64(1), dense(wp.vec3), dense(wp.vec3), wp.float32(1)),
+                (wp.int32, wp.vec3),
+            ),
+            (
+                longest_ray_distance,
+                (wp.uint64(1), dense(wp.vec3), dense(wp.vec3), wp.float32(1), wp.float32(1)),
+                wp.float32,
+            ),
+        ]
+    )

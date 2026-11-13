@@ -25,6 +25,7 @@ from ordito.kernels.array import (
     KernelTable,
     atomic_min_packed_box,
     csr_row_long,
+    declare_block_dims,
     device_is_cpu,
     is_close_scalar,
     is_close_vec3,
@@ -3128,3 +3129,11 @@ RADIX_SELECT_SUCCESSOR = KernelTable(
         for d, key in _RADIX_SELECT_KEYS.items()
     },
 )
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D, TILE_2D * TILE_2D))
+
+
+_declare_block_dims()

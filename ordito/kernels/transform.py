@@ -10,6 +10,7 @@ apply it would cost the readback [`ordito.registration`][ordito.registration] ex
 
 import warp as wp
 
+from ordito.kernels.array import declare_lazy_kernels, declare_map_signatures, map_probe
 from ordito.kernels.predicates import normalize_or_zero, orient3d_sign_f32
 from ordito.kernels.triangles import corner_triple, write_corner_triple_reversible
 
@@ -146,3 +147,16 @@ def transform_mesh_buffers_device(
     m = matrix[0]
     mode = wp.where(mirrors_mat44(m), FACES_REVERSE, face_mode)
     transform_mesh_row(vertices, faces, m, mode, i, out_vertices, out_faces)
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (transform_normal_mat33, (dense(wp.vec3), wp.mat33()), wp.vec3),
+            (transform_point_mat44, (dense(wp.vec3), wp.mat44()), wp.vec3),
+            (transform_vector_mat44, (dense(wp.vec3), wp.mat44()), wp.vec3),
+        ]
+    )

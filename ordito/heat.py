@@ -1000,6 +1000,12 @@ def _unfolding_front(
 # The ordered front's launches: a warp of lanes per listed vertex (a pop's dozen offers, its
 # 2-ring), blocks striding over lists that hold a few thousand vertices on a scan mesh.
 _ORDERED_FRONT_LANES = 32
+for _kernel in (
+    kernel_heat.ordered_pop_pass,
+    kernel_heat.ordered_relabel_pass,
+    kernel_heat.ordered_settle_pass,
+):
+    kernel_array.declare_block_dims(_kernel, (_ORDERED_FRONT_LANES,))
 _ORDERED_FRONT_ROUNDS_PER_VERTEX = 64
 # Rounds a replayed body of the ordered front's CUDA loop runs. Two against one, whole calls
 # (2026-11-09, byte-identical): one source 0.96-0.99x from ``sphere_small`` to bunny, sixteen

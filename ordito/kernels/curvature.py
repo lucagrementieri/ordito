@@ -3,7 +3,7 @@ import warp as wp
 from ordito.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.adjacency import unshared_projection, unshared_vertex
 from ordito.kernels.algorithms.bfs import ball_row_bounds
-from ordito.kernels.array import declare_map_signatures, map_probe
+from ordito.kernels.array import declare_block_dims, declare_map_signatures, map_probe
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import (
@@ -1832,3 +1832,11 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(ball_mean_curvature_tiled, (MEAN_CURVATURE_TILED_BLOCK_DIM,))
+
+
+_declare_block_dims()

@@ -81,6 +81,7 @@ from ordito import _launch
 from ordito._common import read_array, read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
+from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import holes as kernel_holes
 from ordito.kernels import scatter as kernel_scatter
@@ -230,6 +231,8 @@ class _PackedLoops:
 # Loop counts up to which ``_PackedLoops.perimeters`` reads back through ``read_values``, whose
 # scratch is cached per count.
 _FEW_LOOPS = 4
+
+kernel_array.declare_block_dims(kernel_holes.__name__, (kernel_boundary.LOOP_SUM_BLOCK,))
 
 
 def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[wp.int32]:

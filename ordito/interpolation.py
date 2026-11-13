@@ -52,6 +52,11 @@ from ordito.kernels import interpolation as kernel_interpolation
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import scatter as kernel_scatter
 
+kernel_array.declare_block_dims(
+    kernel_interpolation.interpolate_from_points_in_ball_tiled,
+    (kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,),
+)
+
 DType = TypeVar("DType")
 """
 Element type of a transferred field: ``wp.float32``, ``wp.vec2`` or ``wp.vec3``.

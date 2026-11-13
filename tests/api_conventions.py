@@ -178,6 +178,7 @@ _MODULES_WITHOUT_BENCHMARKS = frozenset(
         "typing",  # annotations and rank/dtype guards; nothing with a runtime cost
         "config",  # a process-wide setting and its context manager; nothing launches
         "io",  # meshio round-trips, i.e. a benchmark of meshio
+        "precompile",  # a build step: it would time nvcc and the CPU compiler, not ordito
     }
 )
 
@@ -322,7 +323,7 @@ _DUPLICATE_NAME_ALLOWLIST: dict[str, frozenset[str]] = {
 _SHARED_KERNEL_MODULES = frozenset({"predicates", "scatter"})
 
 # Public modules that launch no kernel of their own and so have no kernel module.
-_MODULES_WITHOUT_KERNELS = frozenset({"config", "constants", "io", "mesh", "typing"})
+_MODULES_WITHOUT_KERNELS = frozenset({"config", "constants", "io", "mesh", "precompile", "typing"})
 
 # --- check 8 ------------------------------------------------------------------------------------
 
@@ -532,7 +533,10 @@ _HELPER_ORDER_ALLOWLIST: dict[str, frozenset[str]] = {
     # ``_ICOSPHERE_FACE_TABLE`` constant, so it has no function caller to sit below and moving it
     # under its use is a NameError at import. This is the one permanent entry; the other 48 sites
     # this list carried were reordered in the first full sweep.
-    "creation": frozenset({"_icosphere_face_table"})
+    "creation": frozenset({"_icosphere_face_table"}),
+    # Also permanent: ``_main`` is the ``python -m ordito.precompile`` entry point, and its one
+    # caller is the ``if __name__ == "__main__"`` guard, which has to close the module.
+    "precompile": frozenset({"_main"}),
 }
 
 # The Python-scope launchers that take a ``device`` keyword. Data for check 15, hoisted up here

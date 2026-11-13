@@ -97,6 +97,8 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | reductions (`min`, `max`, `sum`, `mean`) without a host round trip | [`reduce`][ordito.reduce] |
 | per-group sums (`bincount` with weights, `add.reduceat`), reproducible under the deterministic setting | [`reduce.scatter_sum`][ordito.reduce.scatter_sum], [`reduce.segment_sum`][ordito.reduce.segment_sum] |
 | per-group means, minima and maxima (`minimum.at`, `maximum.reduceat`) | [`reduce.scatter_mean`][ordito.reduce.scatter_mean], [`scatter_min`][ordito.reduce.scatter_min], [`scatter_max`][ordito.reduce.scatter_max], [`segment_mean`][ordito.reduce.segment_mean], [`segment_min`][ordito.reduce.segment_min], [`segment_max`][ordito.reduce.segment_max] |
+| **Deploy** | |
+| compile every kernel ahead of time for a container image or CI (no GPU needed) | [`precompile`][ordito.precompile]: `python -m ordito.precompile --arch 86,89 --cpu`, [`precompile.precompile`][ordito.precompile.precompile] |
 
 ## Modules
 
@@ -207,3 +209,4 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | [typing](api/ordito/typing.md) | Array type aliases and runtime rank checks. |
 | [constants](api/ordito/constants.md) | Shared numeric tolerances and sentinel values. |
 | [config](api/ordito/config.md) | Runtime settings: whether float reductions and scans repeat bit for bit on CUDA (`od.set_deterministic`, `with od.deterministic(False):`); see [Reproducible results](reproducibility.md). |
+| [precompile](api/ordito/precompile.md) | Ahead-of-time kernel builds: fill Warp's kernel cache for given GPU architectures and the CPU without running a workload (`python -m ordito.precompile`), for container images and CI. |

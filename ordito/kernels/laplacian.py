@@ -2,12 +2,14 @@ from typing import Any
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.array import (
     OverloadTable,
     append_slot_if,
     csr_key,
     csr_row_long,
     csr_run_start,
+    declare_block_dims,
     device_is_cpu,
     popcount32,
     row_chunk_slots,
@@ -1860,3 +1862,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

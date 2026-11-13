@@ -5,6 +5,7 @@ import warp as wp
 from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
+    declare_block_dims,
     launched_set_bit,
     loop_owner,
     loop_rim_edge,
@@ -874,3 +875,12 @@ def longest_loop_key(loop_offsets: wp.array[wp.int32], out_best: wp.array[wp.int
     ell = wp.int32(wp.tid())
     start = loop_offsets[ell]
     wp.atomic_max(out_best, 0, pack_ranked_key(loop_offsets[ell + 1] - start, start))
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (LOOP_SUM_BLOCK,))
+    declare_block_dims(split_pinched_loops, (PINCH_SPLIT_LANES,))
+
+
+_declare_block_dims()

@@ -415,6 +415,16 @@ small feature mesh with `@pytest.mark.censusmesh(name)`: `saddle_small` for a ri
 and hole groups), `tangle_torus_small` for creases. A census row that skips leaves its group
 outside the gate, so pick a mesh where it runs.
 
+Every census session also gates `python -m ordito.precompile`: the plugin records the identifier
+(module name and hash) of every Warp module a row loads, at the launch width it loads it at, and
+fails on one that `ordito.precompile.kernel_variants` does not list, taken in a fresh process as the
+precompiler takes it. The failure names the module and width. A new launch width is declared with
+`kernels/array.declare_block_dims` (in a `_declare_block_dims()` at the bottom of the kernel module
+whose constant names it, or beside the wrapper constant that does), and a kernel or `wp.map`
+signature made on first use with `kernels/array.declare_lazy_kernels`. The CPU device loads every
+module at width 1, so CI's CPU run checks the modules and the CUDA run checks the widths too:
+re-run the CUDA census after adding a launch width.
+
 ## Notes
 
 - **Every ordito row runs with determinism off.** `benchmarks/conftest.py` calls

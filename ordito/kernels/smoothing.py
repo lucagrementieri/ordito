@@ -2,14 +2,19 @@ from typing import Any
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import (
     OverloadTable,
     append_slot,
     csr_row_long,
+    declare_block_dims,
+    declare_lazy_kernels,
+    declare_map_signatures,
     device_is_cpu,
     greater,
     inverse_or_one,
+    map_probe,
     mask_and_not,
     next_row_entry,
     row_chunk_entries,
@@ -4759,3 +4764,18 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures([(band_pins, (dense(wp.bool), dense(wp.bool)), (wp.bool, wp.float64))])

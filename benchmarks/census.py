@@ -27,6 +27,15 @@ Modes:
   ``<readback>``, ``<d2h>``, ...) with its ``ordito`` line -- an exploration aid, not part of the
   gate.
 
+Every session also checks ``ordito.precompile``: each Warp module a row loads, at the launch width
+it loads it at, must be one ``kernel_variants`` lists, so that ``python -m ordito.precompile``
+builds it (``kernels/array.declare_block_dims`` and ``declare_lazy_kernels`` name what a plain
+import does not create). The comparison is by Warp's module identifier, which carries the module's
+hash, and the reference list is taken in a fresh process, as the precompiler takes it: a kernel or
+``wp.map`` signature added to a module during the run changes the hash and fails the check. A CPU
+run checks the modules (the CPU device loads every one at width 1); a CUDA run checks the widths
+too.
+
 A budget row may carry ``"exempt": "<reason>"`` when its counts depend on convergence (an iterative
 solver's round count), which keeps it out of the comparison while still listing it.
 
@@ -48,6 +57,8 @@ import importlib.util
 import inspect
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +121,8 @@ _COUNTS: collections.Counter[str] = collections.Counter()
 _SEQUENCE: list[tuple[str, str, str]] = []
 _ROWS: dict[str, dict[str, int]] = {}
 _REPORT: list[dict[str, Any]] = []
+# ``(device kind, module identifier, module name, block_dim)`` of every module load of ordito's.
+_LOADED: set[tuple[str, str, str, int]] = set()
 
 
 def _ordito_site(depth: int = 2) -> str:
@@ -213,6 +226,29 @@ def pytest_configure() -> None:
     for owner, name in ((_launch, "launch"), (_launch, "launch_tiled"), (wp, "launch")):
         _record_launches(owner, name)
     _record_launches(wp, "launch_tiled")
+    _record_module_loads()
+
+
+def _record_module_loads() -> None:
+    """Record the identifier of every ordito module Warp loads, for the precompile check."""
+    import warp._src.context as context
+
+    import ordito.kernels
+
+    before = ordito.kernels.WARP_MODULES_BEFORE_ORDITO
+    original = context.Module.load
+
+    def load(
+        self: Any, device: Any, block_dim: int | None = None, *args: Any, **kwargs: Any
+    ) -> Any:
+        if self.name not in before:
+            resolved = context.runtime.get_device(device)
+            width = int(block_dim if block_dim is not None else self.options["block_dim"])
+            kind = "cpu" if resolved.is_cpu else "cuda"
+            _LOADED.add((kind, self.get_module_identifier(width), self.name, width))
+        return original(self, device, block_dim, *args, **kwargs)
+
+    context.Module.load = load
 
 
 # The ``meshes.AXES`` that grow one kind of input, smallest first. Their larger meshes take the
@@ -364,6 +400,38 @@ def _forget_solver_shapes() -> None:
     linalg._SHAPES_SEEN.clear()  # pyright: ignore[reportPrivateUsage]
 
 
+# The identifiers ``ordito.precompile`` builds, taken as it takes them: in a fresh process.
+_VARIANT_IDENTIFIERS = """
+import json
+import warp as wp
+import warp._src.context as context
+wp.config.log_level = wp.LOG_ERROR
+wp.init()
+from ordito.precompile import kernel_variants
+variants = kernel_variants()
+modules = context.user_modules
+print(json.dumps({
+    "cuda": [modules[n].get_module_identifier(w) for n, widths in variants.items() for w in widths],
+    "cpu": [modules[n].get_module_identifier(1) for n in variants],
+}))
+"""
+
+
+def _unbuilt_loads() -> list[str]:
+    """Each module load of the session that ``ordito.precompile`` would not have built."""
+    if not _LOADED:
+        return []
+    result = subprocess.run(
+        [sys.executable, "-c", _VARIANT_IDENTIFIERS], capture_output=True, text=True, check=True
+    )
+    built = json.loads(result.stdout.strip().splitlines()[-1])
+    return [
+        f"{kind}: {name} at block_dim {width} ({identifier})"
+        for kind, identifier, name, width in sorted(_LOADED)
+        if identifier not in built[kind]
+    ]
+
+
 def _budget_path(config: pytest.Config) -> Path:
     explicit = config.getoption("--census-budget")
     if explicit:
@@ -382,6 +450,8 @@ def pytest_testnodedown(node: Any, error: object) -> None:
         rows, report = json.loads(output["census"])
         _ROWS.update(rows)
         _REPORT.extend(report)
+    if "precompile" in output:
+        _LOADED.update(tuple(entry) for entry in json.loads(output["precompile"]))
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
@@ -390,9 +460,23 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     workeroutput = getattr(config, "workeroutput", None)
     if workeroutput is not None:
         workeroutput["census"] = json.dumps([_ROWS, _REPORT])
+        workeroutput["precompile"] = json.dumps(sorted(_LOADED))
         return
     if not _ROWS:
         return
+    terminal = config.pluginmanager.get_plugin("terminalreporter")
+    write = terminal.write_line if terminal is not None else print
+    unbuilt = _unbuilt_loads()
+    if unbuilt:
+        write(
+            "census: modules loaded that ordito.precompile does not build (declare the width with"
+        )
+        write(
+            "  kernels/array.declare_block_dims, or create the kernel in a declare_lazy_kernels):"
+        )
+        for line in unbuilt:
+            write(f"  {line}")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
     report = config.getoption("--census-report")
     if report:
         with open(report, "w") as handle:
@@ -427,8 +511,6 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
             elif now < then:
                 fell.append(f"{node}: {key} {then} -> {now}")
     stale = sorted(set(budget) - set(_ROWS)) if config.getoption("--census-strict") else []
-    terminal = config.pluginmanager.get_plugin("terminalreporter")
-    write = terminal.write_line if terminal is not None else print
     for title, lines in (
         ("counts rose", rose),
         ("rows missing from the budget (run with --census-update)", unknown),

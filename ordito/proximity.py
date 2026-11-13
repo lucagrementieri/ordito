@@ -126,6 +126,7 @@ _SEED_SAMPLE_TARGET = 1024
 # second pass's node stacks (its own, ``kernels.proximity.BLOCK_WALK_STACK``, and
 # ``wp.tile_bvh_query_aabb``'s) are sized for it.
 _QUERY_TILE_WIDTH = 32
+kernel_array.declare_block_dims(kernel_proximity.__name__, (_QUERY_TILE_WIDTH,))
 
 # Persistent blocks per multiprocessor for that second pass, which claims stragglers from a device
 # counter instead of launching one block per straggler sized by a readback.

@@ -67,11 +67,13 @@ up to the splits its own rounding decides (two splits of a loop whose areas agre
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.array import (
     binary_search_index_left,
     bit_is_set,
     bit_rank,
     cube_corner_offset,
+    declare_block_dims,
     native_popcount32,
     or_counted_bit,
     popcount32,
@@ -3647,3 +3649,11 @@ def triangulate_loops(
                     stack += 1
         written += n
         k += 1
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

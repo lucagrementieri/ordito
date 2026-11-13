@@ -9,6 +9,8 @@ from ordito.kernels.array import (
     LOOP_ROUND,
     RegisterBlockedTable,
     atomic_max_unless_above,
+    declare_block_dims,
+    declare_lazy_kernels,
     declare_map_signatures,
     map_probe,
     map_probe_single,
@@ -1552,3 +1554,20 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D, FARTHEST_BLOCK_MID, FARTHEST_BLOCK_LARGE))
+
+
+_declare_block_dims()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures(
+        [(point_plane_distance, (dense(wp.vec3), wp.vec3(), wp.vec3()), wp.float32)]
+    )

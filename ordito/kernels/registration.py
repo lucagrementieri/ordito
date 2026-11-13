@@ -2,8 +2,14 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, FLOAT64_INF_CONSTANT
-from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left, ordered_item
+from ordito.constants import FLOAT32_INF_CONSTANT, FLOAT64_INF_CONSTANT, TILE_1D
+from ordito.kernels.array import (
+    LOOP_CONDITION,
+    LOOP_ROUND,
+    binary_search_index_left,
+    declare_block_dims,
+    ordered_item,
+)
 from ordito.kernels.neighbors import bvh_nearest_point
 from ordito.kernels.predicates import normalize_or_zero
 from ordito.kernels.proximity import closest_offset_d, closest_point_query, nearest_offset_within
@@ -1658,3 +1664,12 @@ def icp_point_to_plane_rounds_serial(
                 robust_kind, robust_scale, stride, n_blocks, damping, threshold, max_iterations,
                 acc, total, step, state, ticket,
             )  # fmt: skip
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+    declare_block_dims(landmark_icp, (LANDMARK_ICP_BLOCK_DIM,))
+
+
+_declare_block_dims()

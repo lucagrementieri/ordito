@@ -2,13 +2,16 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
+from ordito.constants import TILE_1D, TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels import array as kernel_array
 from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     OverloadTable,
     csr_run_start,
+    declare_block_dims,
+    declare_lazy_kernels,
     declare_map_signatures,
+    int_vector_scan_kernels,
     map_probe,
     map_probe_single,
 )
@@ -2323,3 +2326,17 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()
+
+
+@declare_lazy_kernels
+def _declare_lazy_kernels() -> None:
+    """Create the ``ClipRanks`` scan ``ordito.intersection`` builds on first use."""
+    int_vector_scan_kernels(ClipRanks)

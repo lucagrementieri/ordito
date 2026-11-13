@@ -1,11 +1,13 @@
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
     binary_search_index_left,
     csr_row_long,
+    declare_block_dims,
     outer_product_slot,
     popcount32,
     sorted_run_end,
@@ -1954,3 +1956,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

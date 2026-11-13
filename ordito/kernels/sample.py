@@ -2,10 +2,11 @@ import math
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT
+from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from ordito.kernels.array import (
     LOOP_CONDITION,
     append_slot,
+    declare_block_dims,
     device_is_cpu,
     float_from_ordered_bits,
     ordered_float_bits,
@@ -657,3 +658,11 @@ def emit_kept_samples(
     if count != 0:
         out_points[slot] = points[i]
         out_face_indices[slot] = face_indices[i]
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(surface_centroid_apex, (TILE_1D,))
+
+
+_declare_block_dims()

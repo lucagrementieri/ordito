@@ -2,12 +2,13 @@ from typing import NamedTuple
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX
+from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels.algorithms import bfs as kernel_bfs
 from ordito.kernels.array import (
     append_slot,
+    declare_block_dims,
     declare_map_signatures,
     map_probe,
     map_probe_single,
@@ -2176,3 +2177,15 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+    declare_block_dims(query_ball_count_tiled, (TILED_BALL_WALK_BLOCK_DIM,))
+    declare_block_dims(query_nearest_via_bvh, (DESCENT_WIDE_BLOCK_DIM,))
+    declare_block_dims(nearest_points_both_ways, (DESCENT_WIDE_BLOCK_DIM,))
+    declare_block_dims(nearest_other_distances, (DESCENT_WIDE_BLOCK_DIM,))
+
+
+_declare_block_dims()

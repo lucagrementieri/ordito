@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import TILE_1D, TOLERANCE_ZERO_CONSTANT
-from ordito.kernels.array import device_is_cpu, lift_vec2
+from ordito.kernels.array import declare_block_dims, device_is_cpu, lift_vec2
 from ordito.kernels.polyline import fan_face, segment_displacement
 from ordito.kernels.predicates import orient2d
 from ordito.kernels.reduce import block_chunk, last_ticket, store_block_total
@@ -2270,3 +2270,11 @@ def sphere_cap_mesh(
         out_vertices[t] = sphere_cap_vertex(t, n_rings, angle, radius)
     if t < out_faces.shape[0] // 3:
         write_sphere_cap_face(t, out_faces)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

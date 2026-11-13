@@ -1,12 +1,13 @@
 import warp as wp
 
-from ordito.constants import INT32_MAX_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair_parity,
     ecl_prehook_pair,
     parity_root_word,
 )
+from ordito.kernels.array import declare_block_dims
 from ordito.kernels.reduce import block_chunk_1d, block_min
 from ordito.kernels.scatter import claim_row_slot
 
@@ -791,3 +792,11 @@ def scatter_closed_cycles(
     if v == start:
         out_offsets[exclusive[0]] = exclusive[1]
         out_offsets[inclusive[0]] = inclusive[1]
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

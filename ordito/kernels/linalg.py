@@ -34,9 +34,11 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
+from ordito.constants import TILE_1D
 from ordito.kernels.array import (
     OverloadTable,
     csr_row_long,
+    declare_block_dims,
     device_is_cpu,
     inverse_or_one,
     row_chunk_slots,
@@ -1453,3 +1455,11 @@ def register_bsr_mv_overloads(tile_size: int) -> None:
 
 CSR_LONG_ROWS_MATVEC: OverloadTable
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

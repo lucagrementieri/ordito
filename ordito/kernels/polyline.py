@@ -2,7 +2,12 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import ALLCLOSE_ATOL_CONSTANT, ALLCLOSE_RTOL_CONSTANT, FLOAT32_INF_CONSTANT
+from ordito.constants import (
+    ALLCLOSE_ATOL_CONSTANT,
+    ALLCLOSE_RTOL_CONSTANT,
+    FLOAT32_INF_CONSTANT,
+    TILE_1D,
+)
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -10,6 +15,7 @@ from ordito.kernels.array import (
     binary_search_index,
     binary_search_index_left,
     cross2,
+    declare_block_dims,
     is_close_vec3,
     lift_vec2,
     loop_point,
@@ -3755,3 +3761,12 @@ def endpoints_coincide(polyline: wp.array[wp.vec3], out_flag: wp.array[wp.int32]
     # one every kernel deciding the closure on the device evaluates -- so none of them can disagree
     # about what "coincide" means.
     out_flag[0] = ring_closing_flag(polyline[0], polyline[polyline.shape[0] - 1])
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D, EAR_BLOCK_DIM, RDP_BLOCK_DIM))
+    declare_block_dims(ear_clip_tail, (EAR_TAIL_BLOCK_DIM,))
+
+
+_declare_block_dims()

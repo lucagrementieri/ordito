@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.array import OverloadTable, mark_first
+from ordito.kernels.array import OverloadTable, declare_block_dims, mark_first
 from ordito.kernels.grouping import insert_face_edge_keys
 from ordito.kernels.reduce import (
     block_chunk,
@@ -268,3 +268,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

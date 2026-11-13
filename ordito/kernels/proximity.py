@@ -7,6 +7,7 @@ from ordito.kernels.array import (
     RegisterBlockedTable,
     atomic_min_packed_box,
     atomic_min_unless_below,
+    declare_block_dims,
     lattice_position,
     lift_vec2,
     morton_frame,
@@ -2542,3 +2543,11 @@ def contains_points_sign_parity(
         out_contains[tid] = False
         return
     out_contains[tid] = inside_parity_vote(mesh_id, p, n_sample, perturbation_scale)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (WINDING_TREE_BLOCK_DIM,))
+
+
+_declare_block_dims()

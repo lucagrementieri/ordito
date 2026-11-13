@@ -167,6 +167,22 @@ Each launch argument costs ~1 µs of host time (§13.1). Bundle the invariant ta
 - Any runtime index spills it: read the k-th element with an unrolled `for slot in range(K): if slot == k - 1:`, closing over `K` in a factory (one kernel per bucket, unique `name`, `KNN_ROW_BUCKETS`).
 - A register insertion sort needs an explicit `placed` flag; carrying the displaced element drops a neighbour on equal distances.
 
+### 2.10 Every launch width and lazy kernel is declared for `ordito.precompile`
+
+`python -m ordito.precompile` builds what `precompile.kernel_variants` lists without running a
+workload, so a module a launch reaches only at run time must be declared (§12.4 for the mechanics).
+
+- A launch at a `block_dim` other than its module's default declares the width with
+  `kernels/array.declare_block_dims`: in a `_declare_block_dims()` at the bottom of the kernel module
+  whose constant names it, or beside the wrapper constant that does. A width chosen at run time
+  declares every value it can take (`descent_block_dim`'s two); name a literal width as a constant
+  first.
+- A kernel created on first use (a factory, `cast_kernel`, an `int_vector_scan_kernels` dtype, a
+  `wp.map` op at a signature no import-time table declares) is created in a function decorated with
+  `kernels/array.declare_lazy_kernels`, and lives in a module of its own (`module="unique"`).
+- The census (§15) fails on a load the list misses. CI's CPU run sees modules only (the CPU loads
+  every module at width 1): re-run the CUDA census after adding a width.
+
 ---
 
 ## 3. Python-scope wrappers
@@ -867,6 +883,17 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - `wp.constant(x)` is an identity; a tile `shape=` must be a plain integer; wrap typed constants in `int()` on the host.
 - A launch's `block_dim` is a compile-time parameter of the module launched (`Module.load(device, block_dim)`, with matching `__launch_bounds__`): a kernel launched at a second width builds its whole module again, and one of its kernels may not build at that width (`kernels/neighbors` at 128 failed). A kernel launched at its own width lives in its own module (`module="unique"`; `kernels/validation.closed_signed_volume`, `kernels/neighbors.query_nearest_via_bvh`).
 - Warp 1.19 vectorizes CPU kernels (loop and SLP, GH-1954 / GH-1994), so a cold CPU build costs 1.74x: all 63 `ordito.kernels` modules through `wp.force_load(device="cpu")` into an empty cache took 113 s on 1.18 and 194-201 s on 1.19 (cache 34 -> 39 MB, 2026-11-03). A fresh CPU environment or a CI job without a warm cache pays it. The switch is the `cpu_compiler_flags` module option or `wp.config.cpu_compiler_flags` (default `-march=native`; append `-fno-slp-vectorize`), which also changes the module hash. It is per module, never per kernel. What it buys at run time: §14.
+- Ahead-of-time builds (2026-11-13, `ordito.precompile`): `wp.compile_aot_module(module, arch=...)`
+  compiles with no GPU (NVRTC alone; a GPU-less process prints `CUDA error 100` once at init and
+  nothing stops it) and writes the identifier a GPU process loads, the module hash being the same
+  with and without a device. It builds at the module's default `block_dim` only: set the module
+  option for another width (`Module.load` hashes the width) and restore it. The CPU loads every
+  module at width 1, and its objects are `-march=native`. `kernel_cache_dir` and `WARP_CACHE_PATH`
+  both append Warp's version. Every module ordito lists (159, 220 widths) for `sm_120`, 32 workers,
+  no GPU: 89 s wall, 206 MB; `kernels/reduce` alone takes 67 s and sets the floor. The whole CUDA
+  census on that cache compiled no CUDA module (153 loads, all cached); 5 CPU modules some CUDA rows
+  load compiled, as the cache had no `--cpu` build. Warp's generic modules with no registered
+  overload (`warp.sparse`'s `_bsr_*`, `warp.fem.linalg`) cannot be built and are skipped.
 
 ### 12.5 `warp.sparse` and `wp.Volume`
 

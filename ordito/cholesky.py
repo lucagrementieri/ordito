@@ -53,6 +53,7 @@ from ordito._common import (
     require_same_device,
 )
 from ordito.graph import connected_component_labels
+from ordito.kernels import array as kernel_array
 from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import grouping as kernel_grouping
 
@@ -72,6 +73,15 @@ CHOLESKY_REFINE_ROUNDS = 12
 _SINGULAR_ROW_SUM = 1e-10
 # Rows whose diagonal ``sparse_cholesky(negated=None)`` sums to choose the sign it tries first.
 _SIGN_PROBE_ROWS = 64
+# CUDA launch widths: the panel's tile factor (its latency is least at 64 lanes), the nested
+# dissection's partials, and its bookkeeping block, whose packed tallies hold a chunk of at most
+# 512 slots.
+_PANEL_FACTOR_LANES = 64
+_DISSECTION_LANES = 128
+_BOOKKEEPING_LANES = 512
+kernel_array.declare_block_dims(
+    kernel_cholesky.__name__, (_PANEL_FACTOR_LANES, _DISSECTION_LANES, _BOOKKEEPING_LANES)
+)
 
 
 class NotPositiveDefiniteError(ValueError):
@@ -1262,7 +1272,7 @@ class _Plan:
                             self.panel_scratch,
                         ],
                         outputs=[self.panel_inverse_tiles],
-                        block_dim=64,
+                        block_dim=_PANEL_FACTOR_LANES,
                         device=device,
                     )
                     _launch.launch_tiled(
@@ -2036,9 +2046,8 @@ def _nested_dissection(
     leaf_limit = wp.int32(leaf_rows)
     # The sentinel key past the live vertices carries segment ``slots + 1`` (above every real one).
     sort_bits = 32 + _bits(slots + 1)
-    block_dim = 128 if cuda else 1
-    # The bookkeeping block's lanes: its packed tallies hold a chunk of at most 512 slots.
-    bookkeeping_lanes = 512 if cuda else 1
+    block_dim = _DISSECTION_LANES if cuda else 1
+    bookkeeping_lanes = _BOOKKEEPING_LANES if cuda else 1
 
     def split(
         depth: int,

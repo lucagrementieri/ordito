@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.constants import INT32_MAX_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TILE_1D
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair,
@@ -10,7 +10,7 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
-from ordito.kernels.array import scanned_count
+from ordito.kernels.array import declare_block_dims, scanned_count
 from ordito.kernels.grouping import count_edge_key
 from ordito.kernels.halfedge import (
     halfedge_destination,
@@ -933,3 +933,12 @@ def face_defective_mask(
         max_pair_angle,
         max_fold_angle,
     )
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+    declare_block_dims(closed_signed_volume, (TILE_1D,))
+
+
+_declare_block_dims()

@@ -53,6 +53,7 @@ from ordito.kernels.array import (
     OverloadTable,
     csr_key_nonzero,
     csr_row_long,
+    declare_block_dims,
     element_priority,
     inverse_or_one,
     sqrt_abs,
@@ -1955,3 +1956,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

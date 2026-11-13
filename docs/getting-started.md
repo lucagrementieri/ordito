@@ -50,8 +50,21 @@ Warp compiles each kernel module to native code the first time a function needs 
 and caches the result on disk (`~/.cache/warp` by default; `wp.config.kernel_cache_dir` moves it).
 Right after installing or upgrading, the first call of a function takes about a second for each
 kernel module it touches; every later call, in this process or any later one, loads the cached
-binary. When you time something, time the second call. In a service or a container, warm the cache
-at build time by running the pipeline on a small input, and keep the cache directory.
+binary. When you time something, time the second call.
+
+In a service or a container, build the whole cache ahead of time instead, with no workload and no
+GPU needed on the build machine:
+
+```bash
+python -m ordito.precompile --arch 86,89 --cpu --cache-dir /opt/warp-cache
+```
+
+`--arch` takes the compute capabilities of the GPUs that will run the image (`86` for `sm_86`;
+omitted, those of the build machine's GPUs), `--cpu` adds the CPU device (for the build machine's
+instruction set, so build it on the CPU type that will run it), and `--jobs` sets the number of
+worker processes. The processes that use the cache set `WARP_CACHE_PATH=/opt/warp-cache`. The
+cache holds what the installed Warp and ordito compile, so rebuild it when either is upgraded. See
+[`ordito.precompile`][ordito.precompile] for what it covers.
 
 ## The five-minute mental model
 

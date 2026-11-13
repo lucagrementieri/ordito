@@ -3,7 +3,13 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import RegisterBlockedTable, append_slot, ordered_item, to_vec3d
+from ordito.kernels.array import (
+    RegisterBlockedTable,
+    append_slot,
+    declare_block_dims,
+    ordered_item,
+    to_vec3d,
+)
 from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
 from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query_within
 from ordito.kernels.ray import longest_ray_distance
@@ -791,3 +797,11 @@ def seed_support_spheres(
     out_radii[tid] = radius
     out_not_converged[tid] = found
     out_centers[tid] = sphere_center(p, n, radius)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (BUNDLE_BLOCK, POINT_MAJOR_BLOCK))
+
+
+_declare_block_dims()

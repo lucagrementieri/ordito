@@ -33,7 +33,13 @@ from ordito.constants import (
     TOLERANCE_ZERO_F64,
 )
 from ordito.kernels import array as kernel_array
-from ordito.kernels.array import cross2, declare_map_signatures, map_probe, sort3
+from ordito.kernels.array import (
+    cross2,
+    declare_lazy_kernels,
+    declare_map_signatures,
+    map_probe,
+    sort3,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1340,3 +1346,17 @@ def _declare_map_kernels() -> None:
 
 
 _declare_map_kernels()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (is_in_aabb, (dense(wp.vec3), wp.vec3(), wp.vec3()), wp.bool),
+            (is_in_obb, (dense(wp.vec3), wp.mat33(), wp.vec3(), wp.vec3()), wp.bool),
+            (polar_unit, (dense(wp.float64),), wp.vec2d),
+            (vector_angle, (dense(wp.vec3), dense(wp.vec3)), wp.float32),
+        ]
+    )

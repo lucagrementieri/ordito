@@ -144,6 +144,9 @@ _MAT33_BYTES = 9 * 4
 # (``lucy``); the reproducible commit elects its last block anyway and always fuses.
 _FIT_TICKET_MAX_BLOCKS = 1 << 11
 
+for _kernel in (kernel_points.radius_outlier_flags_tiled, kernel_points.normal_outlier_flags_tiled):
+    kernel_array.declare_block_dims(_kernel, (kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,))
+
 
 def point_plane_distance(
     points: wp.array[wp.vec3], plane_normal: wp.vec3, plane_origin: wp.vec3 | None = None

@@ -10,7 +10,7 @@ triangle predicates, shared with ``kernels/predicates.py``.
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, PI, TWO_PI
+from ordito.constants import FLOAT32_INF_CONSTANT, PI, TILE_1D, TWO_PI
 from ordito.kernels.algorithms.conjugate_gradient import (
     cg_coefficients_column,
     cg_publish_round_dots,
@@ -23,6 +23,7 @@ from ordito.kernels.array import (
     append_slot,
     append_slot_if,
     cube_corner_offset,
+    declare_block_dims,
     device_is_cpu,
     is_positive_finite,
     next_up,
@@ -4133,3 +4134,11 @@ def meshlab_signed_distance(
     if wp.dot(p - closest, side_normal(mesh, vertex_normals, face, closest)) < wp.float64(0.0):
         best = -best
     out_field[i, j, k] = best + level
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

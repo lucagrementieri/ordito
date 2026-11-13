@@ -38,11 +38,16 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import require_same_device, tiled_ball_walk
 from ordito.config import is_deterministic
+from ordito.kernels import array as kernel_array
 from ordito.kernels import curvature as kernel_curvature
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import scatter as kernel_scatter
 from ordito.normals import vertex_normals as _vertex_normals
+
+kernel_array.declare_block_dims(
+    kernel_curvature.ball_angle_defect_sum_tiled, (kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,)
+)
 
 
 def principal_curvature(

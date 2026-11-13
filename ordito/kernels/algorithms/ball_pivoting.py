@@ -87,7 +87,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TWO_PI, UINT64_MAX_CONSTANT
-from ordito.kernels.array import device_is_cpu, pack_edge_key, popcount32
+from ordito.kernels.array import declare_block_dims, device_is_cpu, pack_edge_key, popcount32
 from ordito.kernels.grouping import decode_key, hash_find, hash_find_or_insert
 from ordito.kernels.neighbors import (
     hash_grid_box,
@@ -1984,3 +1984,11 @@ def collect_front_from_table(
         return
     if edges.count[h] == 1 and edges.state[h] == EDGE_LIVE:
         push_front_edge(h, front_capacity, counters, out_front)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (BPA_PIVOT_BLOCK, BPA_SEED_BLOCK))
+
+
+_declare_block_dims()

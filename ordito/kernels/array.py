@@ -3,7 +3,7 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import INT32_MAX_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TILE_1D
 
 wp.set_module_options({"enable_backward": False})
 
@@ -2354,6 +2354,48 @@ def declare_map_signatures(
         wp.map(op, *inputs, out=outputs if len(outputs) > 1 else outputs[0], return_kernel=True)
 
 
+# ``ordito.precompile`` compiles every module ordito launches into Warp's kernel cache without
+# running a workload, so it has to know what a run would load. Importing ``ordito.kernels`` creates
+# most of it: every kernel module, the overloads each ``_register_overloads`` registers and the
+# ``wp.map`` signatures each ``_declare_map_kernels`` declares. Two things only a launch reveals are
+# declared through the pair below instead.
+#
+# * **Launch widths.** Warp builds a module once per ``block_dim`` it is launched at
+#   (``Module.load(device, block_dim)``), and the width is part of the module hash: a module
+#   launched tiled at ``TILE_1D`` and plainly at its default 256 is two CUDA builds.
+#   ``declare_block_dims`` records every width besides the module's default (a ``module="unique"``
+#   kernel is keyed by itself, being its own module). A kernel module declares the widths its own
+#   constants name, in a ``_declare_block_dims()`` at its bottom; a wrapper declares a width it
+#   owns, or takes from a kernel module other than the launched kernel's, beside that constant. A
+#   width chosen at run time declares every value it can take. The CPU device loads every module
+#   at width 1, so this is CUDA's alone.
+# * **Kernels made on first use** (``cast_kernel``'s pairs, ``int_vector_scan_kernels``, a
+#   ``wp.map`` op reached at one signature, which no import-time table declares because it never
+#   forks a module): ``declare_lazy_kernels`` records a function creating the ones ordito itself
+#   reaches. ``ordito.precompile`` calls them; a plain import does not, so they cost it nothing. A
+#   lazy kernel must live in a module of its own (or be a ``wp.map``, whose module is its op's):
+#   added to a module that already exists, it would change that module's hash in the precompiling
+#   process and not in the one that launches.
+#
+# The gate is the census (``benchmarks/census.py``): it records the identifier of every module a run
+# loads and fails on one ``ordito.precompile.kernel_variants`` does not produce.
+LAUNCH_BLOCK_DIMS: dict[str, set[int]] = {}
+LAZY_KERNEL_BUILDS: list[Callable[[], object]] = []
+
+
+def declare_block_dims(owner: object, block_dims: Sequence[int]) -> None:
+    """Record the CUDA launch widths a module is loaded at besides its default, for precompiling."""
+    # ``owner`` is a Warp module's name, or a kernel, which names its module.
+    name = owner if isinstance(owner, str) else owner.module.name
+    LAUNCH_BLOCK_DIMS.setdefault(name, set()).update(int(block_dim) for block_dim in block_dims)
+
+
+def declare_lazy_kernels(build: Callable[[], object]) -> Callable[[], object]:
+    """Record a function creating kernels ordito makes on first use, for precompiling."""
+    LAZY_KERNEL_BUILDS.append(build)
+    return build
+
+
 def _declare_map_kernels() -> None:
     """Declare the Warp builtins the tree forks, plus this module's own mapped ``@wp.func``s."""
     dense, single, gathered = map_probe, map_probe_single, map_probe_gathered
@@ -3352,3 +3394,22 @@ def unique_edge_row(
         if pack_edge_key(unique_edges[lo, 0], unique_edges[lo, 1], base) == key:
             return lo
     return wp.int32(-1)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()
+
+
+@declare_lazy_kernels
+def _declare_lazy_kernels() -> None:
+    """Create the conversions, vector scans and ``wp.map`` kernels ordito makes on first use."""
+    cast_kernel(wp.float64, wp.float32)
+    int_vector_scan_kernels(wp.vec3i)
+    int_vector_scan_kernels(wp.vec4i)
+    declare_map_signatures(
+        [(divide_if_positive, (map_probe(wp.float32), map_probe(wp.float32)), wp.float32)]
+    )

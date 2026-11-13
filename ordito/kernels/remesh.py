@@ -17,6 +17,7 @@ from ordito.kernels.array import (
     append_slot,
     binary_search_sorted_contains,
     bit_rank,
+    declare_block_dims,
     device_is_cpu,
     divide_if_positive,
     launched_set_bit,
@@ -7291,3 +7292,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (HUB_BLOCK_DIM,))
+
+
+_declare_block_dims()

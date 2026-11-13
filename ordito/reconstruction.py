@@ -589,6 +589,7 @@ _FLOOD_REPLAY_PAIRS = 2
 # (``kernels/reconstruction.flood_narrow_rounds``), and the stale fans past which a round is the
 # launches' (64 to 256 alike within 2 %).
 _FLOOD_NARROW_LANES = 1024
+kernel_array.declare_block_dims(kernel_reconstruction.flood_narrow_rounds, (_FLOOD_NARROW_LANES,))
 _FLOOD_NARROW_STALE = 128
 
 

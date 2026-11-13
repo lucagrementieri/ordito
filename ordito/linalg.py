@@ -273,6 +273,7 @@ CG_ONE_BLOCK_MAX_ROWS_CPU = 2**31 - 1
 CG_ONE_BLOCK_WIDE_FROM = 768
 _CG_ONE_BLOCK_NARROW = 256
 _CG_ONE_BLOCK_WIDE = 512
+kernel_array.declare_block_dims(kernel_cg.cg_one_block, (_CG_ONE_BLOCK_NARROW, _CG_ONE_BLOCK_WIDE))
 
 # Solver states kept per operator by ``_cached_solver``. One operator is normally solved under one
 # configuration; the bound is there so a long-lived operator solved under many cannot accumulate

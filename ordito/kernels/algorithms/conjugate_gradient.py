@@ -48,8 +48,15 @@ from typing import Any
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.algorithms.multigrid import chebyshev_polynomial_column, chebyshev_update
-from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable, csr_row_long
+from ordito.kernels.array import (
+    LOOP_CONDITION,
+    LOOP_ROUND,
+    OverloadTable,
+    csr_row_long,
+    declare_block_dims,
+)
 from ordito.kernels.linalg import csr_row_dot, jacobi_row
 from ordito.kernels.reduce import (
     block_barrier,
@@ -1796,3 +1803,11 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()

@@ -17,7 +17,7 @@ import math
 
 import warp as wp
 
-from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TILE_1D, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_PROGRESS,
@@ -29,7 +29,11 @@ from ordito.kernels.array import (
     cross2,
     csr_key,
     csr_row_long,
+    declare_block_dims,
+    declare_lazy_kernels,
+    declare_map_signatures,
     divide_if_positive,
+    map_probe,
     next_up,
     sorted_run_end,
     to_vec2,
@@ -3403,3 +3407,29 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    declare_block_dims(__name__, (TILE_1D,))
+
+
+_declare_block_dims()
+
+
+@declare_lazy_kernels
+def _declare_lazy_map_kernels() -> None:
+    """Declare the ``wp.map`` signatures this module's ops are reached at, each its own module."""
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (average_heat, (dense(wp.float64), dense(wp.float64)), wp.float64),
+            (off_rim, (dense(wp.float64), dense(wp.int32)), wp.float64),
+            (tangent_to_world, (dense(wp.vec2), dense(wp.vec3), dense(wp.vec3)), wp.vec3),
+            (
+                transported_and_resolved,
+                (dense(wp.vec2d), dense(wp.float64), dense(wp.float64), wp.float64(0)),
+                (wp.vec2, wp.bool),
+            ),
+        ]
+    )
