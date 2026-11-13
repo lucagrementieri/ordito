@@ -26,6 +26,7 @@ from ordito.kernels.reduce import (
     group_sum_field,
     group_sum_group_field,
     group_sum_term,
+    peer_counted_add,
     raise_group_sum_field,
     warp_lane_leads,
     warp_lanes_extremum,
@@ -613,8 +614,16 @@ def count_occurrences(indices: wp.array[wp.int32], out_counts: wp.array[wp.int32
     # Sizing a CSR is what every caller wants it for -- incident faces per vertex (a flat face
     # buffer *is* the corner -> vertex map), face-corners per unique edge, outgoing halfedges per
     # vertex -- so the counts feed a scan and the caller allocates ``out_counts`` zeroed.
+    #
+    # A warp's lanes counting into one bin commit once (``reduce.peer_counted_add``): neighbouring
+    # entries share a bin in every caller's keys (a face's corners and its neighbours', component
+    # labels, an edge list's endpoints) and a few groups crowd it entirely. Against the plain atomic
+    # (2026-11-13, CUDA, kernel with launch): corners into vertices and edge endpoints at par to
+    # ``bunny``, 0.88-0.92x ``dragon``, 0.67-0.74x ``lucy``; a scattered few groups 0.13-0.62x
+    # (``reduce.scatter_mean``); component labels 0.20-0.28x a ``remove_small_components`` call.
+    # Counts are exact in any order, and the CPU device takes the plain atomic.
     tid = wp.int32(wp.tid())
-    wp.atomic_add(out_counts, indices[tid], 1)
+    peer_counted_add(out_counts, indices[tid])
 
 
 @wp.func
