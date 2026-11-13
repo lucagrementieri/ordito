@@ -920,7 +920,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - A single-address atomic serializes the launch. Use lane partition, `wp.tile_sum` and one guarded commit per block, launched at `kernel_reduce.blocks_1d(n)`; the block count is the tuning variable. Do not convert a conditional atomic.
 - An append-only list whose order decides nothing takes `kernels/array.append_slot` (one `atomicAdd` per warp), and a max-bid onto few addresses first skips a bid below the current value: together they took `convex_hull`'s first pass over a 14 M cloud 4.38 -> 0.62 ms.
 - Spreading those (2026-11-03, CUDA new/old): `append_slot` at 25 single-counter appends was neutral to a win (`voxel_down_sample` 0.92-0.98, `intersects_location` 0.93-0.99, remesh commit counters 0.95-1.05); a read before `atomic_min` (`array.atomic_min_unless_below`) won nothing at four sites whose slots do not contend (0.98-1.00; declines at the sites), so it pays only where many threads hit one slot. A counted bitset (`store_counted_*` / `or_counted_bit`) in place of `set_bit` plus `bit_ranks` is neutral on device time and saves a launch and an allocation a site; a one-hot `(3, n)` `int32` table turned into three ranked bit rows took `uv_seam_edges` 0.68-0.81x on icospheres of 8-9 subdivisions.
-- **`float64` runs at 1/64 of the `float32` rate on this device**, so a launch of a few warps chaining `float64` tests is latency-bound: put a `float32` filter with a rigorous bound ahead (`predicates.orient3d_filtered_f32`, `orient3d_sign_from`; `convex_hull`'s flip round 2.5x). A wide `float64` integrand is throughput-bound instead: count its `float64` operations and take constant divisions out of the per-item loop onto the block's fold (`reduce.store_folded_sum`; `moments` 0.35-0.46x on dragon and lucy, 2026-11-09).
+- **`float64` runs at 1/64 of the `float32` rate on this device**, so a launch of a few warps chaining `float64` tests is latency-bound: put a `float32` filter with a rigorous bound ahead (`predicates.orient3d_filtered_f32`, `orient3d_sign_from`; `convex_hull`'s flip round 2.5x). A wide `float64` integrand is throughput-bound instead: count its `float64` operations and take constant divisions out of the per-item loop onto the block's fold (`reduce.store_folded_sum`; `moments` 0.35-0.46x on dragon and lucy, 2026-11-09). A long row walked by one block is bound the same way when its entries form `float64` transcendentals: form them a table across the device first (2026-11-13, the connection Laplacian's transport `(cos, sin)`: `fan_hub` rows 2.6 -> 0.84 ms, dragon 0.76x, byte-identical).
 - Pack same-dtype quantities into one vector tile (`preserve_type=True`) for one barrier. Float sums that must reproduce use a fixed-order two-stage sum.
 - **A fused term sum's fold width follows its term's latency** (2026-11-07): `term_sum_1d` folds
   `TILES_PER_BLOCK_1D` (16) tiles a block, so a lane walks 16 terms in turn, and a term that is a
@@ -1299,12 +1299,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Hub rows still slow on `fan_hub`** (2026-11-10): `connection_laplacian` 3.5 ms (15.7 before
-  its rows deferred a long row to the block and the long rings' tangent angles were parked across
-  the device): its hub rows are 2.75 ms on one block's SM, the tangent walk 0.52 ms. Spreading a
-  hub row over SMs needs a list of the long rows, which the operator pattern does not carry (the
-  rings' list, `_common.long_rings`, is keyed by the ring offsets). The explicit smoothing passes'
-  warp walk ~0.4 ms a hub.
 - **`corner_normals` is quadratic in a smooth group's size** (2026-11-12): every corner walks its
   whole group, so `fan_hub` costs 12.5 ms (no creases) to 74 ms (creased) against ~0.1 ms on a
   uniform mesh, and a 2 k-face cone already 0.26 ms. Refuted (`kernels/triangles.corner_normals`):

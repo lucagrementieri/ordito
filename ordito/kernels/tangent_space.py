@@ -10,7 +10,12 @@ from ordito.kernels.normals import (
     halfedge_angle_weighted_term,
     normalized_narrowed,
 )
-from ordito.kernels.predicates import any_perpendicular, reference_tangent, world_to_tangent
+from ordito.kernels.predicates import (
+    any_perpendicular,
+    polar_unit,
+    reference_tangent,
+    world_to_tangent,
+)
 from ordito.kernels.reduce import block_chunk, block_max, block_sum
 from ordito.kernels.triangles import (
     face_corner_angles_d,
@@ -725,16 +730,36 @@ def wrap_angle(angle: wp.Float) -> wp.Float:
     return wp.atan2(wp.sin(angle), wp.cos(angle))
 
 
+@wp.func
+def transport_angle(
+    twins: wp.array[wp.int32], tangent_angles: wp.array[wp.float64], h: wp.int32
+) -> wp.float64:
+    # Halfedge ``h``'s transport angle: the rotation from its origin's tangent frame to its
+    # destination's, measured against the twin's polar angle.
+    twin = twins[h]
+    opposite = wp.float64(PI)
+    if twin >= wp.int32(0):
+        opposite = tangent_angles[twin]
+    # Otherwise a boundary edge exists as a halfedge in one direction only. At the destination
+    # vertex it is the fan-closing edge, whose polar angle is the rescaled total angle: pi.
+    return wrap_angle(opposite + wp.float64(PI) - tangent_angles[h])
+
+
 @wp.kernel
 def halfedge_transport_angles(
     twins: wp.array[wp.int32], tangent_angles: wp.array[wp.float64], out_rho: wp.array[wp.float64]
 ) -> None:
     h = wp.int32(wp.tid())
-    twin = twins[h]
-    if twin >= wp.int32(0):
-        opposite = tangent_angles[twin]
-    else:
-        # A boundary edge exists as a halfedge in one direction only. At the destination vertex it
-        # is the fan-closing edge, whose polar angle is the rescaled total angle: pi.
-        opposite = wp.float64(PI)
-    out_rho[h] = wrap_angle(opposite + wp.float64(PI) - tangent_angles[h])
+    out_rho[h] = transport_angle(twins, tangent_angles, h)
+
+
+@wp.kernel
+def halfedge_transport_rotations(
+    twins: wp.array[wp.int32],
+    tangent_angles: wp.array[wp.float64],
+    out_rotations: wp.array[wp.vec2d],
+) -> None:
+    # ``halfedge_transport_angles`` as the rotations ``(cos, sin)`` the connection Laplacian's
+    # rows read (``laplacian.connection_offdiagonal``), for a caller that needs no angle.
+    h = wp.int32(wp.tid())
+    out_rotations[h] = polar_unit(transport_angle(twins, tangent_angles, h))

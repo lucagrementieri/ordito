@@ -71,6 +71,7 @@ from ordito.halfedge import vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
+from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import tangent_space as kernel_tangent_space
@@ -1687,6 +1688,14 @@ def vector_heat_operators(
         pattern = None
     elif pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
+    # Each halfedge's transport rotation, which the vector system's rows read: formed with the
+    # transport angles when they are formed here, or from the caller's.
+    rotations = None
+    if pattern is not None and transport_angles is None:
+        rotations, rings = _transport_rotations_and_rings(vertices, faces)
+    elif pattern is not None:
+        assert transport_angles is not None
+        rotations = _transport_rotations(transport_angles)
     # A bundle ``_heat_operators`` built carries the mass and timestep sums it assembled from.
     built = None if scalar_operators is None else _SCALAR_BUILDS.get(scalar_operators[0])
     edge_sums = None
@@ -1707,16 +1716,9 @@ def vector_heat_operators(
     vector_values = None
     if scalar_operators is None:
         # The scalar bundle is assembled here, so its row kernel writes the vector system's rows
-        # too, from the transport angles formed first.
-        if pattern is not None and transport_angles is None:
-            transport_angles, rings = _transport_angles_and_rings(vertices, faces)
+        # too, from the transport rotations formed first.
         scalar_operators, mass, vector_values = _heat_operators(
-            vertices,
-            faces,
-            t,
-            edge_sums=edge_sums,
-            pattern=pattern,
-            transport_angles=transport_angles,
+            vertices, faces, t, edge_sums=edge_sums, pattern=pattern, transport_rotations=rotations
         )
         built = _SCALAR_BUILDS[scalar_operators[0]]
         edge_sums = built.edge_sums
@@ -1748,8 +1750,6 @@ def vector_heat_operators(
                     outputs=[cot_entries],
                     device=device,
                 )
-            if transport_angles is None:
-                transport_angles, rings = _transport_angles_and_rings(vertices, faces)
             vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
             _launch.launch_tiled(
                 kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[cot_entries.dtype],
@@ -1763,7 +1763,7 @@ def vector_heat_operators(
                     order,
                     faces,
                     cot_entries,
-                    transport_angles,
+                    rotations,
                     mass,
                     wp.float64(1.0 if t is None else t),
                     edge_sums,
@@ -1781,11 +1781,18 @@ def vector_heat_operators(
     return vector_system, scalar_operators, frames, preconditioner
 
 
-def _transport_angles_and_rings(
+def _transport_rotations(transport_angles: wp.array[wp.float64]) -> wp.array[wp.vec2d]:
+    """Each halfedge's transport rotation ``(cos, sin)`` from a caller's transport angles."""
+    rotations = _launch.empty(transport_angles.size, dtype=wp.vec2d, device=transport_angles.device)
+    _launch.map(kernel_predicates.polar_unit, transport_angles, out=rotations)
+    return rotations
+
+
+def _transport_rotations_and_rings(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> tuple[wp.array[wp.float64], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]]:
+) -> tuple[wp.array[wp.vec2d], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]]:
     """
-    ``halfedge_transport_angles(vertices, faces)``, and the one-rings it walked for the frames.
+    Rotations of ``halfedge_transport_angles(vertices, faces)``, and the one-rings it walked.
 
     The rings and the twins come from one ``vertex_one_rings`` build, which is the table
     ``halfedge_transport_angles`` would form itself; the transport kernel is launched here because
@@ -1797,14 +1804,14 @@ def _transport_angles_and_rings(
     )
     rings = (ring_halfedges, ring_offsets, is_boundary)
     tangent_angles = halfedge_tangent_angles(vertices, faces, rings=rings)
-    transport_angles = _launch.empty(twins.size, dtype=wp.float64, device=vertices.device)
+    rotations = _launch.empty(twins.size, dtype=wp.vec2d, device=vertices.device)
     _launch.launch(
-        kernel_tangent_space.halfedge_transport_angles,
+        kernel_tangent_space.halfedge_transport_rotations,
         dim=twins.size,
-        inputs=[twins, tangent_angles, transport_angles],
+        inputs=[twins, tangent_angles, rotations],
         device=vertices.device,
     )
-    return transport_angles, rings
+    return rotations, rings
 
 
 def _require_cotmatrix_pattern(pattern: MeshOperatorPattern | None, n_vertices: int) -> None:
@@ -1842,7 +1849,7 @@ def _heat_operators(
     pattern: MeshOperatorPattern | None = None,
     mass: Literal["barycentric", "voronoi"] = "barycentric",
     timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
-    transport_angles: wp.array[wp.float64] | None = None,
+    transport_rotations: wp.array[wp.vec2d] | None = None,
 ) -> tuple[HeatOperators, wp.array[wp.float64], wp.array[wp.mat22d] | None]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
@@ -1851,7 +1858,7 @@ def _heat_operators(
     sums it already reduced for the default timestep as ``edge_sums``: the connection Laplacian's
     sparsity is the cotangent Laplacian's, so the sums are the ones this would reduce -- and the
     ``pattern`` it built them over, so the sparsity is built once for both. Given its
-    ``transport_angles``, the row kernel also writes the vector system's values over the pattern,
+    ``transport_rotations``, the row kernel also writes the vector system's values over the pattern,
     returned third (``None`` otherwise, or for a mesh with no faces).
     """
     # Per-face half-cotangent weights (float32, O(1) and safe) reused for both the Laplacian and
@@ -1903,9 +1910,9 @@ def _heat_operators(
     parts: list[tuple[Any, int]] = [(wp.float32, (7 if write_cot else 4) * n_faces)]
     if n_faces > 0:
         parts.append((wp.float64, 3 * n_slots))
-        if transport_angles is not None:
+        if transport_rotations is not None:
             parts.append((wp.mat22d, n_slots))
-        if write_cot and transport_angles is not None:
+        if write_cot and transport_rotations is not None:
             # The vector system's rows read the table formed in ``float64``
             # (``kernels/heat.heat_face_terms``).
             parts.append((wp.float64, 3 * n_faces))
@@ -1914,14 +1921,14 @@ def _heat_operators(
     areas = _face_table(face_terms, 0, n_faces, 1)
     normals = _face_table(face_terms, n_faces, n_faces, 3).reshape((n_faces, 3)).view(wp.vec3)
     # The vector rows' ``float64`` table is formed here, so only a bundle forming its own table can
-    # write them: ``vector_heat_operators`` passes no table when it passes ``transport_angles``.
-    assert transport_angles is None or cot_entries is None or n_faces == 0
+    # write them: ``vector_heat_operators`` passes no table when it passes ``transport_rotations``.
+    assert transport_rotations is None or cot_entries is None or n_faces == 0
     cot_float64 = None
     if cot_entries is None:
         cot_entries = odt.as_array2d(
             _face_table(face_terms, 4 * n_faces, n_faces, 3).reshape((n_faces, 3)), wp.float32
         )
-        if n_faces > 0 and transport_angles is not None:
+        if n_faces > 0 and transport_rotations is not None:
             cot_float64 = odt.as_array2d(tables[-1].reshape((n_faces, 3)), wp.float64)
     if n_faces > 0:
         _launch.launch(
@@ -1968,7 +1975,7 @@ def _heat_operators(
         laplacian_values = _launch.view(values, 0, n_slots)
         heat_values = _launch.view(values, n_slots, 2 * n_slots)
         poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
-        if transport_angles is not None:
+        if transport_rotations is not None:
             vector_values = tables[2]
         _launch.launch_tiled(
             kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
@@ -1987,7 +1994,7 @@ def _heat_operators(
                 lumped,
                 wp.float64(1.0 if mass == "voronoi" else 3.0),
                 faces,
-                transport_angles,
+                transport_rotations,
                 cot_float64,
             ],
             # The lumped mass over its own area sums, in place.

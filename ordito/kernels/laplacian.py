@@ -1397,15 +1397,6 @@ def graph_laplacian_rows(
 
 
 @wp.func
-def rotation22(angle: wp.float64) -> wp.mat22d:
-    # Real 2x2 form of the unit complex number ``exp(i * angle)``: the rotation that re-expresses a
-    # tangent vector in a neighbour's frame.
-    c = wp.cos(angle)
-    s = wp.sin(angle)
-    return wp.mat22d(c, -s, s, c)
-
-
-@wp.func
 def connection_offdiagonal(
     i: wp.int32,
     k: wp.int32,
@@ -1415,14 +1406,20 @@ def connection_offdiagonal(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: Any,
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     weight: wp.float64,
 ) -> tuple[wp.mat22d, wp.float64]:
     # Off-diagonal entry ``k`` of row ``i`` of the connection Laplacian, and ``weight`` advanced by
     # its weights -- the row's running diagonal, added one contribution at a time in the row's
     # order. Corner ``e``'s opposite halfedge ``h`` runs ``i -> j``; it contributes
     # ``-w R(-rho_h)`` to row ``i`` and ``-w R(rho_h)`` to row ``j``, summed over the contributing
-    # faces in face order. The row walk of ``connection_laplacian_rows`` and of
+    # faces in face order, ``R(rho_h)`` read as ``(cos, sin)`` from ``transport_rotations``
+    # (``predicates.polar_unit`` of the transport angles), formed once a halfedge across the
+    # device. Each halfedge serves two rows, and a hub row that formed its own ``float64`` sines
+    # and cosines did so on its one block's SM, at a 64th of the ``float32`` rate (``fan_hub``'s
+    # two hubs share a block: the table and the rows 0.33x the rows alone, dragon 0.76x). The
+    # entries are byte-identical: ``sin(-x)`` is ``-sin(x)`` and ``cos(-x)`` is ``cos(x)`` bit
+    # for bit. The row walk of ``connection_laplacian_rows`` and of
     # ``kernels/heat.vector_heat_system_rows``, which forms the vector heat system from the same
     # entries.
     value = wp.mat22d()
@@ -1430,8 +1427,10 @@ def connection_offdiagonal(
         q = order[p]
         h = (q // 3) * 3 + (q % 3 + 1) % 3
         w = wp.float64(cot_entries[q // 3, q % 3])
-        rho = transport_angles[h]
-        value += -w * rotation22(wp.where(faces[h] == i, -rho, rho))
+        rotation = transport_rotations[h]
+        c = rotation[0]
+        sine = wp.where(faces[h] == i, -rotation[1], rotation[1])
+        value += -w * wp.mat22d(c, -sine, sine, c)
         weight += w
     return value, weight
 
@@ -1448,7 +1447,7 @@ def connection_laplacian_row_block(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: Any,
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     out_values: wp.array[wp.mat22d],
 ) -> None:
     # Long row ``i`` of ``connection_laplacian_rows`` by the whole block (every lane must call it),
@@ -1461,7 +1460,7 @@ def connection_laplacian_row_block(
             slot = k
             continue
         value, weight = connection_offdiagonal(
-            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_rotations, weight
         )
         out_values[k] = value
     weight = block_sum(weight)
@@ -1484,7 +1483,7 @@ def connection_laplacian_rows(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     out_values: wp.array[wp.mat22d],
 ) -> None:
     # The vector Laplacian over a mesh operator pattern, a row a lane: each off-diagonal weight
@@ -1497,9 +1496,10 @@ def connection_laplacian_rows(
     # Launched tiled over ``CONNECTION_ROWS_PER_BLOCK`` rows a block: a long row
     # (``array.csr_row_long``, a fan's hub) is skipped by its lane and walked by the whole block
     # after (``connection_laplacian_row_block``), as ``kernels/heat.vector_heat_system_rows`` does,
-    # its sum the block's tree. A warp a hub row held ``fan_hub`` at 14.7 ms: each entry is a chain
-    # of dependent loads and two ``float64`` rotations, so the row is latency-bound and eight warps
-    # walk it about eight times faster. The short row stays written out here rather than as a row
+    # its sum the block's tree. A warp a hub row held ``fan_hub`` at 14.7 ms and eight warps
+    # about eight times faster; what then held the block was the rotations' ``float64`` sines and
+    # cosines on its one SM, which the rotation table now forms across the device.
+    # The short row stays written out here rather than as a row
     # function with a lane stride of one: called through a ``@wp.func`` the same body ran
     # 1.25-1.4x device time (2026-11-10, dragon 0.57 -> 0.72 ms, bunny 0.057 -> 0.080 ms), at the
     # same register count; inline it is at par. What the two copies share is the entry
@@ -1525,7 +1525,7 @@ def connection_laplacian_rows(
                 slot = k
                 continue
             value, weight = connection_offdiagonal(
-                i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+                i, k, run_start, keys, count, order, faces, cot_entries, transport_rotations, weight
             )
             out_values[k] = value
         if slot >= 0:
@@ -1546,7 +1546,7 @@ def connection_laplacian_rows(
                 order,
                 faces,
                 cot_entries,
-                transport_angles,
+                transport_rotations,
                 out_values,
             )
 
@@ -1838,7 +1838,7 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array2d[d],
-                wp.array[wp.float64],
+                wp.array[wp.vec2d],
                 wp.array[wp.mat22d],
             ]
             for d in _MATRIX_DTYPES

@@ -47,6 +47,7 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
 from ordito.edges import edges_unique, faces_to_edges
 from ordito.kernels import laplacian as kernel_laplacian
+from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import triangles as kernel_triangles
@@ -958,6 +959,8 @@ def connection_laplacian(
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
+    rotations = _launch.empty(transport_angles.size, dtype=wp.vec2d, device=device)
+    _launch.map(kernel_predicates.polar_unit, transport_angles, out=rotations)
     values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
     rows = int(kernel_laplacian.CONNECTION_ROWS_PER_BLOCK)
     _launch.launch_tiled(
@@ -972,7 +975,7 @@ def connection_laplacian(
             order,
             faces,
             cot_entries,
-            transport_angles,
+            rotations,
             values,
         ],
         device=device,

@@ -643,6 +643,15 @@ def world_to_tangent(value: Any, basis_x: Any, basis_y: Any):
 
 
 @wp.func
+def polar_unit(angle: wp.float64) -> wp.vec2d:
+    # The unit tangent vector at polar ``angle``, as the complex number ``exp(i angle)``; also a
+    # halfedge's transport rotation, whose 2x2 form re-expresses a tangent vector in a
+    # neighbour's frame (``tangent_space.halfedge_transport_rotations``, ``wp.map``'d over a
+    # caller's transport angles; read by ``laplacian.connection_offdiagonal``).
+    return wp.vec2d(wp.cos(angle), wp.sin(angle))
+
+
+@wp.func
 def normalize_or_zero(v: Any, tolerance: Any):
     length = wp.length(v)
     if length <= tolerance:

@@ -48,6 +48,7 @@ from ordito.kernels.laplacian import (
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
+    polar_unit,
     stable_length,
     stable_normalize,
     unit_tangent,
@@ -257,7 +258,7 @@ def vector_heat_row(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     m: wp.float64,
     factor: wp.float64,
     out_values: wp.array[wp.mat22d],
@@ -275,7 +276,7 @@ def vector_heat_row(
             slot = k
             continue
         value, weight = connection_offdiagonal(
-            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_rotations, weight
         )
         out_values[k] = shifted_block_entry(value, factor, False, m)
     return weight, slot
@@ -375,7 +376,7 @@ def heat_system_rows(
     area_sums: wp.array[wp.float64],
     mass_divisor: wp.float64,
     faces: wp.array[wp.int32],
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     vector_cot: wp.array2d[wp.float64],
     out_laplacian: wp.array[wp.float64],
     out_heat: wp.array[wp.float64],
@@ -426,7 +427,7 @@ def heat_system_rows(
         if vector:
             weight, vector_slot = vector_heat_row(
                 i, start, end, 0, 1, columns, run_start, keys, count, order, faces, vector_cot,
-                transport_angles, m, vector_factor, out_vector,
+                transport_rotations, m, vector_factor, out_vector,
             )  # fmt: skip
             vector_heat_diagonal(i, vector_slot, weight, columns, m, vector_factor, out_vector)
         total, slot = scalar_heat_row(
@@ -448,7 +449,7 @@ def heat_system_rows(
             if vector:
                 weight, vector_slot = vector_heat_row(
                     i, start, end, lane, lanes, columns, run_start, keys, count, order, faces,
-                    vector_cot, transport_angles, m, vector_factor, out_vector,
+                    vector_cot, transport_rotations, m, vector_factor, out_vector,
                 )  # fmt: skip
                 weight = block_sum(weight)
                 vector_slot = block_max(vector_slot)
@@ -533,7 +534,7 @@ def vector_heat_system_rows(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float64],
+    transport_rotations: wp.array[wp.vec2d],
     mass: wp.array[wp.float64],
     scale: wp.float64,
     edge_sum_and_count: wp.array[wp.float64],
@@ -563,7 +564,7 @@ def vector_heat_system_rows(
             continue
         weight, slot = vector_heat_row(
             i, start, end, 0, 1, columns, run_start, keys, count, order, faces, cot_entries,
-            transport_angles, mass[i], factor, out_values,
+            transport_rotations, mass[i], factor, out_values,
         )  # fmt: skip
         vector_heat_diagonal(i, slot, weight, columns, mass[i], factor, out_values)
     if block_sum(found) == 0:
@@ -574,7 +575,7 @@ def vector_heat_system_rows(
         if csr_row_long(offsets, i):
             weight, slot = vector_heat_row(
                 i, offsets[i], offsets[i + 1], lane, lanes, columns, run_start, keys, count,
-                order, faces, cot_entries, transport_angles, mass[i], factor, out_values,
+                order, faces, cot_entries, transport_rotations, mass[i], factor, out_values,
             )  # fmt: skip
             weight = block_sum(weight)
             slot = block_max(slot)
@@ -3177,12 +3178,6 @@ PI_D = wp.float64(math.pi)
 
 
 @wp.func
-def polar_unit(angle: wp.float64) -> wp.vec2d:
-    # The unit tangent vector at polar ``angle``, as the complex number ``exp(i angle)``.
-    return wp.vec2d(wp.cos(angle), wp.sin(angle))
-
-
-@wp.func
 def complex_product(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
     # Two tangent vectors multiplied as complex numbers: ``b`` rotated and scaled by ``a``.
     return wp.vec2d(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
@@ -3377,7 +3372,7 @@ def _register_overloads() -> None:
                 f64,
                 wp.float64,
                 i32,
-                f64,
+                wp.array[wp.vec2d],
                 wp.array2d[wp.float64],
                 f64,
                 f64,
@@ -3395,7 +3390,7 @@ def _register_overloads() -> None:
                 *pattern,
                 i32,
                 wp.array2d[d],
-                f64,
+                wp.array[wp.vec2d],
                 f64,
                 wp.float64,
                 f64,

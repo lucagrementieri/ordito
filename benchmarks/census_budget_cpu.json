@@ -2298,8 +2298,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-band]": {
   "counts": {
-   "launch": 26,
-   "alloc": 27,
+   "launch": 27,
+   "alloc": 28,
    "readback": 9,
    "scan": 2,
    "sort": 2
@@ -2307,8 +2307,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-ring]": {
   "counts": {
-   "launch": 26,
-   "alloc": 27,
+   "launch": 27,
+   "alloc": 28,
    "readback": 9,
    "scan": 2,
    "sort": 2
@@ -2316,8 +2316,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 26,
-   "alloc": 27,
+   "launch": 27,
+   "alloc": 28,
    "readback": 8,
    "scan": 2,
    "sort": 2
@@ -2325,8 +2325,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 357,
-   "alloc": 87,
+   "launch": 358,
+   "alloc": 88,
    "readback": 13,
    "scan": 39,
    "sort": 39
@@ -2334,8 +2334,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-none]": {
   "counts": {
-   "launch": 25,
-   "alloc": 23,
+   "launch": 26,
+   "alloc": 24,
    "readback": 8,
    "scan": 1,
    "sort": 2
@@ -2343,8 +2343,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-zero_set]": {
   "counts": {
-   "launch": 26,
-   "alloc": 27,
+   "launch": 27,
+   "alloc": 28,
    "readback": 9,
    "scan": 2,
    "sort": 2
@@ -2460,8 +2460,8 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 28,
-   "alloc": 27,
+   "launch": 29,
+   "alloc": 28,
    "h2h": 1,
    "readback": 6,
    "scan": 1,
@@ -2470,8 +2470,8 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 346,
-   "alloc": 80,
+   "launch": 347,
+   "alloc": 81,
    "h2h": 1,
    "readback": 12,
    "scan": 25,
@@ -2480,8 +2480,8 @@
  },
  "benchmarks/test_heat.py::test_log_map_potpourri3d[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 28,
-   "alloc": 27,
+   "launch": 29,
+   "alloc": 28,
    "h2h": 1,
    "readback": 7,
    "scan": 1,
@@ -2490,8 +2490,8 @@
  },
  "benchmarks/test_heat.py::test_log_map_potpourri3d[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 359,
-   "alloc": 86,
+   "launch": 360,
+   "alloc": 87,
    "h2h": 1,
    "readback": 12,
    "scan": 38,
@@ -2513,8 +2513,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle-ordito-cpu-full]": {
   "counts": {
-   "launch": 21,
-   "alloc": 27,
+   "launch": 22,
+   "alloc": 28,
    "h2h": 1,
    "readback": 7,
    "scan": 1,
@@ -2530,8 +2530,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cpu-full]": {
   "counts": {
-   "launch": 276,
-   "alloc": 74,
+   "launch": 277,
+   "alloc": 75,
    "h2h": 1,
    "readback": 12,
    "scan": 25,
@@ -2540,8 +2540,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 21,
-   "alloc": 27,
+   "launch": 22,
+   "alloc": 28,
    "h2h": 1,
    "readback": 6,
    "scan": 1,
@@ -3331,8 +3331,8 @@
  },
  "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 9,
-   "alloc": 12,
+   "launch": 10,
+   "alloc": 13,
    "readback": 1,
    "scan": 1,
    "sort": 2
@@ -4010,13 +4010,13 @@
  "benchmarks/test_mesh.py::test_carry_directions[sphere_small-ordito-cpu-rotate]": {
   "counts": {
    "launch": 1,
-   "alloc": 3
+   "alloc": 5
   }
  },
  "benchmarks/test_mesh.py::test_carry_directions[sphere_small-ordito-cpu-rotate_device]": {
   "counts": {
    "launch": 1,
-   "alloc": 3,
+   "alloc": 5,
    "readback": 1
   }
  },
@@ -4134,8 +4134,8 @@
  },
  "benchmarks/test_mesh.py::test_is_orientable[sphere_small-ordito-cpu-cold]": {
   "counts": {
-   "launch": 6,
-   "alloc": 5,
+   "launch": 4,
+   "alloc": 4,
    "readback": 1,
    "sort": 1
   }
@@ -4240,8 +4240,8 @@
  },
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cpu-cold]": {
   "counts": {
-   "launch": 12,
-   "alloc": 15,
+   "launch": 13,
+   "alloc": 16,
    "readback": 1,
    "scan": 1,
    "sort": 2
