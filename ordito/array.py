@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import weakref
 from collections.abc import Sequence
 from typing import Any, TypeVar, cast
@@ -2825,7 +2826,26 @@ def gather(
     k = indices.size
     out_shape = (k, *(int(dim) for dim in src.shape[1:]))
     out = _launch.empty(out_shape, dtype=src.dtype, device=src.device)
-    if k > 0:
+    if k == 0:
+        return out
+    element_words = _words_per_element(src.dtype)
+    row_words = element_words * math.prod(out_shape[1:])
+    if (
+        row_words
+        and wp.get_device(src.device).is_cuda
+        and src.is_contiguous
+        and indices.is_contiguous
+        and max(int(src.shape[0]), k) * row_words < 1 << 31
+    ):
+        # One word kernel for every dtype and rank on CUDA (``kernels/array.gather_words``).
+        _launch.launch(
+            kernel_array.gather_words,
+            dim=k * row_words,
+            inputs=[_as_words(src, element_words), indices, row_words],
+            outputs=[_as_words(out, element_words)],
+            device=src.device,
+        )
+    else:
         _launch.copy(out, src[indices])
     return out
 

@@ -295,6 +295,7 @@
  },
  "benchmarks/test_array.py::test_gather[sphere_small-ordito-cuda]": {
   "counts": {
+   "launch": 1,
    "alloc": 1
   }
  },
@@ -1858,7 +1859,7 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-1]": {
   "counts": {
-   "launch": 19,
+   "launch": 20,
    "alloc": 48,
    "memset": 11,
    "h2d": 7,
@@ -1870,7 +1871,7 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-64]": {
   "counts": {
-   "launch": 26,
+   "launch": 27,
    "alloc": 128,
    "memset": 11,
    "h2d": 3,
@@ -5531,7 +5532,7 @@
  },
  "benchmarks/test_points.py::test_radial_sort[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 1,
+   "launch": 2,
    "alloc": 3,
    "sort": 1
   }
@@ -6118,7 +6119,7 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 22,
+   "launch": 24,
    "alloc": 26,
    "memset": 7,
    "d2d": 1,
@@ -6129,7 +6130,7 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud_unoriented[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 45,
+   "launch": 47,
    "alloc": 35,
    "memset": 10,
    "d2d": 1,
@@ -6865,7 +6866,7 @@
  },
  "benchmarks/test_repair.py::test_remove_duplicated_vertices[sphere_med-ordito-cuda-eps1e-6]": {
   "counts": {
-   "launch": 9,
+   "launch": 10,
    "alloc": 8,
    "memset": 1,
    "d2h": 1,
@@ -6875,7 +6876,7 @@
  },
  "benchmarks/test_repair.py::test_remove_duplicated_vertices[sphere_med-ordito-cuda-exact]": {
   "counts": {
-   "launch": 6,
+   "launch": 7,
    "alloc": 6,
    "d2h": 1,
    "scan": 2,
@@ -7140,7 +7141,7 @@
  },
  "benchmarks/test_repair.py::test_split_vertices_by_corner_values[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
+   "launch": 7,
    "alloc": 7,
    "memset": 1,
    "d2h": 1,
@@ -8449,7 +8450,7 @@
  },
  "benchmarks/test_voxels.py::test_cells[sphere_small-ordito-cuda-sorted]": {
   "counts": {
-   "launch": 2,
+   "launch": 3,
    "alloc": 5,
    "h2d": 1,
    "sort": 1
@@ -8473,10 +8474,10 @@
  },
  "benchmarks/test_voxels.py::test_closing[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 6,
-   "memset": 2,
-   "d2h": 2
+   "launch": 1,
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_difference[sphere_small-ordito-cuda]": {
@@ -8573,10 +8574,10 @@
  },
  "benchmarks/test_voxels.py::test_opening[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 6,
-   "memset": 2,
-   "d2h": 2
+   "launch": 1,
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_pool_by_voxel[sphere_small-ordito-cuda]": {

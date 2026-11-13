@@ -1384,13 +1384,14 @@ def test_remap_indices_passes_negative_sentinels_through(device: str) -> None:
 
 
 @pytest.mark.parity("gather", "numpy")
-@pytest.mark.parametrize("layout", ["1d", "2d_rows", "vec3"])
+@pytest.mark.parametrize("layout", ["1d", "2d_rows", "vec3", "float64", "int8"])
 def test_gather(device: str, layout: str) -> None:
     """
     Class A: the same values ``src[indices]`` returns, which is NumPy's whole answer here.
 
-    Scalars, rows of a rank-2 table (the result keeps the trailing dimension) and ``wp.vec3``
-    elements, with repeated indices drawn at random.
+    Scalars, rows of a rank-2 table (the result keeps the trailing dimension), ``wp.vec3``
+    elements, two-word ``float64`` scalars and sub-word ``int8`` ones (copied out of the indexed
+    view rather than as words), with repeated indices drawn at random.
     """
     rng = np.random.default_rng(5)
     if layout == "1d":
@@ -1399,6 +1400,12 @@ def test_gather(device: str, layout: str) -> None:
     elif layout == "2d_rows":
         source_np = rng.integers(0, 1000, size=(20, 2), dtype=np.int32)
         source_wp = wp.array(source_np, dtype=wp.int32, device=device)
+    elif layout == "float64":
+        source_np = rng.standard_normal(24)
+        source_wp = wp.array(source_np, dtype=wp.float64, device=device)
+    elif layout == "int8":
+        source_np = rng.integers(-100, 100, size=24, dtype=np.int8)
+        source_wp = wp.array(source_np, dtype=wp.int8, device=device)
     else:
         source_np = rng.standard_normal((16, 3)).astype(np.float32)
         source_wp = points_to_warp(source_np, device)

@@ -228,6 +228,8 @@ need `.reshape()` or a dense `wp.array`. Do not add per-element gather kernels w
   safe; a column or step slice must be `wp.copy`'d to a dense buffer first, and a prefix slice must
   not be cloned. This is why `kernels/edges.py:edge_lengths` stays a kernel (§12.1).
 - When converting a gather, verify values: the corrupt version is faster.
+- Materialize a gather through `array.gather`, not `wp.copy(dst, src[indices])`: on CUDA it copies
+  through one word kernel (`kernels/array.gather_words`), 0.5-0.65x Warp's indexed copy.
 - Indexed assignment is unsupported; keep a small kernel (`mark_membership_mask`).
 
 ### 3.5 Elementwise ops at Python scope (`wp.map`)
@@ -1355,6 +1357,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
+- **`array` sweep leftovers** (2026-11-13), each unpriced: `isin`'s two min/max launches as one
+  (one launch of an ~85 us call; `isin` has no in-repo device caller); `wp.copy(dst, src[idx])`
+  at `selection.py:319`, `intersection.py:2424`, `repair.py:5152` through `array.gather`;
+  `bounds.py`'s `bool_flags` compaction through `flatnonzero`'s ballot bits from `2**23`; a
+  leading-slot zero in `_common.offsets_buffer` where its producer writes every count; other
+  producers whose keys run in column order taking `_column_ordered_key_cols` (none found yet).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

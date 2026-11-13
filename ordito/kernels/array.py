@@ -3154,6 +3154,24 @@ def unpack_segment_words(
         segment.data[k] = flat[segment.offset + k]
 
 
+@wp.kernel
+def gather_words(
+    src: wp.array[wp.int32],
+    indices: wp.array[wp.int32],
+    words: wp.int32,
+    out_words: wp.array[wp.int32],
+) -> None:
+    # ``array.gather`` on CUDA for any dtype and rank whose row is ``words`` 4-byte words: thread
+    # ``t`` copies word ``t % words`` of row ``indices[t // words]``, so the stores are coalesced
+    # and one concrete kernel serves every dtype. Against Warp's copy out of an ``indexedarray``
+    # (2026-11-13, calls new/old): ``vec3`` rows 0.60-0.64x from 1 k to 220 k, 0.48x at 7 M;
+    # ``int32`` triples 0.61-0.63x to 290 k, par at 9 M. The CPU keeps the indexed copy, a memcpy a
+    # row there (this kernel 1.3-3.4x).
+    t = wp.int32(wp.tid())
+    i = t // words
+    out_words[t] = src[indices[i] * words + t - i * words]
+
+
 # The fixed-order float inclusive scan behind ``_launch.array_scan`` on CUDA.
 #
 # Warp's float scan is CUB's decoupled look-back: a block adds whichever of its predecessors'
