@@ -3,6 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels.array import (
+    KernelTable,
     OverloadTable,
     append_slot,
     atomic_min_packed_box,
@@ -356,6 +357,59 @@ def commit_extremum(out_extrema: wp.array[Any], group: wp.int32, value: Any, max
         wp.atomic_min(out_extrema, group, value)
 
 
+@wp.func
+def is_single_precision(value: wp.Float) -> wp.bool:
+    # Whether ``value``'s type is ``float32``: one plus ``1e-10`` rounds back to one in it and not
+    # in ``float64``. A constant of the overload, which the compiler folds.
+    return wp.float64(type(value)(1.0) + type(value)(1.0e-10)) == wp.float64(1.0)
+
+
+@wp.func
+def peer_commit_extremum(
+    out_extrema: wp.array[Any], group: wp.int32, value: wp.Float, maximum: wp.int32
+):
+    # ``commit_extremum`` of a float, the lanes of a warp sharing ``group`` (``warp_peer_lanes``)
+    # reduced in registers first (``warp_lanes_extremum``) and committed once, by the lowest; a
+    # lane with no peer, and every lane on the CPU device, takes the plain atomic. A float extremum
+    # is a compare-and-swap loop, which a rising run of values into one slot serializes. The
+    # result is the plain atomics' bit for bit. Device time new/old (10 M terms, ``float32`` /
+    # ``vec3``): sorted keys 0.08-0.32x, a mesh's corners into its vertices 0.62-0.79x, random keys
+    # over 8-64 groups 0.53-0.88x and over 65 536 at par; random keys over 1 024 groups, where a
+    # warp's lanes rarely share a slot, 1.07-1.53x. An integer extremum is one native atomic and
+    # keeps it (``commit_extremum``).
+    lanes = warp_peer_lanes(group)
+    reduced = value
+    if lanes != 0:
+        reduced = type(value)(
+            warp_lanes_extremum(
+                lanes, wp.float64(value), maximum == EXTREMUM_MAX, is_single_precision(value)
+            )
+        )
+    if lanes == 0 or warp_lane_leads(lanes) != 0:
+        commit_extremum(out_extrema, group, reduced, maximum)
+
+
+@wp.func
+def peer_commit_extremum_vector(
+    out_extrema: wp.array[Any], group: wp.int32, value: Any, maximum: wp.int32
+):
+    # ``peer_commit_extremum`` for a vector of floats, componentwise.
+    lanes = warp_peer_lanes(group)
+    reduced = value
+    if lanes != 0:
+        for c in range(len(value)):
+            reduced[c] = type(value[c])(
+                warp_lanes_extremum(
+                    lanes,
+                    wp.float64(value[c]),
+                    maximum == EXTREMUM_MAX,
+                    is_single_precision(value[c]),
+                )
+            )
+    if lanes == 0 or warp_lane_leads(lanes) != 0:
+        commit_extremum(out_extrema, group, reduced, maximum)
+
+
 @wp.kernel
 def scatter_extrema(
     values: wp.array[Any],
@@ -363,9 +417,32 @@ def scatter_extrema(
     maximum: wp.int32,
     out_extrema: wp.array[Any],
 ) -> None:
-    # Each value into its group's extremum.
+    # Each integer into its group's extremum. ``scatter_float_extrema`` and
+    # ``scatter_vector_extrema`` are the float forms, which pool a warp's peers.
     i = wp.int32(wp.tid())
     commit_extremum(out_extrema, indices[i], values[i], maximum)
+
+
+@wp.kernel
+def scatter_float_extrema(
+    values: wp.array[wp.Float],
+    indices: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[wp.Float],
+) -> None:
+    i = wp.int32(wp.tid())
+    peer_commit_extremum(out_extrema, indices[i], values[i], maximum)
+
+
+@wp.kernel
+def scatter_vector_extrema(
+    values: wp.array[Any],
+    indices: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[Any],
+) -> None:
+    i = wp.int32(wp.tid())
+    peer_commit_extremum_vector(out_extrema, indices[i], values[i], maximum)
 
 
 @wp.kernel
@@ -378,6 +455,28 @@ def segment_extrema(
     # ``scatter_extrema`` with each item's group its segment (``segment_of``).
     i = wp.int32(wp.tid())
     commit_extremum(out_extrema, segment_of(offsets, i), values[i], maximum)
+
+
+@wp.kernel
+def segment_float_extrema(
+    values: wp.array[wp.Float],
+    offsets: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[wp.Float],
+) -> None:
+    i = wp.int32(wp.tid())
+    peer_commit_extremum(out_extrema, segment_of(offsets, i), values[i], maximum)
+
+
+@wp.kernel
+def segment_vector_extrema(
+    values: wp.array[Any],
+    offsets: wp.array[wp.int32],
+    maximum: wp.int32,
+    out_extrema: wp.array[Any],
+) -> None:
+    i = wp.int32(wp.tid())
+    peer_commit_extremum_vector(out_extrema, segment_of(offsets, i), values[i], maximum)
 
 
 @wp.func
@@ -480,31 +579,6 @@ def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec
             wp.atomic_add(out_sum, row, 0, out_sum.dtype(x))
             wp.atomic_add(out_sum, row, 1, out_sum.dtype(y))
             wp.atomic_add(out_sum, row, 2, out_sum.dtype(z))
-
-
-@wp.func
-def peer_extremum_vec3(
-    out_values: wp.array[wp.vec3], index: wp.int32, v: wp.vec3, largest: wp.bool
-) -> None:
-    # A componentwise ``atomic_max`` (``largest``) or ``atomic_min`` of ``v`` into ``out_values``,
-    # the lanes of a warp sharing ``index`` (``warp_peer_lanes``) reduced in registers first and
-    # committed once, by the lowest; a lane with no peer, and every lane on the CPU device, takes
-    # the plain atomic. Order-independent, so the result is the plain atomics' bit for bit. For an
-    # extremum crowding a few slots: a coarse voxel pooling of a scan, where a warp's consecutive
-    # points share a voxel.
-    lanes = warp_peer_lanes(index)
-    value = v
-    if lanes != 0:
-        value = wp.vec3(
-            warp_lanes_extremum(lanes, v[0], largest),
-            warp_lanes_extremum(lanes, v[1], largest),
-            warp_lanes_extremum(lanes, v[2], largest),
-        )
-    if lanes == 0 or warp_lane_leads(lanes) != 0:
-        if largest:
-            wp.atomic_max(out_values, index, value)
-        else:
-            wp.atomic_min(out_values, index, value)
 
 
 @wp.func
@@ -1346,14 +1420,25 @@ def _register_overloads() -> None:
         },
     )
     global SCATTER_EXTREMA, SEGMENT_EXTREMA
-    SCATTER_EXTREMA = OverloadTable(
-        scatter_extrema,
-        {d: [wp.array[d], wp.array[wp.int32], wp.int32, wp.array[d]] for d in EXTREMUM_DTYPES},
-    )
-    SEGMENT_EXTREMA = OverloadTable(
-        segment_extrema,
-        {d: [wp.array[d], wp.array[wp.int32], wp.int32, wp.array[d]] for d in EXTREMUM_DTYPES},
-    )
+    # One table a family, each dtype keyed to the kernel of its kind: integers commit plainly,
+    # floats and float vectors pool a warp's peers.
+    SCATTER_EXTREMA = KernelTable(scatter_extrema.key, {})
+    SEGMENT_EXTREMA = KernelTable(segment_extrema.key, {})
+    for kernels, table in (
+        ((scatter_extrema, scatter_float_extrema, scatter_vector_extrema), SCATTER_EXTREMA),
+        ((segment_extrema, segment_float_extrema, segment_vector_extrema), SEGMENT_EXTREMA),
+    ):
+        for kernel, dtypes in zip(
+            kernels,
+            ((wp.int32, wp.int64), (wp.float32, wp.float64), _GROUP_SUM_VECTORS),
+            strict=True,
+        ):
+            table.update(
+                OverloadTable(
+                    kernel,
+                    {d: [wp.array[d], wp.array[wp.int32], wp.int32, wp.array[d]] for d in dtypes},
+                )
+            )
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
     global SCATTER_SUM_VEC_EXACT, SCATTER_WEIGHTED_SUM_VEC_EXACT

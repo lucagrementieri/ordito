@@ -39,8 +39,10 @@ from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from ordito.kernels.reduce import GroupSumPass, peer_counted_add
 from ordito.kernels.scatter import (
     ARRIVAL_POOL_PEERS,
+    EXTREMUM_MAX,
+    EXTREMUM_MIN,
     finish_run_sum,
-    peer_extremum_vec3,
+    peer_commit_extremum_vector,
     scatter_add_vector,
 )
 from ordito.kernels.triangles import face_vertices, row_triple, write_row_triple
@@ -602,7 +604,9 @@ def pool_point_extremum(
     # ``pool_extremum_points`` and ``pool_extremum_table``, which differ only in the probe.
     record_point_bucket(slot, p, n_voxels, out_slots, out_counts)
     if slot >= 0:
-        peer_extremum_vec3(out_values, slot, values[p], largest)
+        peer_commit_extremum_vector(
+            out_values, slot, values[p], wp.where(largest, EXTREMUM_MAX, EXTREMUM_MIN)
+        )
 
 
 @wp.func

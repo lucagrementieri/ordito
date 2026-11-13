@@ -1031,17 +1031,44 @@ return value;
 def warp_lanes_max_nonnegative(lanes: wp.int32, value: wp.float32) -> wp.float32: ...
 
 
-# The largest (``largest``) or smallest ``value`` over the lanes in the ``lanes`` mask, to every one
-# of them, for a float of either sign: flipping a negative float's magnitude bits makes its bits
-# order like the float as a signed integer, so the integer warp reduction is exact, and the flip is
-# its own inverse. ``-0.0`` orders below ``+0.0``, as CUDA's ``fminf`` / ``fmaxf`` and so its float
-# ``atomic_min`` / ``atomic_max`` do; a NaN orders by its bits. The CPU device returns ``value``.
+# The largest (``largest``) or smallest ``value`` over the lanes in the ``lanes`` mask, returned to
+# its lowest lane (the one ``warp_lane_leads`` names), for a float of either sign: flipping a
+# negative float's magnitude bits makes its bits order like the float as a signed integer, so the
+# reduction is exact, and the flip is its own inverse. ``-0.0`` orders below ``+0.0``, as the float
+# atomics do, and a NaN lane counts as the reduction's identity (``-inf`` for a maximum), since the
+# atomics drop a NaN too; lanes that are all NaN return that infinity, which no atomic applies. A
+# ``float32`` is exact in ``float64``, and with ``single`` it reduces as 32-bit keys in one
+# ``__reduce_*_sync``, where the ``float64`` keys take a shuffle tree (voxel max pooling 1.05-1.11x
+# through the tree). The CPU device returns ``value``.
 _WARP_LANES_EXTREMUM = """
 #if defined(__CUDA_ARCH__)
-const int bits = __float_as_int(value);
-int key = bits ^ ((bits >> 31) & 0x7fffffff);
-key = largest ? __reduce_max_sync((unsigned)lanes, key) : __reduce_min_sync((unsigned)lanes, key);
-return __int_as_float(key ^ ((key >> 31) & 0x7fffffff));
+if (single) {
+    float narrow = (float)value;
+    if (isnan(narrow)) {
+        narrow = largest ? -INFINITY : INFINITY;
+    }
+    const int narrow_bits = __float_as_int(narrow);
+    int narrow_key = narrow_bits ^ ((narrow_bits >> 31) & 0x7fffffff);
+    narrow_key = largest ? __reduce_max_sync((unsigned)lanes, narrow_key)
+                         : __reduce_min_sync((unsigned)lanes, narrow_key);
+    return (double)__int_as_float(narrow_key ^ ((narrow_key >> 31) & 0x7fffffff));
+}
+const double finite = isnan(value) ? (largest ? -INFINITY : INFINITY) : value;
+const long long bits = __double_as_longlong(finite);
+long long key = bits ^ ((bits >> 63) & 0x7fffffffffffffffLL);
+const unsigned active = (unsigned)lanes;
+const unsigned lane = threadIdx.x & 31u;
+const unsigned rank = __popc(active & ((1u << lane) - 1u));
+const unsigned count = __popc(active);
+for (unsigned offset = 1u; offset < count; offset <<= 1) {
+    const bool has = rank + offset < count;
+    const int source = has ? (int)__fns(active, 0u, (int)(rank + offset + 1u)) : (int)lane;
+    const long long other = __shfl_sync(active, key, source);
+    if (has) {
+        key = largest ? (other > key ? other : key) : (other < key ? other : key);
+    }
+}
+return __longlong_as_double(key ^ ((key >> 63) & 0x7fffffffffffffffLL));
 #else
 return value;
 #endif
@@ -1049,7 +1076,9 @@ return value;
 
 
 @wp.func_native(_WARP_LANES_EXTREMUM)
-def warp_lanes_extremum(lanes: wp.int32, value: wp.float32, largest: wp.bool) -> wp.float32: ...
+def warp_lanes_extremum(
+    lanes: wp.int32, value: wp.float64, largest: wp.bool, single: wp.bool
+) -> wp.float64: ...
 
 
 # The ``value`` of the lane below, for a whole converged warp: a wavefront whose lane ``t`` reads

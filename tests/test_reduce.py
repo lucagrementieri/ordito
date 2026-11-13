@@ -1275,6 +1275,86 @@ def test_segment_extrema_match_numpy(
     assert np.array_equal(extrema_wp.numpy(), expected_np)
 
 
+@pytest.mark.parametrize(("scatter", "segment", "ufunc"), _EXTREMA)
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np", "width"),
+    [
+        pytest.param(wp.float32, np.float32, 1, id="float32"),
+        pytest.param(wp.float64, np.float64, 1, id="float64"),
+        pytest.param(wp.vec3, np.float32, 3, id="vec3"),
+    ],
+)
+def test_float_extrema_skip_nan_and_order_signed_zeros(
+    device: str,
+    scatter: Callable[..., wp.array[Any]],
+    segment: Callable[..., wp.array[Any]],
+    ufunc: np.ufunc,
+    dtype_wp: type,
+    dtype_np: type,
+    width: int,
+) -> None:
+    """
+    Class A: float extrema with NaNs and signed zeros against an ordered-key ``ufunc.at``.
+
+    The reference drops every NaN (the float atomics do) and orders ``-0.0`` below ``+0.0`` by
+    comparing the floats' order-preserving integer keys. Sorted keys put a warp's lanes on one
+    group, so the scatter and segment forms reduce a warp's peers before their atomic: a peer
+    reduction that let a NaN win dropped the warp's other values (170 of bunny's voxels under
+    ``voxels.pool_by_voxel(pooling="max")``). CUDA only: the CPU device's float atomics order a
+    NaN and a signed zero by arrival (CLAUDE.md section 12.3).
+    """
+    if device == "cpu":
+        pytest.skip("the CPU device's float atomics order NaN and signed zeros by arrival")
+    rng = np.random.default_rng(41)
+    n, n_groups = 40_000, 600
+    values_np = _extremum_values(n, width, dtype_np, seed=42)
+    values_np[::5] = 0.0
+    values_np[::7] = -0.0
+    values_np[::11] = np.nan
+    values_np[:3_000:2] = np.nan
+    indices_np = np.sort(rng.integers(0, n_groups, n)).astype(np.int32)
+    offsets_np = np.searchsorted(indices_np, np.arange(n_groups + 1)).astype(np.int32)
+    # The first 50 groups hold signed zeros and NaNs alone, so their answer is a signed zero; group
+    # 50 holds NaNs alone, so it keeps the identity.
+    zeros_np = indices_np < 50
+    negative_np = np.arange(n) % 3 == 0
+    values_np[zeros_np & negative_np] = -0.0
+    values_np[zeros_np & ~negative_np] = 0.0
+    values_np[zeros_np & (np.arange(n) % 4 == 0)] = np.nan
+    values_np[indices_np == 50] = np.nan
+
+    flat_np = values_np.reshape(n, width)
+    bits_np = flat_np.view(np.int32 if dtype_np == np.float32 else np.int64)
+    sign_np = np.iinfo(bits_np.dtype).max
+    keys_np = bits_np ^ ((bits_np >> (bits_np.itemsize * 8 - 1)) & sign_np)
+    identity_np = np.array(_extremum_identity(ufunc, dtype_np), dtype=dtype_np)
+    identity_bits_np = identity_np.view(bits_np.dtype)
+    identity_key_np = identity_bits_np ^ (
+        (identity_bits_np >> (bits_np.itemsize * 8 - 1)) & sign_np
+    )
+    keys_np = np.where(np.isnan(flat_np), identity_key_np, keys_np)
+    expected_keys_np = np.full((n_groups, width), identity_key_np, dtype=bits_np.dtype)
+    ufunc.at(expected_keys_np, indices_np, keys_np)
+    expected_bits_np = expected_keys_np ^ (
+        (expected_keys_np >> (bits_np.itemsize * 8 - 1)) & sign_np
+    )
+    expected_np = expected_bits_np.view(dtype_np).reshape(
+        (n_groups,) if width == 1 else (-1, width)
+    )
+    # Non-vacuity: the zero groups answer a signed zero, ``-0.0`` for a minimum and ``+0.0`` for a
+    # maximum, the NaN group the identity, and no answer is a NaN.
+    zero_answers_np = expected_np[:50]
+    assert np.all(zero_answers_np == 0.0)
+    assert np.all(np.signbit(zero_answers_np) == (ufunc is np.minimum))
+    assert np.all(np.isinf(expected_np[50]))
+    assert not np.any(np.isnan(expected_np))
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    scattered_np = scatter(values_wp, wp.array(indices_np, dtype=wp.int32, device=device)).numpy()
+    segmented_np = segment(values_wp, wp.array(offsets_np, dtype=wp.int32, device=device)).numpy()
+    assert scattered_np.tobytes() == expected_np.tobytes()
+    assert segmented_np.tobytes() == expected_np.tobytes()
+
+
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"), [(wp.float32, np.float32), (wp.vec3d, np.float64)]
