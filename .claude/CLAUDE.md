@@ -1364,13 +1364,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`voxels` grid builds sit at `Volume.allocate_by_voxels`' floor** (2026-11-13): morphology,
-  set algebra, `fill_*` and `revoxelize` are 0.35-0.75 ms calls of one or two builds. The
-  builder is host-bound: 0.13 ms at 100 cells, 0.23-0.25 ms from 10 k, the same issued back to
-  back, ~0.02 ms of device work visible and three blocking device-to-host copies inside Warp's
-  native builder. A NanoVDB index grid the package assembles itself would still pay a sort, a
-  few launches and a count read (~0.08-0.1 ms), so at most ~0.1-0.15 ms a build; unbuilt, the
-  risk being the format's correctness across Warp versions.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
