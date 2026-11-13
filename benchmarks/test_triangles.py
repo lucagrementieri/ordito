@@ -440,6 +440,27 @@ def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     crossover this group is measuring the prologue, not the walk -- which is also why the creased
     and smooth columns are within noise of each other on the large meshes.
     """
+    _corner_normals_row(bench_case, creased)
+
+
+@pytest.mark.benchmark(group="corner_normals_valence")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("creased", [False, True])
+def test_corner_normals_valence(bench_case: BenchCase, creased: bool) -> None:
+    """
+    ``corner_normals`` on the **valence** axis: ``sphere_med`` against ``fan_hub``'s two hubs.
+
+    Every corner walks its smooth group, so a hub's corners would cost the square of its valence;
+    a group past the walk's cap is summed along the vertex's ranked ring instead, and this row is
+    where that path shows (the scan meshes never reach the cap). ordito only: meshlib's per-corner
+    walk on a 40 960-face fan is the quadratic case, seconds a call.
+    """
+    _corner_normals_row(bench_case, creased)
+
+
+def _corner_normals_row(bench_case: BenchCase, creased: bool) -> None:
+    """Time ``corner_normals`` against meshlib's ``computePerCornerNormals`` at area weighting."""
     if bench_case.mesh_name in _NON_EDGE_MANIFOLD:
         # Rotating about a vertex needs an edge-manifold mesh. Two scan meshes are not:
         # ``bunny_decimated``'s 87 duplicated faces leave 150 edges with

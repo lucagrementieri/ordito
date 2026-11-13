@@ -8039,8 +8039,8 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cuda-False]": {
   "counts": {
    "launch": 6,
-   "alloc": 6,
-   "memset": 1,
+   "alloc": 7,
+   "memset": 2,
    "d2h": 1,
    "scan": 1
   }
@@ -8048,8 +8048,46 @@
  "benchmarks/test_triangles.py::test_corner_normals[sphere_small-ordito-cuda-True]": {
   "counts": {
    "launch": 7,
-   "alloc": 8,
-   "memset": 1,
+   "alloc": 9,
+   "memset": 2,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[fan_hub-ordito-cuda-False]": {
+  "counts": {
+   "launch": 15,
+   "alloc": 13,
+   "memset": 4,
+   "d2h": 3,
+   "scan": 3
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[fan_hub-ordito-cuda-True]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 15,
+   "memset": 4,
+   "d2h": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[sphere_med-ordito-cuda-False]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 7,
+   "memset": 2,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[sphere_med-ordito-cuda-True]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "memset": 2,
    "d2h": 1,
    "scan": 1,
    "sort": 1

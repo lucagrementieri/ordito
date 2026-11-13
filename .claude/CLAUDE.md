@@ -836,6 +836,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and 0 on CPU. Do not disable it; write degeneracy tests at small scale and never assume CPU/CUDA bit agreement.
 - Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
 - A coverage or containment test that must not depend on the kernel around it is built unfused: `module_options={"fuse_fp": False}` on a `module="unique"` kernel turns off nvcc's `--fmad` and the CPU backend's fusion together. nvcc otherwise contracts the same `@wp.func` by loop shape, so the texture owner pass's one-thread and sliced forms parted on ~1 in 3 000 rim pixels of an edge-on projection and its CPU and CUDA builds on ~1 in 900; unfused, CUDA gives the CPU's former images bit for bit at 1.00-1.05x the pass (2026-11-12, `kernels/texture`; `kernels/heat`'s unfolding kernels likewise).
+- `wp.length` (and any three-term dot) leaves nvcc which square the first fused multiply-add takes, and it chooses by the code around it: capping `corner_normals`' walk loops moved it from `fma(y, y, x * x)` to `fma(x, x, y * y)`, an ulp on 8 % of a sphere's corners, the walk's own sums unchanged (2026-11-13). Where a change must leave a kernel's output byte-identical, pin the rounding in a CUDA-only `wp.func_native` (`__fmaf_rn`, `kernels/triangles.corner_group_length`; the CPU's `wp::length` did not move) and diff the SASS (`cuobjdump -sass`) before blaming the sum.
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
@@ -1299,14 +1300,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`corner_normals` is quadratic in a smooth group's size** (2026-11-12): every corner walks its
-  whole group, so `fan_hub` costs 12.5 ms (no creases) to 74 ms (creased) against ~0.1 ms on a
-  uniform mesh, and a 2 k-face cone already 0.26 ms. Refuted (`kernels/triangles.corner_normals`):
-  forming each visited face's weighted normal in the thread (2.7-3.6x on small cones), and a long
-  group summed and written by its lowest corner alone (hubs 3.1-4.2x: one thread's dependent
-  chain over the fan; dragon 1.19-1.29x). Open: rank a long fan by rulers in a block
-  (`halfedge.rank_long_rings`) and take a segmented sum, without touching the short-group path
-  (ordinary meshes must stay byte-identical).
 - **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
   landmark an iteration (its radius the distance to its last match since 2026-11-10,
   `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on

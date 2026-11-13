@@ -14,6 +14,7 @@ by row, without a BVH -- for a query against the whole surface see
 [`ordito.proximity`][ordito.proximity].
 """
 
+from collections.abc import Sequence
 from typing import Literal
 
 import warp as wp
@@ -21,7 +22,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import require_same_device
+from ordito._common import raise_twin_defects, read_values, require_same_device
+from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import triangles as kernel_triangles
 
 
@@ -278,8 +280,12 @@ def corner_normals(
         # wider one. Inferring the tight bound is a device reduction plus a host readback, which is
         # a fifth of the whole call.
         n_vertices = vertices.size
+    # The twin table's two rejections (when this call pairs the halfedges) and, in the last slot,
+    # whether any smooth group passed the walk's cap: one buffer, one read after the walk.
+    derive_twins = twins is None
+    flags = _launch.zeros(3 if derive_twins else 1, dtype=wp.int32, device=device)
     if twins is None:
-        twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+        twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices, defect_counts=flags)
 
     crease_keys = _launch.empty(0, dtype=wp.uint64, device=device)
     if crease_edges is not None:
@@ -314,23 +320,97 @@ def corner_normals(
         raise ValueError(f"weighting must be 'angle' or 'area', got {weighting!r}")
 
     normals = odt.empty_2d((n_faces, 3), wp.vec3, device=device)
+    walk_inputs = [
+        faces,
+        twins,
+        face_normals,
+        corner_weights,
+        weighting == "angle",
+        crease_keys,
+        wp.uint64(n_vertices),
+        _corner_group_cap(device, crease_keys.size > 0),
+    ]
     _launch.launch(
         kernel_triangles.corner_normals,
         dim=3 * n_faces,
-        inputs=[
-            vertices,
-            faces,
-            twins,
-            face_normals,
-            corner_weights,
-            weighting == "angle",
-            crease_keys,
-            wp.uint64(n_vertices),
-            normals,
-        ],
+        inputs=walk_inputs,
+        outputs=[normals, _launch.view(flags, flags.size - 1, flags.size)],
         device=device,
     )
+    # Readback: the twin table's rejections (a non-manifold mesh has no rotation to have walked)
+    # and whether a group was too long for the walk, both decided only on the device.
+    flags_np = read_values(flags, 0, flags.size)
+    if derive_twins:
+        raise_twin_defects(flags_np)
+    if int(flags_np[-1]) > 0:
+        _sum_long_corner_groups(faces, twins, n_vertices, walk_inputs, normals)
     return odt.as_array2d(normals, wp.vec3)
+
+
+def _corner_group_cap(device: wp.DeviceLike, creased: bool) -> int:
+    """Return the smooth-group size past which ``corner_normals``' walk leaves a corner pending."""
+    if not wp.get_device(device).is_cuda:
+        return kernel_triangles.CORNER_GROUP_LONG_CPU
+    if creased:
+        return kernel_triangles.CORNER_GROUP_LONG_CREASED
+    return kernel_triangles.CORNER_GROUP_LONG_SMOOTH
+
+
+def _sum_long_corner_groups(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    n_vertices: int,
+    walk_inputs: Sequence[object],
+    normals: odt.Array2dVec3,
+) -> None:
+    """
+    Write the corners ``corner_normals``' walk left pending, from sums along the vertex rings.
+
+    Only a mesh with a smooth group past the walk's cap (`_corner_group_cap`) reaches this.
+    A group is a run of its vertex's counter-clockwise ring (ranked by rulers in a block on
+    CUDA), so an exclusive scan of where groups end numbers them, a thread a ring slot adds its
+    corner's term into its group's sum (per the deterministic setting) and another writes the
+    normal; an uncapped walk then takes any corner still pending (one on a pinched vertex).
+    """
+    device = faces.device
+    n_halfedges = faces.size // 3 * 3
+    ring_halfedges, ring_offsets, _ = od.halfedge.vertex_one_rings(
+        faces, twins, n_vertices, validate=False
+    )
+    ring_inputs = [*walk_inputs, ring_halfedges, ring_offsets]
+    ends = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_triangles.long_corner_group_ends,
+        dim=n_halfedges,
+        inputs=ring_inputs,
+        outputs=[ends],
+        device=device,
+    )
+    group_starts = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    _launch.array_scan(ends, group_starts, inclusive=False)
+    # A group holds at most one term a ring slot.
+    sums = _launch.group_sums(n_halfedges, wp.vec3, n_halfedges, device, fused=True)
+    _launch.launch_group_sums(
+        kernel_scatter.scatter_long_corner_groups,
+        n_halfedges,
+        [*ring_inputs, group_starts],
+        sums,
+        device=device,
+    )
+    _launch.launch(
+        kernel_triangles.write_long_corner_groups,
+        dim=n_halfedges,
+        inputs=[*ring_inputs, group_starts, sums.launch_pass, sums.out],
+        outputs=[normals],
+        device=device,
+    )
+    _launch.launch(
+        kernel_triangles.corner_normals_pending,
+        dim=n_halfedges,
+        inputs=walk_inputs,
+        outputs=[normals],
+        device=device,
+    )
 
 
 FaceQualityMetric = Literal["aspect_ratio", "radius_ratio", "area_max_side", "mean_ratio", "area"]

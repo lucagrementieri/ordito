@@ -2,7 +2,12 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import PI, TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
+from ordito.constants import (
+    INT32_MAX_CONSTANT,
+    PI,
+    TOLERANCE_MERGE_CONSTANT,
+    TOLERANCE_ZERO_CONSTANT,
+)
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_sorted_contains,
@@ -21,7 +26,7 @@ from ordito.kernels.predicates import (
     triangle_normal,
     vector_angle,
 )
-from ordito.kernels.reduce import block_chunk_1d, block_sum
+from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_sum, read_group_sum_vector
 
 wp.set_module_options({"enable_backward": False})
 
@@ -945,9 +950,27 @@ def corner_weight(
     return weights[halfedge // 3]
 
 
-@wp.kernel
-def corner_normals(
-    vertices: wp.array[wp.vec3],
+# Smooth-group sizes past which a corner leaves its group to the ring pass (``triangles.
+# _sum_long_corner_groups``): on CUDA with no crease set and with one, and on the CPU. A group of
+# ``k`` corners costs ``corner_normals`` ``k`` walks of ``k`` steps, so a corner whose walk passes
+# the cap (its ``group_cap`` argument) stops there and marks itself ``CORNER_PENDING``; a group no
+# larger walks whole, as it always did, so a mesh with none is untouched bit for bit. The ring
+# pass costs a call a fixed ~0.15-0.2 ms on CUDA (``halfedge.vertex_one_rings`` and its readback;
+# ~0.25 ms on the CPU), a CUDA step searching the crease set ~4x a plain one, and the CPU walks
+# its corners in turn, so the caps sit near the crossovers measured on cones (2026-11-13, old
+# walk against the ring pass): CUDA smooth ~1 000-1 600 corners, creased ~300, CPU ~150-200
+# either way. Any cap leaves a band above it where the pass's fixed cost loses, worst just past
+# the cap (1.5-2x a 0.2-0.6 ms call) and at par by about twice the cap.
+CORNER_GROUP_LONG_SMOOTH = 1024
+CORNER_GROUP_LONG_CREASED = 192
+CORNER_GROUP_LONG_CPU = 128
+# The x component a pending corner's normal holds until a long pass writes it: a unit or zero
+# normal never reaches it.
+CORNER_PENDING = wp.float32(4.0)
+
+
+@wp.func
+def corner_group_sum(
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     face_normals: wp.array[wp.vec3],
@@ -955,32 +978,13 @@ def corner_normals(
     weights_per_corner: wp.bool,
     crease_keys_sorted: wp.array[wp.uint64],
     base: wp.uint64,
-    out_corner_normals: wp.array2d[wp.vec3],
-) -> None:
-    # One thread per corner, which is one thread per halfedge: corner ``k`` of face ``f`` sits at
-    # ``faces[3f + k]``, and halfedge ``3f + k`` is the one leaving that vertex inside that face.
-    #
-    # The corner's normal averages the *smooth group* around its vertex -- the faces reachable by
-    # rotating about it without crossing a crease -- weighted by corner angle, then normalized. So
-    # with no creases every corner of a vertex gets that vertex's angle-weighted normal, and with
-    # every edge a crease each corner gets its own face's normal. Those two are exact identities and
-    # are what the test pins.
-    #
-    # Every corner walks its whole group, so a hub's corners cost the square of its valence
-    # (``fan_hub`` 12.5 ms against ~0.1 ms on a uniform mesh of its size). Two forms lost
-    # (2026-11-12, CUDA new/old):
-    # - each visited face's normal and weight formed in the thread from positions (no table
-    #   launch): sphere_small 0.76-0.88x, par on bunny, 1.1-1.45x from 327 k faces, 1.6-1.75x
-    #   scrambled, and 2.7-3.6x on cones of 2-8 k faces, where the hub walk recomputes a table
-    #   read; a face-count gate cannot see valence;
-    # - a group over 64 faces summed once by its lowest corner (found by walking both ways to the
-    #   nearest lower corner, ``O(k log k)``) and written to every member: hubs 3.1-4.2x, since one
-    #   thread's chain of dependent loads over 40 k faces is slower than 40 k threads re-walking
-    #   it from cache, and the restructured loop cost dragon 1.19-1.29x. A hub wants its fan
-    #   ranked by rulers in a block (``halfedge.rank_long_rings``) and a segmented sum.
-    corner = wp.int32(wp.tid())
-    face = corner // 3
-    total = face_normals[face] * corner_weight(corner_weights, weights_per_corner, corner)
+    corner: wp.int32,
+    cap: wp.int32,
+) -> tuple[wp.vec3, wp.bool]:
+    # The weighted sum over corner ``corner``'s smooth group -- the faces reachable by rotating
+    # about its vertex without crossing a crease -- by one walk from the corner, and whether the
+    # walk finished: ``False`` once the group holds more than ``cap`` corners, the sum then partial.
+    total = face_normals[corner // 3] * corner_weight(corner_weights, weights_per_corner, corner)
 
     # Counter-clockwise about the vertex: ``h -> twins[prev(h)]``, the rotation
     # ``halfedge.vertex_one_rings`` walks. The edge crossed is the one ``prev(h)`` lies on.
@@ -990,43 +994,307 @@ def corner_normals(
     # leaves it sitting at its initial value of ``corner`` -- indistinguishable from a genuine full
     # rotation back to the start if the two were conflated, and that collision silently skipped the
     # clockwise half whenever a corner's own ``prev`` edge happened to be a crease.
+    #
+    # The cap bounds the two loops' trip counts, so a walk that runs out of steps has more than
+    # ``cap`` corners: a count tested in the loop body instead changed how nvcc contracts the sum
+    # (an ulp on 8 % of a sphere's corners).
     halfedge = corner
     closed_loop = wp.bool(False)
-    for _ in range(twins.shape[0]):
+    ended = wp.bool(False)
+    steps = wp.int32(0)
+    for _ in range(cap):
         crossing = halfedge_prev(halfedge)
         if is_crease_edge(faces, crease_keys_sorted, base, crossing):
+            ended = wp.bool(True)
             break
         halfedge = twins[crossing]
         if halfedge < 0:
+            ended = wp.bool(True)
             break  # a boundary edge ends the fan
         if halfedge == corner:
             closed_loop = wp.bool(True)
+            ended = wp.bool(True)
             break  # back at the start: the fan closed and every face is already counted
+        steps += 1
         total += face_normals[halfedge // 3] * corner_weight(
             corner_weights, weights_per_corner, halfedge
         )
+    if not ended:
+        return total, wp.bool(False)
 
     # Clockwise, the inverse rotation ``h -> next(twins[h])``, crossing ``h``'s own edge. Skipped
     # entirely when the fan already closed, since every face is then already counted.
     if not closed_loop:
+        ended = wp.bool(False)
         halfedge = corner
-        for _ in range(twins.shape[0]):
+        for _ in range(cap - steps):
             if is_crease_edge(faces, crease_keys_sorted, base, halfedge):
+                ended = wp.bool(True)
                 break
             twin = twins[halfedge]
             if twin < 0:
+                ended = wp.bool(True)
                 break
             halfedge = halfedge_next(twin)
             if halfedge == corner:
+                ended = wp.bool(True)
                 break
             total += face_normals[halfedge // 3] * corner_weight(
                 corner_weights, weights_per_corner, halfedge
             )
+    return total, ended
 
-    length = wp.length(total)
+
+# A smooth group sum's length, its CUDA rounding pinned to ``fma(z, z, fma(y, y, x * x))``:
+# ``wp.length`` leaves nvcc to choose which square the first fused multiply-add takes, and it
+# chose by the code around it -- the capped walk moved it to ``fma(x, x, y * y)``, an ulp on 8 %
+# of a sphere's corners. The CPU's ``wp::length`` did not move.
+_CORNER_GROUP_LENGTH = """
+#if defined(__CUDA_ARCH__)
+return sqrtf(__fmaf_rn(v.c[2], v.c[2], __fmaf_rn(v.c[1], v.c[1], __fmul_rn(v.c[0], v.c[0]))));
+#else
+return wp::length(v);
+#endif
+"""
+
+
+@wp.func_native(_CORNER_GROUP_LENGTH)
+def corner_group_length(v: wp.vec3) -> wp.float32: ...
+
+
+@wp.func
+def corner_group_normal(total: wp.vec3) -> wp.vec3:
+    # A smooth group's sum normalized, or the zero vector where it cancels.
+    length = corner_group_length(total)
     if length > TOLERANCE_ZERO_CONSTANT:
-        total = total / length
-    out_corner_normals[face, corner - face * 3] = total
+        return total / length
+    return total
+
+
+@wp.kernel
+def corner_normals(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    corner_weights: wp.array[wp.float32],
+    weights_per_corner: wp.bool,
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    group_cap: wp.int32,
+    out_corner_normals: wp.array2d[wp.vec3],
+    out_long: wp.array[wp.int32],
+) -> None:
+    # One thread per corner, which is one thread per halfedge: corner ``k`` of face ``f`` sits at
+    # ``faces[3f + k]``, and halfedge ``3f + k`` is the one leaving that vertex inside that face.
+    #
+    # The corner's normal averages the *smooth group* around its vertex (``corner_group_sum``),
+    # weighted by corner angle, then normalized. So with no creases every corner of a vertex gets
+    # that vertex's angle-weighted normal, and with every edge a crease each corner gets its own
+    # face's normal. Those two are exact identities and are what the test pins.
+    #
+    # Every corner walks its whole group, so a hub's corners would cost the square of its valence
+    # (``fan_hub`` 14 ms against ~0.1 ms on a uniform mesh of its size). A corner whose group
+    # passes ``group_cap`` stops there, marks its normal ``CORNER_PENDING`` and raises
+    # ``out_long[0]`` for the wrapper's read; the ring pass then sums its group along the ranked
+    # ring (``long_corner_group_ends`` to ``write_long_corner_groups``). Two other forms lost
+    # (2026-11-12, CUDA new/old):
+    # - each visited face's normal and weight formed in the thread from positions (no table
+    #   launch): sphere_small 0.76-0.88x, par on bunny, 1.1-1.45x from 327 k faces, 1.6-1.75x
+    #   scrambled, and 2.7-3.6x on cones of 2-8 k faces, where the hub walk recomputes a table
+    #   read; a face-count gate cannot see valence;
+    # - a group over 64 faces summed once by its lowest corner (found by walking both ways to the
+    #   nearest lower corner, ``O(k log k)``) and written to every member: hubs 3.1-4.2x, since one
+    #   thread's chain of dependent loads over 40 k faces is slower than 40 k threads re-walking
+    #   it from cache, and the restructured loop cost dragon 1.19-1.29x.
+    corner = wp.int32(wp.tid())
+    face = corner // 3
+    total, complete = corner_group_sum(
+        faces,
+        twins,
+        face_normals,
+        corner_weights,
+        weights_per_corner,
+        crease_keys_sorted,
+        base,
+        corner,
+        group_cap,
+    )
+    if complete:
+        out_corner_normals[face, corner - face * 3] = corner_group_normal(total)
+    else:
+        out_corner_normals[face, corner - face * 3] = wp.vec3(CORNER_PENDING, 0.0, 0.0)
+        out_long[0] = wp.int32(1)
+
+
+@wp.func
+def corner_pending(out_corner_normals: wp.array2d[wp.vec3], halfedge: wp.int32) -> wp.bool:
+    # Whether ``corner_normals`` left corner ``halfedge`` to a long pass.
+    face = halfedge // 3
+    return out_corner_normals[face, halfedge - face * 3][0] == CORNER_PENDING
+
+
+@wp.func
+def long_corner_row(
+    faces: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    group_cap: wp.int32,
+    slot: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # The bounds of the ring row holding ``slot`` when it is a long one the ring pass sums -- more
+    # than ``group_cap`` corners, walked whole -- else ``(-1, -1)``. A pinched vertex's row
+    # (a ``-1`` tail, one fan of several) is left to ``corner_normals_pending``.
+    h = ring_halfedges[slot]
+    if h < 0:
+        return wp.int32(-1), wp.int32(-1)
+    v = faces[h]
+    begin = ring_offsets[v]
+    end = ring_offsets[v + 1]
+    if end - begin <= group_cap or ring_halfedges[end - 1] < 0:
+        return wp.int32(-1), wp.int32(-1)
+    return begin, end
+
+
+@wp.func
+def ring_group_break(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    halfedge: wp.int32,
+    following: wp.int32,
+) -> wp.bool:
+    # Whether a smooth group ends between ring entry ``halfedge`` and the row's next entry
+    # ``following``: the edge ``corner_group_sum``'s counter-clockwise step crosses (``prev(h)``)
+    # is a crease, or the step does not reach ``following`` (a boundary ends an open fan's row).
+    crossing = halfedge_prev(halfedge)
+    if is_crease_edge(faces, crease_keys_sorted, base, crossing):
+        return wp.bool(True)
+    return twins[crossing] != following
+
+
+@wp.kernel
+def long_corner_group_ends(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    corner_weights: wp.array[wp.float32],
+    weights_per_corner: wp.bool,
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    group_cap: wp.int32,
+    ring_halfedges: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    out_ends: wp.array[wp.int32],
+) -> None:
+    # One thread per ring slot (``halfedge.vertex_one_rings``' counter-clockwise rows, ranked by
+    # rulers in a block on CUDA): 1 where a smooth group ends after the slot, so an exclusive scan
+    # numbers the groups of every long row (``long_corner_group``). A long row's last slot ends
+    # one whatever its crossing, so no group runs into the next row, and every slot outside a long
+    # row is a group of its own that nothing sums. ``face_normals`` and the weights are
+    # ``corner_normals``' arguments, carried for one argument list; unread here.
+    slot = wp.int32(wp.tid())
+    begin, end = long_corner_row(faces, ring_halfedges, ring_offsets, group_cap, slot)
+    ends = wp.int32(1)
+    if begin >= 0 and slot != end - 1:
+        if not ring_group_break(
+            faces, twins, crease_keys_sorted, base, ring_halfedges[slot], ring_halfedges[slot + 1]
+        ):
+            ends = wp.int32(0)
+    out_ends[slot] = ends
+
+
+@wp.func
+def long_corner_group(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    ring_halfedges: wp.array[wp.int32],
+    group_starts: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    slot: wp.int32,
+) -> wp.int32:
+    # The smooth group of slot ``slot`` of the long row ``[begin, end)``: the exclusive scan of
+    # ``long_corner_group_ends`` there, except that the slots before the row's first end belong to
+    # its last group when the fan is closed through the row's last crossing (the group wraps).
+    group = group_starts[slot]
+    if group == group_starts[begin]:
+        if not ring_group_break(
+            faces, twins, crease_keys_sorted, base, ring_halfedges[end - 1], ring_halfedges[begin]
+        ):
+            group = group_starts[end - 1]
+    return group
+
+
+@wp.kernel
+def write_long_corner_groups(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    corner_weights: wp.array[wp.float32],
+    weights_per_corner: wp.bool,
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    group_cap: wp.int32,
+    ring_halfedges: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    group_starts: wp.array[wp.int32],
+    sums: GroupSumPass,
+    group_sums: wp.array[wp.vec3],
+    out_corner_normals: wp.array2d[wp.vec3],
+) -> None:
+    # One thread per ring slot of a long row: the normal of its smooth group's sum
+    # (``scatter.scatter_long_corner_groups``) into its corner, where ``corner_normals``' walk left
+    # it pending. A corner of a group no larger than ``group_cap`` keeps its walk's normal,
+    # so only the long groups' sums differ from the walk's, in their last bits.
+    slot = wp.int32(wp.tid())
+    begin, end = long_corner_row(faces, ring_halfedges, ring_offsets, group_cap, slot)
+    if begin < 0:
+        return
+    h = ring_halfedges[slot]
+    if not corner_pending(out_corner_normals, h):
+        return
+    group = long_corner_group(
+        faces, twins, crease_keys_sorted, base, ring_halfedges, group_starts, begin, end, slot
+    )
+    face = h // 3
+    out_corner_normals[face, h - face * 3] = corner_group_normal(
+        read_group_sum_vector(group_sums, sums, group)
+    )
+
+
+@wp.kernel
+def corner_normals_pending(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    corner_weights: wp.array[wp.float32],
+    weights_per_corner: wp.bool,
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    group_cap: wp.int32,
+    out_corner_normals: wp.array2d[wp.vec3],
+) -> None:
+    # One thread per corner: a corner the ring pass left pending (one on a pinched
+    # vertex's other fans) walks its whole group, ``corner_normals``' walk with no cap.
+    corner = wp.int32(wp.tid())
+    if not corner_pending(out_corner_normals, corner):
+        return
+    face = corner // 3
+    total, _complete = corner_group_sum(
+        faces,
+        twins,
+        face_normals,
+        corner_weights,
+        weights_per_corner,
+        crease_keys_sorted,
+        base,
+        corner,
+        INT32_MAX_CONSTANT,
+    )
+    out_corner_normals[face, corner - face * 3] = corner_group_normal(total)
 
 
 @wp.func

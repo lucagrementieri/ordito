@@ -17,6 +17,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import triangles as kernel_triangles
 from ordito.triangles import CornerNormalWeighting, FaceQualityMetric
 from tests.comparisons import assert_nonconstant
 from tests.conftest import MESHES
@@ -277,6 +278,150 @@ def test_corner_normals_ccw_first_step_crease_does_not_skip_clockwise_walk(devic
     # the single crease.
     corners_at_v = normals_wp[:, 0, :]
     assert np.allclose(corners_at_v, np.array([0.0, 0.0, 1.0]), rtol=1e-5, atol=1e-5)
+
+
+def _bumpy_hub(
+    sections: int, rng: np.random.Generator, *, pinched: bool = False, open_fan: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a cone of ``sections`` sides over a bumpy rim, closed by a base fan: two such hubs.
+
+    ``pinched`` adds a second such cone below sharing the apex, so the apex holds two closed fans
+    (vertex-non-manifold, edge-manifold). ``open_fan`` drops one side face, so the apex fan is a
+    path ending on the boundary.
+    """
+    angles = np.linspace(0.0, 2.0 * np.pi, sections, endpoint=False)
+    rim = np.stack([np.cos(angles), np.sin(angles), rng.uniform(-0.2, 0.2, sections)], axis=1)
+    apex, base = 0, 1
+    vertices = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -0.1]]), rim]
+    index = np.arange(sections)
+    rims = 2 + index
+    rims_next = 2 + (index + 1) % sections
+    sides = np.stack([np.full(sections, apex), rims, rims_next], axis=1)
+    if open_fan:
+        sides = sides[1:]
+    faces = [sides, np.stack([np.full(sections, base), rims_next, rims], axis=1)]
+    if pinched:
+        # The lower cone's apex is the same vertex, its base below it.
+        lower_rim = rim * np.array([1.0, 1.0, 0.0]) + np.array([0.0, 0.0, 2.0])
+        lower_base = 2 + sections
+        lower_rims = lower_base + 1 + index
+        lower_next = lower_base + 1 + (index + 1) % sections
+        vertices += [np.array([[0.0, 0.0, 2.1]]), lower_rim]
+        faces += [
+            np.stack([np.full(sections, apex), lower_next, lower_rims], axis=1),
+            np.stack([np.full(sections, lower_base), lower_rims, lower_next], axis=1),
+        ]
+    return np.concatenate(vertices).astype(np.float32), np.concatenate(faces).astype(np.int32)
+
+
+def _corner_normals_np(
+    faces_np: np.ndarray, normals_np: np.ndarray, weights_np: np.ndarray, creases_np: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Evaluate the per-corner normal's definition in ``float64``, with each group's size per corner.
+
+    Each corner's smooth group is a union-find over the faces about its vertex, joined across
+    non-crease edges; ``normals_np`` and the ``(n_faces, 3)`` corner weights ``weights_np`` are
+    the face quantities it sums.
+    """
+    creases = {tuple(sorted(edge)) for edge in creases_np.tolist()}
+    # Corners keyed by (vertex, other endpoint) edge: the faces about a vertex sharing an edge
+    # through it are joined unless the edge is a crease.
+    parent = list(range(faces_np.size))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    by_edge: dict[tuple[int, int], list[int]] = {}
+    for f, (a, b, c) in enumerate(faces_np.tolist()):
+        for k, (v, w0, w1) in enumerate(((a, b, c), (b, c, a), (c, a, b))):
+            for w in (w0, w1):
+                by_edge.setdefault((v, w), []).append(3 * f + k)
+    for (v, w), corners in by_edge.items():
+        if tuple(sorted((v, w))) in creases or len(corners) != 2:
+            continue
+        parent[find(corners[0])] = find(corners[1])
+    roots = np.array([find(i) for i in range(faces_np.size)])
+    terms = (normals_np[:, None, :] * weights_np[:, :, None]).reshape(-1, 3)
+    sums = np.zeros((faces_np.size, 3))
+    np.add.at(sums, roots, terms)
+    sizes = np.bincount(roots, minlength=faces_np.size)[roots]
+    group = sums[roots]
+    return (group / np.linalg.norm(group, axis=1)[:, None]).reshape(-1, 3, 3), sizes
+
+
+@pytest.mark.parametrize("weighting", ["angle", "area"])
+@pytest.mark.parametrize(
+    ("case", "sections"),
+    [("smooth", 1500), ("creased", 1200), ("creased_open", 1200), ("creased_pinched", 400)],
+)
+def test_corner_normals_of_long_smooth_groups(
+    device: str, case: str, sections: int, weighting: CornerNormalWeighting
+) -> None:
+    """
+    Not a library comparison: hub groups past the walk's cap against the definition in NumPy.
+
+    MeshLib's ``computePerCornerNormals`` is the reference elsewhere but takes the area weighting
+    alone and cannot hold the pinched apex, so the oracle is the definition itself: union-find of
+    the faces about each vertex across non-crease edges, summed in ``float64`` over ordito's own
+    face normals and weights. Those are compared with the references above; formed here in
+    ``float64`` instead, the hub's needle faces (aspect ~240) put their ``float32`` rounding at
+    1.5e-5 into a rim corner, which is not what this tests.
+
+    Each case sends groups past the walk's cap (``kernels/triangles.CORNER_GROUP_LONG_*``) to the
+    ring pass, asserted on the oracle's group sizes: a closed fan with no crease (one group, the
+    whole ring); creased spokes at the apex cutting long groups beside groups of one to five faces
+    that the walk keeps, with the long ones wrapping past the ring row's start; the same with the
+    apex fan open, a path from the boundary; and a pinched apex of two creased fans, whose ring
+    row holds one fan, so the other's corners are left to the uncapped walk. Mutation probes: the
+    wrap's group taken as the slot's own fails the creased cases, the uncapped walk skipped fails
+    the pinched ones.
+    """
+    rng = np.random.default_rng(29)
+    vertices_np, faces_np = _bumpy_hub(
+        sections, rng, pinched=case == "creased_pinched", open_fan=case == "creased_open"
+    )
+    creases_np = np.empty((0, 2), dtype=np.int32)
+    cap = kernel_triangles.CORNER_GROUP_LONG_SMOOTH
+    if case != "smooth":
+        cap = kernel_triangles.CORNER_GROUP_LONG_CREASED
+    if not wp.get_device(device).is_cuda:
+        cap = kernel_triangles.CORNER_GROUP_LONG_CPU
+    if case != "smooth":
+        # Spokes of the apex fan at irregular gaps: short groups of 1-5 faces and two long ones.
+        cuts = np.cumsum([1, 2, 5, 3, sections // 2, 1, 4]) % sections
+        spokes = np.stack([np.zeros(cuts.size), 2 + cuts], axis=1)
+        if case == "creased_pinched":
+            spokes = np.concatenate([spokes, spokes + np.array([0, sections + 1])])
+        creases_np = spokes.astype(np.int32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.reshape(-1), device)
+    face_normals_wp, face_areas_wp = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+    weights_np = (
+        od.triangles.face_angles(vertices_wp, faces_wp).numpy()
+        if weighting == "angle"
+        else np.repeat(face_areas_wp.numpy()[:, None], 3, axis=1)
+    )
+    expected_np, sizes_np = _corner_normals_np(
+        faces_np, face_normals_wp.numpy().astype(np.float64), weights_np, creases_np
+    )
+    assert sizes_np.max() > cap
+    if case != "smooth":
+        assert sizes_np.min() <= 5
+
+    creases_wp = None
+    if creases_np.size > 0:
+        creases_wp = odt.as_array2d(wp.array(creases_np, dtype=wp.int32, device=device), wp.int32)
+    normals_wp = od.triangles.corner_normals(vertices_wp, faces_wp, creases_wp, weighting=weighting)
+    assert np.allclose(normals_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+    # The deterministic setting holds for the suite, so the ring pass's sums repeat bit for bit.
+    repeated_wp = od.triangles.corner_normals(
+        vertices_wp, faces_wp, creases_wp, weighting=weighting
+    )
+    assert np.array_equal(repeated_wp.numpy(), normals_wp.numpy())
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])

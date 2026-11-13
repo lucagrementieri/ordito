@@ -33,7 +33,13 @@ from ordito.kernels.reduce import (
     warp_peer_lanes,
     warp_uniform_lanes,
 )
-from ordito.kernels.triangles import corner_triple, face_normals_and_area
+from ordito.kernels.triangles import (
+    corner_triple,
+    corner_weight,
+    face_normals_and_area,
+    long_corner_group,
+    long_corner_row,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1698,3 +1704,35 @@ def heavy_run_sums(
         total = block_sum(strided_run_sum(values, order, start + lane, stop, wp.block_dim()))
         if lane == 0:
             out_values[r] = finish_run_sum(total, stop - start, average)
+
+
+@wp.kernel
+def scatter_long_corner_groups(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    corner_weights: wp.array[wp.float32],
+    weights_per_corner: wp.bool,
+    crease_keys_sorted: wp.array[wp.uint64],
+    base: wp.uint64,
+    group_cap: wp.int32,
+    ring_halfedges: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    group_starts: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.vec3],
+) -> None:
+    # One thread per ring slot of a long row (``triangles.long_corner_row``): its corner's
+    # weighted face normal into its smooth group's sum (``triangles.long_corner_group``), the sum
+    # ``corner_normals``' walk formed once a corner. A hub's group is hot across the launch, so the
+    # off mode pools a warp's peers.
+    slot = wp.int32(wp.tid())
+    begin, end = long_corner_row(faces, ring_halfedges, ring_offsets, group_cap, slot)
+    if begin < 0:
+        return
+    h = ring_halfedges[slot]
+    group = long_corner_group(
+        faces, twins, crease_keys_sorted, base, ring_halfedges, group_starts, begin, end, slot
+    )
+    term = face_normals[h // 3] * corner_weight(corner_weights, weights_per_corner, h)
+    scatter_add_vector(out_sums, sums, group, term, ARRIVAL_POOL_PEERS)

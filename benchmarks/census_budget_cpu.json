@@ -7333,6 +7333,40 @@
    "sort": 2
   }
  },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[fan_hub-ordito-cpu-False]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 12,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[fan_hub-ordito-cpu-True]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 14,
+   "readback": 2,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[sphere_med-ordito-cpu-False]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_corner_normals_valence[sphere_med-ordito-cpu-True]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "sort": 2
+  }
+ },
  "benchmarks/test_triangles.py::test_face_angles[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
