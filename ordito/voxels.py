@@ -67,6 +67,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import read_scalar, read_values, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
@@ -490,12 +491,14 @@ def voxel_down_sample(
 
     Notes
     -----
-    ``"mean"`` and ``"sum"`` are bitwise reproducible run to run: they sort the points by voxel and
-    add each voxel's points in one fixed order rather than accumulating with float atomics, whose
-    ordering varies between launches. That costs one radix sort over the point count. A voxel of up
-    to 128 points is added in index order; a more crowded one is split across parallel lanes, also
-    in a fixed order, so on CUDA its last bits can differ from the CPU device's. ``"min"`` and
-    ``"max"`` use atomics directly, since those are order-independent for floats.
+    ``"mean"`` and ``"sum"`` follow [`ordito.config`][ordito.config]. By default they add each
+    point into its voxel as it arrives, so on CUDA their last bits can vary between runs. With
+    [`is_deterministic`][ordito.config.is_deterministic] they are bitwise reproducible run to run:
+    they sort the points by voxel and add each voxel's points in one fixed order, at the cost of
+    one radix sort over the point count. A voxel of up to 128 points is then added in index order;
+    a more crowded one is split across parallel lanes, also in a fixed order, so on CUDA its last
+    bits can differ from the CPU device's. ``"min"`` and ``"max"`` use atomics in either setting,
+    since those are order-independent for floats.
 
     Examples
     --------
@@ -534,10 +537,24 @@ def voxel_down_sample(
         return (
             (pooled, _launch.empty(0, dtype=wp.int32, device=device)) if return_inverse else pooled
         )
-    table = _VoxelTable(points, voxel_size, origin, one_root_tile=0 < cell_bound <= 4096)
+    # Only the fixed-order mean and sum sort the points, in buffers the table borrows first.
+    sorted_sums = pooling in ("mean", "sum") and is_deterministic()
+    table = _VoxelTable(
+        points, voxel_size, origin, one_root_tile=0 < cell_bound <= 4096, sort_buffers=sorted_sums
+    )
     n_voxels = table.n_voxels
     slots = _launch.empty(n_points, dtype=wp.int32, device=device) if return_inverse else None
-    if pooling in ("min", "max"):
+    if not sorted_sums and pooling in ("mean", "sum"):
+        pooled = _arrival_pool(
+            kernel_voxels.pool_sum_table,
+            [points, *table.probe_inputs()],
+            n_points,
+            n_voxels,
+            slots,
+            average=pooling == "mean",
+            device=device,
+        )
+    elif pooling in ("min", "max"):
         # One sentinel bucket past the last voxel collects the points that probe outside the set.
         counts = _launch.zeros(n_voxels + 1, dtype=wp.int32, device=device)
         largest = pooling == "max"
@@ -559,6 +576,8 @@ def voxel_down_sample(
         )
     else:
         buckets, order = table.buckets, table.order
+        assert buckets is not None
+        assert order is not None
         _launch.launch(
             kernel_voxels.bucket_table_slots,
             dim=n_points,
@@ -591,7 +610,13 @@ class _VoxelTable:
     """
 
     def __init__(
-        self, points: wp.array[wp.vec3], voxel_size: float, origin: wp.vec3, *, one_root_tile: bool
+        self,
+        points: wp.array[wp.vec3],
+        voxel_size: float,
+        origin: wp.vec3,
+        *,
+        one_root_tile: bool,
+        sort_buffers: bool,
     ) -> None:
         device = points.device
         n_points = points.size
@@ -601,9 +626,14 @@ class _VoxelTable:
         # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
         # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
         self.table = _launch.full(self.mask + 2, -1, dtype=wp.int32, device=device)
-        self.buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-        self.order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-        unique = self.buckets[n_points:]
+        self.buckets: wp.array[wp.int32] | None = None
+        self.order: wp.array[wp.int32] | None = None
+        if sort_buffers:
+            self.buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+            self.order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+            unique = self.buckets[n_points:]
+        else:
+            unique = _launch.empty(n_points, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_voxels.insert_point_cells,
             dim=n_points,
@@ -615,7 +645,11 @@ class _VoxelTable:
         n_voxels = int(read_scalar(self.table)) + 1
         self.n_voxels = n_voxels
         keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=device)
-        rank = self.order
+        rank = (
+            _launch.empty(2 * n_voxels, dtype=wp.int32, device=device)
+            if self.order is None
+            else self.order
+        )
         _launch.launch(
             kernel_voxels.unique_cell_keys,
             dim=n_voxels,
@@ -699,6 +733,12 @@ def pool_by_voxel(
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample]
     [`cell_centers`][ordito.voxels.cell_centers]
 
+    Notes
+    -----
+    ``"mean"`` and ``"sum"`` are bitwise reproducible run to run under
+    [`is_deterministic`][ordito.config.is_deterministic] and add in arrival order otherwise, as in
+    [`voxel_down_sample`][ordito.voxels.voxel_down_sample].
+
     Examples
     --------
     Sum a per-point payload over the voxels of a grid built from the same points:
@@ -775,6 +815,17 @@ def _pool_by_voxel(
         )
         return pooled, slots
 
+    if not is_deterministic():
+        pooled = _arrival_pool(
+            kernel_voxels.pool_sum_points,
+            [grid.id, points, values, wp.int32(n_voxels)],
+            n_points,
+            n_voxels,
+            slots,
+            average=pooling == "mean",
+            device=device,
+        )
+        return pooled, slots
     # The launch seeds the sort's two double buffers, keys and identity payload.
     buckets, order = _launch.sort_buffers(n_points, wp.int32, device)
     _launch.launch(
@@ -785,6 +836,41 @@ def _pool_by_voxel(
         device=device,
     )
     return _segment_pool(values, buckets, order, n_voxels, average=pooling == "mean"), slots
+
+
+def _arrival_pool(
+    kernel: odt.Kernel,
+    inputs: list[object],
+    n_points: int,
+    n_voxels: int,
+    slots: wp.array[wp.int32] | None,
+    *,
+    average: bool,
+    device: wp.DeviceLike,
+) -> wp.array[wp.vec3]:
+    """
+    Pool means or sums onto the voxels in arrival order, without sorting the points.
+
+    With the deterministic setting off: ``kernel`` (``kernels/voxels.pool_point_sum``'s probes)
+    adds each point into its voxel as it probes it, and the mean divides by the counts it kept.
+    No sort, where `_segment_pool`, the setting's on form, sorts every point by voxel.
+    """
+    # One sentinel bucket past the last voxel collects the points that fall outside the grid.
+    counts = _launch.zeros(n_voxels + 1, dtype=wp.int32, device=device)
+    sums = _launch.group_sums(n_voxels, wp.vec3, n_points, device)
+    _launch.launch_group_sums(
+        kernel, dim=n_points, inputs=inputs, sums=sums, outputs=[slots, counts], device=device
+    )
+    pooled = cast("wp.array[wp.vec3]", _launch.finish_group_sums(sums))
+    if average:
+        _launch.launch(
+            kernel_voxels.finish_pooled_means,
+            dim=n_voxels,
+            inputs=[counts],
+            outputs=[pooled],
+            device=device,
+        )
+    return pooled
 
 
 def _segment_pool(

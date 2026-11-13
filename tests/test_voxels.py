@@ -433,6 +433,8 @@ def test_voxelize_points_matches_open3d(
 
 
 @pytest.mark.parity("voxel_down_sample", "open3d")
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.usefixtures("deterministic")
 def test_voxel_down_sample_matches_open3d(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
@@ -520,6 +522,8 @@ def test_voxel_down_sample_matches_meshlib(
     )
 
 
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.usefixtures("deterministic")
 def test_voxel_down_sample_pooling_modes(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
@@ -561,6 +565,8 @@ def test_voxel_down_sample_mean_is_reproducible(
     assert np.array_equal(first, second)
 
 
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.usefixtures("deterministic")
 def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
     """
     Class A (``od.equality.points_allclose``): ``voxel_down_sample`` is a NumPy group-by.
@@ -592,6 +598,8 @@ def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
 
 @pytest.mark.parametrize("pooling", ["min", "max", "mean"])
 @pytest.mark.parametrize("n_points", [500, 20_000])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.usefixtures("deterministic")
 def test_pool_by_voxel_matches_a_numpy_group_by(
     device: str, pooling: Literal["min", "max", "mean"], n_points: int
 ):

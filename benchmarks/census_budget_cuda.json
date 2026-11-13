@@ -8581,10 +8581,9 @@
  },
  "benchmarks/test_voxels.py::test_pool_by_voxel[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
+   "launch": 2,
    "alloc": 2,
-   "memset": 1,
-   "sort": 1
+   "memset": 2
   }
  },
  "benchmarks/test_voxels.py::test_resolve_voxel_grid[sphere_small-ordito-cuda]": {
@@ -8680,20 +8679,20 @@
  },
  "benchmarks/test_voxels.py::test_voxel_down_sample[sphere_small-ordito-cuda-256]": {
   "counts": {
-   "launch": 7,
-   "alloc": 7,
-   "memset": 3,
+   "launch": 6,
+   "alloc": 8,
+   "memset": 4,
    "d2h": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_voxels.py::test_voxel_down_sample[sphere_small-ordito-cuda-64]": {
   "counts": {
-   "launch": 7,
-   "alloc": 7,
-   "memset": 3,
+   "launch": 6,
+   "alloc": 8,
+   "memset": 4,
    "d2h": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_voxels.py::test_voxelize_mesh[sphere_small-ordito-cuda-256]": {

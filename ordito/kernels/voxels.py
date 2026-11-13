@@ -36,6 +36,8 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.grouping import hash_slot_words3, key_set_insert, next_slot
 from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
+from ordito.kernels.reduce import GroupSumPass, peer_counted_add
+from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, finish_run_sum, scatter_add_vector
 from ordito.kernels.triangles import face_vertices, row_triple, write_row_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -546,10 +548,12 @@ def record_point_bucket(
     # (``table_point_slot``): the row, written to ``out_slots`` unless the caller passed a
     # length-zero one, counted into its bucket. A point outside the grid goes into a sentinel
     # bucket past the last voxel and keeps the slot ``-1``. Returns the bucket.
+    # A coarse grid crowds a scan's consecutive points into a few hot bins, so a warp's peers count
+    # once (``peer_counted_add``).
     if out_slots.shape[0] > 0:
         out_slots[p] = slot
     bucket = wp.where(slot < 0, n_voxels, slot)
-    wp.atomic_add(out_counts, bucket, 1)
+    peer_counted_add(out_counts, bucket)
     return bucket
 
 
@@ -598,6 +602,27 @@ def pool_point_extremum(
         wp.atomic_max(out_values, slot, values[p])
     else:
         wp.atomic_min(out_values, slot, values[p])
+
+
+@wp.func
+def pool_point_sum(
+    slot: wp.int32,
+    p: wp.int32,
+    values: wp.array[wp.vec3],
+    n_voxels: wp.int32,
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.vec3],
+    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # The mean/sum pooling in the probe launch itself, in arrival order: the form the deterministic
+    # setting's off mode takes, where the fixed-order form sorts every point by voxel first
+    # (``write_point_bucket``). A voxel's points arrive together from a scan, so a warp's peers add
+    # once (``ARRIVAL_POOL_PEERS``). ``finish_pooled_means`` divides by ``out_counts`` afterwards.
+    # Shared by ``pool_sum_points`` and ``pool_sum_table``, which differ only in the probe.
+    record_point_bucket(slot, p, n_voxels, out_slots, out_counts)
+    if slot >= 0:
+        scatter_add_vector(out_sums, sums, slot, values[p], ARRIVAL_POOL_PEERS)
 
 
 @wp.func
@@ -833,6 +858,51 @@ def pool_extremum_table(
     slot = table_point_slot(points[p], translation, inverse_size, zero, mask, table, row_cells)
     n_voxels = wp.int32(row_cells.shape[0])
     pool_point_extremum(slot, p, points, n_voxels, largest, out_slots, out_counts, out_values)
+
+
+@wp.kernel
+def pool_sum_points(
+    volume: wp.uint64,
+    points: wp.array[wp.vec3],
+    values: wp.array[wp.vec3],
+    n_voxels: wp.int32,
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.vec3],
+    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    p = wp.int32(wp.tid())
+    slot = point_slot(volume, points[p])
+    pool_point_sum(slot, p, values, n_voxels, sums, out_sums, out_slots, out_counts)
+
+
+@wp.kernel
+def pool_sum_table(
+    points: wp.array[wp.vec3],
+    translation: wp.vec3,
+    inverse_size: wp.float32,
+    zero: wp.float32,
+    mask: wp.int32,
+    table: wp.array[wp.int32],
+    row_cells: wp.array[wp.vec3i],
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.vec3],
+    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # ``voxel_down_sample`` pools its own points, so the payload is ``points`` itself.
+    p = wp.int32(wp.tid())
+    slot = table_point_slot(points[p], translation, inverse_size, zero, mask, table, row_cells)
+    n_voxels = wp.int32(row_cells.shape[0])
+    pool_point_sum(slot, p, points, n_voxels, sums, out_sums, out_slots, out_counts)
+
+
+@wp.kernel
+def finish_pooled_means(counts: wp.array[wp.int32], out_values: wp.array[wp.vec3]) -> None:
+    # The arrival-order mean pooling's divide, the fixed-order form's ``finish_run_sum``: an empty
+    # voxel stays at the zero its sum started from.
+    v = wp.int32(wp.tid())
+    out_values[v] = finish_run_sum(out_values[v], counts[v], True)
 
 
 @wp.kernel
