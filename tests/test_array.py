@@ -1418,6 +1418,24 @@ def test_gather(device: str, layout: str) -> None:
     assert np.array_equal(gathered_wp.numpy(), source_np[indices_np])
 
 
+def test_gather_into_out(device: str) -> None:
+    """
+    Class A: ``out=`` receives ``src[indices]`` and is returned; a misshapen ``out`` raises.
+
+    ``intersection``'s loop points gather into a view of the buffer the host reads back in one copy.
+    """
+    rng = np.random.default_rng(6)
+    source_np = rng.standard_normal((16, 3)).astype(np.float32)
+    indices_np = rng.integers(0, 16, size=9, dtype=np.int32)
+    source_wp = points_to_warp(source_np, device)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    out_wp = wp.zeros(9, dtype=wp.vec3, device=device)
+    assert od.array.gather(source_wp, indices_wp, out=out_wp) is out_wp
+    assert np.array_equal(out_wp.numpy(), source_np[indices_np])
+    with pytest.raises(ValueError, match="out must be"):
+        od.array.gather(source_wp, indices_wp, out=wp.zeros(8, dtype=wp.vec3, device=device))
+
+
 bitcast_test_data = (
     wp.array([-128, -127, -1, 0, 1, 127], dtype=wp.int8),
     wp.array([255, 0, 254, 1], dtype=wp.uint8),

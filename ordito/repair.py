@@ -5148,9 +5148,7 @@ def _cut_along_loops(
 
 def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> float:
     """Length of a closed vertex-index cycle, gathered onto its positions."""
-    points = _launch.empty(loop.size, dtype=wp.vec3, device=vertices.device)
-    _launch.copy(points, vertices[loop])
-    return od.polyline.polyline_length(points, closed=True)
+    return od.polyline.polyline_length(od.array.gather(vertices, loop), closed=True)
 
 
 def flip_t_vertices(

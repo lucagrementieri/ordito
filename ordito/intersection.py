@@ -2420,8 +2420,9 @@ def _cap_section_loops(
     offsets_bytes = 4 * (n_loops + 1)
     points_start = 2 * offsets_bytes + 4
     packed = _launch.empty(points_start + 12 * n_points, dtype=wp.uint8, device=device)
-    gathered = _byte_view(packed, points_start, wp.vec3, n_points)
-    _launch.copy(gathered, vertices[cycles])
+    gathered = od.array.gather(
+        vertices, cycles, out=_byte_view(packed, points_start, wp.vec3, n_points)
+    )
     _launch.copy(_byte_view(packed, 0, wp.int32, n_loops + 1), offsets)
     if section_count is not None:
         _launch.copy(_byte_view(packed, 2 * offsets_bytes, wp.int32, 1), section_count)

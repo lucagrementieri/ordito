@@ -2765,7 +2765,10 @@ def _scan_selection(flags: wp.array[wp.int32]) -> int:
 
 
 def gather(
-    src: wp.array[DType] | odt.ArrayNd, indices: wp.array[wp.int32]
+    src: wp.array[DType] | odt.ArrayNd,
+    indices: wp.array[wp.int32],
+    *,
+    out: wp.array[DType] | odt.ArrayNd | None = None,
 ) -> wp.array[DType] | odt.ArrayNd:
     """
     Dense copy of ``src`` gathered along its first axis by ``indices`` (``numpy.take``).
@@ -2787,18 +2790,23 @@ def gather(
     indices
         ``(k,)`` indices into the first axis of ``src``. **Must be contiguous**;
         see the warning above.
+    out
+        ``(k, *src.shape[1:])`` contiguous buffer of ``src``'s dtype on ``src.device`` to write the
+        gathered copy into, or ``None`` to allocate one.
 
     Returns
     -------
     wp.array
         ``(len(indices), *src.shape[1:])`` contiguous gathered copy on ``src.device``, with the
-        same ``dtype`` as ``src``. Empty along the
-        first axis when ``indices`` is empty.
+        same ``dtype`` as ``src``: ``out`` when given. Empty along the first axis when
+        ``indices`` is empty.
 
     Raises
     ------
     RuntimeError
-        If ``src`` and ``indices`` are not all on one device.
+        If ``src``, ``indices`` and ``out`` are not all on one device.
+    ValueError
+        If ``out`` does not have the gathered copy's shape and dtype.
 
     See Also
     --------
@@ -2822,10 +2830,15 @@ def gather(
     print(od.array.gather(rows, indices).numpy().tolist())  # [[6, 7], [0, 1], [6, 7]]
     ```
     """
-    require_same_device(src=src, indices=indices)
+    require_same_device(src=src, indices=indices, out=out)
     k = indices.size
     out_shape = (k, *(int(dim) for dim in src.shape[1:]))
-    out = _launch.empty(out_shape, dtype=src.dtype, device=src.device)
+    if out is None:
+        out = _launch.empty(out_shape, dtype=src.dtype, device=src.device)
+    elif tuple(int(dim) for dim in out.shape) != out_shape or out.dtype != src.dtype:
+        raise ValueError(
+            f"out must be a {out_shape} array of {src.dtype}, got {tuple(out.shape)} of {out.dtype}"
+        )
     if k == 0:
         return out
     element_words = _words_per_element(src.dtype)
