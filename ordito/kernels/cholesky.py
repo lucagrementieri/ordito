@@ -39,6 +39,7 @@ from ordito.kernels.array import (
     declare_block_dims,
     lower_triangle_pair,
     ordered_float_bits,
+    row_chunk_entries,
     scanned_count,
 )
 from ordito.kernels.linalg import residual_and_scale
@@ -3366,15 +3367,25 @@ def breadth_first_level(
 ) -> None:
     # One level of every component's search at once: an unreached row next to a row of the
     # previous level is at this one. A row reached in this launch reads as neither, so the levels
-    # stay exact whatever the thread order.
+    # stay exact whatever the thread order. The row is read four entries a step
+    # (``array.row_chunk_entries``), a step's column and distance loads in flight together: any
+    # neighbour of the previous level reaches the row, so which one the step finds decides
+    # nothing. CUDA only: the CPU device searches on the host.
     v = wp.int32(wp.tid())
     if distance[v] >= 0:
         return
-    level = state[BFS_LEVEL] + step
-    for e in range(offsets[v], offsets[v + 1]):
-        if distance[columns[e]] == level - 1:
-            distance[v] = level
-            state[BFS_REACHED] = level
+    previous = state[BFS_LEVEL] + step - 1
+    end = offsets[v + 1]
+    for e in range(offsets[v], end, 4):
+        ring = row_chunk_entries(columns, e, end)
+        if (
+            distance[ring[0]] == previous
+            or distance[ring[1]] == previous
+            or distance[ring[2]] == previous
+            or distance[ring[3]] == previous
+        ):
+            distance[v] = previous + 1
+            state[BFS_REACHED] = previous + 1
             return
 
 
