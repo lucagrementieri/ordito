@@ -37,7 +37,12 @@ from ordito.kernels.array import (
 from ordito.kernels.grouping import hash_slot_words3, key_set_insert, next_slot
 from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from ordito.kernels.reduce import GroupSumPass, peer_counted_add
-from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, finish_run_sum, scatter_add_vector
+from ordito.kernels.scatter import (
+    ARRIVAL_POOL_PEERS,
+    finish_run_sum,
+    peer_extremum_vec3,
+    scatter_add_vector,
+)
 from ordito.kernels.triangles import face_vertices, row_triple, write_row_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -596,12 +601,8 @@ def pool_point_extremum(
     # which only ``counts`` -- final once the launch ends -- can name. Shared by
     # ``pool_extremum_points`` and ``pool_extremum_table``, which differ only in the probe.
     record_point_bucket(slot, p, n_voxels, out_slots, out_counts)
-    if slot < 0:
-        return
-    if largest:
-        wp.atomic_max(out_values, slot, values[p])
-    else:
-        wp.atomic_min(out_values, slot, values[p])
+    if slot >= 0:
+        peer_extremum_vec3(out_values, slot, values[p], largest)
 
 
 @wp.func

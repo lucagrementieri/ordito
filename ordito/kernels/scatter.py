@@ -27,6 +27,7 @@ from ordito.kernels.reduce import (
     group_sum_term,
     raise_group_sum_field,
     warp_lane_leads,
+    warp_lanes_extremum,
     warp_lanes_sum_float,
     warp_peer_lanes,
     warp_uniform_lanes,
@@ -479,6 +480,31 @@ def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec
             wp.atomic_add(out_sum, row, 0, out_sum.dtype(x))
             wp.atomic_add(out_sum, row, 1, out_sum.dtype(y))
             wp.atomic_add(out_sum, row, 2, out_sum.dtype(z))
+
+
+@wp.func
+def peer_extremum_vec3(
+    out_values: wp.array[wp.vec3], index: wp.int32, v: wp.vec3, largest: wp.bool
+) -> None:
+    # A componentwise ``atomic_max`` (``largest``) or ``atomic_min`` of ``v`` into ``out_values``,
+    # the lanes of a warp sharing ``index`` (``warp_peer_lanes``) reduced in registers first and
+    # committed once, by the lowest; a lane with no peer, and every lane on the CPU device, takes
+    # the plain atomic. Order-independent, so the result is the plain atomics' bit for bit. For an
+    # extremum crowding a few slots: a coarse voxel pooling of a scan, where a warp's consecutive
+    # points share a voxel.
+    lanes = warp_peer_lanes(index)
+    value = v
+    if lanes != 0:
+        value = wp.vec3(
+            warp_lanes_extremum(lanes, v[0], largest),
+            warp_lanes_extremum(lanes, v[1], largest),
+            warp_lanes_extremum(lanes, v[2], largest),
+        )
+    if lanes == 0 or warp_lane_leads(lanes) != 0:
+        if largest:
+            wp.atomic_max(out_values, index, value)
+        else:
+            wp.atomic_min(out_values, index, value)
 
 
 @wp.func

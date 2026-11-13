@@ -1031,6 +1031,27 @@ return value;
 def warp_lanes_max_nonnegative(lanes: wp.int32, value: wp.float32) -> wp.float32: ...
 
 
+# The largest (``largest``) or smallest ``value`` over the lanes in the ``lanes`` mask, to every one
+# of them, for a float of either sign: flipping a negative float's magnitude bits makes its bits
+# order like the float as a signed integer, so the integer warp reduction is exact, and the flip is
+# its own inverse. ``-0.0`` orders below ``+0.0``, as CUDA's ``fminf`` / ``fmaxf`` and so its float
+# ``atomic_min`` / ``atomic_max`` do; a NaN orders by its bits. The CPU device returns ``value``.
+_WARP_LANES_EXTREMUM = """
+#if defined(__CUDA_ARCH__)
+const int bits = __float_as_int(value);
+int key = bits ^ ((bits >> 31) & 0x7fffffff);
+key = largest ? __reduce_max_sync((unsigned)lanes, key) : __reduce_min_sync((unsigned)lanes, key);
+return __int_as_float(key ^ ((key >> 31) & 0x7fffffff));
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_LANES_EXTREMUM)
+def warp_lanes_extremum(lanes: wp.int32, value: wp.float32, largest: wp.bool) -> wp.float32: ...
+
+
 # The ``value`` of the lane below, for a whole converged warp: a wavefront whose lane ``t`` reads
 # what lane ``t - 1`` wrote a step earlier passes it in a register instead of through memory and a
 # barrier. Lane 0 gets its own ``value``. One native a dtype (a native cannot return its argument's
