@@ -9347,9 +9347,7 @@ entry is <code>True</code>.</p>
 <span class="normal">900</span>
 <span class="normal">901</span>
 <span class="normal">902</span>
-<span class="normal">903</span>
-<span class="normal">904</span>
-<span class="normal">905</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_winding_consistent_mask</span><span class="p">(</span>
+<span class="normal">903</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_winding_consistent_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9407,20 +9405,18 @@ entry is <code>True</code>.</p>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
-    <span class="c1"># Neither edge table is built when not given: the keys come straight off ``faces`` and the</span>
-    <span class="c1"># kernel reads each directed edge from its face corner, the row ``faces_to_edges`` would hold.</span>
-    <span class="n">edge_groups</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">grouping</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="n">_halfedge_keys</span><span class="p">(</span><span class="n">faces</span><span class="p">),</span> <span class="mi">2</span><span class="p">)</span>
-    <span class="n">n_groups</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edge_groups</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="k">if</span> <span class="n">n_groups</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-
-    <span class="n">consistent</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_groups</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_validation</span><span class="o">.</span><span class="n">edge_pair_winding_mask</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_groups</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">edge_groups</span><span class="p">,</span> <span class="n">consistent</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="c1"># The pairs are ``face_adjacency``'s: the keys come straight off ``faces`` into the sort, and</span>
+    <span class="c1"># each pair's flag is written by the run emit, so neither an edge table nor a group table is</span>
+    <span class="c1"># built; the kernel reads each directed edge from its face corner when ``edges`` is not given.</span>
+    <span class="n">order</span><span class="p">,</span> <span class="n">inclusive</span><span class="p">,</span> <span class="n">n_pairs</span> <span class="o">=</span> <span class="n">_sorted_pair_scan</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="n">consistent</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_pairs</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_pairs</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_validation</span><span class="o">.</span><span class="n">emit_sorted_pair_winding</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">inclusive</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">inclusive</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">consistent</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
     <span class="k">return</span> <span class="n">consistent</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -9694,7 +9690,9 @@ with <code>face_adjacency_edges</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 908</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 906</span>
+<span class="normal"> 907</span>
+<span class="normal"> 908</span>
 <span class="normal"> 909</span>
 <span class="normal"> 910</span>
 <span class="normal"> 911</span>
@@ -9840,7 +9838,15 @@ with <code>face_adjacency_edges</code>.</p>
 <span class="normal">1051</span>
 <span class="normal">1052</span>
 <span class="normal">1053</span>
-<span class="normal">1054</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_orientation_bits</span><span class="p">(</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
+<span class="normal">1060</span>
+<span class="normal">1061</span>
+<span class="normal">1062</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_orientation_bits</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9978,14 +9984,24 @@ with <code>face_adjacency_edges</code>.</p>
     <span class="c1"># readbacks for work bounded by a few milliseconds of bandwidth.</span>
     <span class="c1"># ``signed_edges`` holds face ids this function just built from ``adjacency`` (itself bounded</span>
     <span class="c1"># by ``n_faces`` by construction) and every sign is ``0`` or ``1``, so nothing is range-checked.</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_connected_components</span><span class="o">.</span><span class="n">ecl_hook_parity</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">words</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
     <span class="k">if</span> <span class="n">is_deterministic</span><span class="p">():</span>
-        <span class="n">words</span> <span class="o">=</span> <span class="n">_reproducible_orientation_words</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">words</span><span class="p">)</span>
+        <span class="c1"># The flagged hook tells whether the racing forest already is the reproducible answer.</span>
+        <span class="n">conflict</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_connected_components</span><span class="o">.</span><span class="n">ecl_hook_parity_flagged</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">words</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">conflict</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">words</span> <span class="o">=</span> <span class="n">_reproducible_orientation_words</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">conflict</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_connected_components</span><span class="o">.</span><span class="n">ecl_hook_parity</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">words</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
     <span class="k">return</span> <span class="n">_flatten_orientation</span><span class="p">(</span><span class="n">words</span><span class="p">),</span> <span class="n">signed_edges</span><span class="p">,</span> <span class="n">signs</span><span class="p">,</span> <span class="n">m</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -10014,10 +10030,12 @@ with <code>face_adjacency_edges</code>.</p>
         <p>Whether the faces admit a consistent orientation (allowing per-face flips).</p>
 <p>A mesh is orientable when each face can be assigned a flip bit so that every pair of
 edge-adjacent faces traverses their shared edge in opposite directions. This is a topological
-property independent of the current winding, matching Open3D's <code>IsOrientable</code>.</p>
-<p>Each face-adjacency edge carries a Z2 flip bit; the check seeds one bit per connected component,
-propagates bits across adjacencies, then verifies that no adjacency violates its constraint (a
-contradiction means non-orientable).</p>
+property independent of the current winding. Only edges shared by exactly two faces constrain
+the bits; a boundary edge, an edge shared by three or more faces, and a degenerate face's edge
+run both ways by that face alone constrain nothing.</p>
+<p>Each face-adjacency edge carries a Z2 constraint on its two faces' flip bits; a parity
+union-find joins the faces and reports a non-orientable mesh as soon as an edge contradicts the
+bits its faces already hold.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10143,7 +10161,9 @@ the halfedges. Not checked against <code>faces</code>.
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Equivalent to <code>open3d.geometry.TriangleMesh.is_orientable</code>. Unlike
+  <p>Equal to <code>open3d.geometry.TriangleMesh.is_orientable</code> on edge-manifold meshes without
+degenerate faces. Elsewhere Open3D orients by a traversal whose answer can change with the order
+of the faces alone, so the two are not comparable there. Unlike
 <a class="autorefs autorefs-internal" title="is_winding_consistent" href="./#ordito.validation.is_winding_consistent"><code>is_winding_consistent</code></a>, orientability allows
 individual faces to be flipped, so a consistently-orientable mesh with inconsistent winding
 still returns <code>True</code>.</p>
@@ -10174,15 +10194,7 @@ faces are flipped:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
-<span class="normal">1060</span>
-<span class="normal">1061</span>
-<span class="normal">1062</span>
-<span class="normal">1063</span>
-<span class="normal">1064</span>
-<span class="normal">1065</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1065</span>
 <span class="normal">1066</span>
 <span class="normal">1067</span>
 <span class="normal">1068</span>
@@ -10258,7 +10270,14 @@ faces are flipped:</p>
 <span class="normal">1138</span>
 <span class="normal">1139</span>
 <span class="normal">1140</span>
-<span class="normal">1141</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_orientable</span><span class="p">(</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_orientable</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10269,11 +10288,13 @@ faces are flipped:</p>
 
 <span class="sd">    A mesh is orientable when each face can be assigned a flip bit so that every pair of</span>
 <span class="sd">    edge-adjacent faces traverses their shared edge in opposite directions. This is a topological</span>
-<span class="sd">    property independent of the current winding, matching Open3D's ``IsOrientable``.</span>
+<span class="sd">    property independent of the current winding. Only edges shared by exactly two faces constrain</span>
+<span class="sd">    the bits; a boundary edge, an edge shared by three or more faces, and a degenerate face's edge</span>
+<span class="sd">    run both ways by that face alone constrain nothing.</span>
 
-<span class="sd">    Each face-adjacency edge carries a Z2 flip bit; the check seeds one bit per connected component,</span>
-<span class="sd">    propagates bits across adjacencies, then verifies that no adjacency violates its constraint (a</span>
-<span class="sd">    contradiction means non-orientable).</span>
+<span class="sd">    Each face-adjacency edge carries a Z2 constraint on its two faces' flip bits; a parity</span>
+<span class="sd">    union-find joins the faces and reports a non-orientable mesh as soon as an edge contradicts the</span>
+<span class="sd">    bits its faces already hold.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -10307,7 +10328,9 @@ faces are flipped:</p>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    Equivalent to ``open3d.geometry.TriangleMesh.is_orientable``. Unlike</span>
+<span class="sd">    Equal to ``open3d.geometry.TriangleMesh.is_orientable`` on edge-manifold meshes without</span>
+<span class="sd">    degenerate faces. Elsewhere Open3D orients by a traversal whose answer can change with the order</span>
+<span class="sd">    of the faces alone, so the two are not comparable there. Unlike</span>
 <span class="sd">    [`is_winding_consistent`][ordito.validation.is_winding_consistent], orientability allows</span>
 <span class="sd">    individual faces to be flipped, so a consistently-orientable mesh with inconsistent winding</span>
 <span class="sd">    still returns ``True``.</span>
@@ -10333,15 +10356,10 @@ faces are flipped:</p>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">True</span>
 
-    <span class="n">orient</span><span class="p">,</span> <span class="n">mates</span> <span class="o">=</span> <span class="n">_orientation_bits_from_mates</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">mates</span><span class="p">)</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">conflict</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_validation</span><span class="o">.</span><span class="n">mate_orientation_conflict</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">mates</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">mates</span><span class="p">,</span> <span class="n">orient</span><span class="p">,</span> <span class="n">conflict</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="c1"># The hook flags a pair its forest contradicts, which is a re-test of every pair against the</span>
+    <span class="c1"># flattened bits: no flatten and no second pass.</span>
+    <span class="n">conflict</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_orientation_words_from_mates</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">mates</span><span class="p">,</span> <span class="n">conflict</span><span class="p">)</span>
     <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">conflict</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="o">==</span> <span class="mi">0</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -10550,14 +10568,7 @@ them gives a consistent, inward-facing cube:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
-<span class="normal">1147</span>
-<span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1151</span>
 <span class="normal">1152</span>
 <span class="normal">1153</span>
 <span class="normal">1154</span>
@@ -10651,7 +10662,14 @@ them gives a consistent, inward-facing cube:</p>
 <span class="normal">1242</span>
 <span class="normal">1243</span>
 <span class="normal">1244</span>
-<span class="normal">1245</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flip_mask</span><span class="p">(</span>
+<span class="normal">1245</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flip_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10966,7 +10984,14 @@ function. Every other <code>is_*</code> / <code>*_mask</code> pair in this modul
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1417</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1410</span>
+<span class="normal">1411</span>
+<span class="normal">1412</span>
+<span class="normal">1413</span>
+<span class="normal">1414</span>
+<span class="normal">1415</span>
+<span class="normal">1416</span>
+<span class="normal">1417</span>
 <span class="normal">1418</span>
 <span class="normal">1419</span>
 <span class="normal">1420</span>
@@ -11074,11 +11099,7 @@ function. Every other <code>is_*</code> / <code>*_mask</code> pair in this modul
 <span class="normal">1522</span>
 <span class="normal">1523</span>
 <span class="normal">1524</span>
-<span class="normal">1525</span>
-<span class="normal">1526</span>
-<span class="normal">1527</span>
-<span class="normal">1528</span>
-<span class="normal">1529</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_watertight</span><span class="p">(</span>
+<span class="normal">1525</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_watertight</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11173,7 +11194,10 @@ function. Every other <code>is_*</code> / <code>*_mask</code> pair in this modul
     <span class="c1"># flag and it is read once; only the self-intersection test, which needs a BVH, waits for it.</span>
     <span class="c1"># Reading the edge test's flag first, to skip the vertex test on an open mesh, costs a closed</span>
     <span class="c1"># mesh more than it saves an open one: the vertex test's launches then no longer overlap the</span>
-    <span class="c1"># sort on the device.</span>
+    <span class="c1"># sort on the device. Declined the other way (2026-11-12, CUDA): issuing the BVH build and the</span>
+    <span class="c1"># self-intersection pass before this read, so one sync serves both, took watertight and</span>
+    <span class="c1"># self-intersecting icospheres to 0.97-1.02x from 5 k to 2.6 M faces and cost an open one</span>
+    <span class="c1"># 3.1-17x (the BVH and the broad phase it skips today).</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">violation</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">parents</span> <span class="o">=</span> <span class="n">_corner_parents_from_mates</span><span class="p">(</span>
@@ -11345,7 +11369,11 @@ watertightness (trimesh's <code>broken_faces</code>) are <code>flatnonzero(~face
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1532</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
 <span class="normal">1533</span>
 <span class="normal">1534</span>
 <span class="normal">1535</span>
@@ -11392,11 +11420,7 @@ watertightness (trimesh's <code>broken_faces</code>) are <code>flatnonzero(~face
 <span class="normal">1576</span>
 <span class="normal">1577</span>
 <span class="normal">1578</span>
-<span class="normal">1579</span>
-<span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_watertight_mask</span><span class="p">(</span>
+<span class="normal">1579</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_watertight_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -11659,7 +11683,11 @@ independent of the reference point and its sign encodes the normal orientation.<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1586</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1582</span>
+<span class="normal">1583</span>
+<span class="normal">1584</span>
+<span class="normal">1585</span>
+<span class="normal">1586</span>
 <span class="normal">1587</span>
 <span class="normal">1588</span>
 <span class="normal">1589</span>
@@ -11741,11 +11769,7 @@ independent of the reference point and its sign encodes the normal orientation.<
 <span class="normal">1665</span>
 <span class="normal">1666</span>
 <span class="normal">1667</span>
-<span class="normal">1668</span>
-<span class="normal">1669</span>
-<span class="normal">1670</span>
-<span class="normal">1671</span>
-<span class="normal">1672</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_volume</span><span class="p">(</span>
+<span class="normal">1668</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12156,7 +12180,11 @@ triangle reversed flags that triangle and one neighbour).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1704</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1700</span>
+<span class="normal">1701</span>
+<span class="normal">1702</span>
+<span class="normal">1703</span>
+<span class="normal">1704</span>
 <span class="normal">1705</span>
 <span class="normal">1706</span>
 <span class="normal">1707</span>
@@ -12334,11 +12362,7 @@ triangle reversed flags that triangle and one neighbour).</p>
 <span class="normal">1879</span>
 <span class="normal">1880</span>
 <span class="normal">1881</span>
-<span class="normal">1882</span>
-<span class="normal">1883</span>
-<span class="normal">1884</span>
-<span class="normal">1885</span>
-<span class="normal">1886</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
+<span class="normal">1882</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
