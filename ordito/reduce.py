@@ -1765,8 +1765,13 @@ def _launch_global_scalar_tiled(
         out = _launch.full(1, spec.init_global(array.dtype), dtype=array.dtype, device=array.device)
 
     if flat is not None:
+        kernel = (
+            spec.tiled_1d[array.dtype]
+            if spec.name == "sum"
+            else kernel_reduce.extrema_1d(spec.name, array.dtype, array.device)
+        )
         _launch.launch_tiled(
-            spec.tiled_1d[array.dtype],
+            kernel,
             dim=[kernel_reduce.blocks_1d(flat.size)],
             inputs=[flat, out],
             block_dim=TILE_1D,

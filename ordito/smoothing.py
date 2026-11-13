@@ -2446,7 +2446,7 @@ def filter_mut_dif_laplacian(
         assert face_areas is not None
         if face_areas.size > 0:
             _launch.launch_tiled(
-                kernel_reduce.MAX1D_TILED[wp.float32],
+                kernel_reduce.extrema_1d("max", wp.float32, wp.get_device(device)),
                 dim=[kernel_reduce.blocks_1d(face_areas.size)],
                 inputs=[face_areas, area_max],
                 block_dim=TILE_1D,

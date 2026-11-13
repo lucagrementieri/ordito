@@ -1357,11 +1357,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
   weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
   `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
-- **`reduce.minmax`'s tiled 1-D kernel is slow on CUDA** (2026-11-13): `MINMAX1D_TILED` took
-  15 / 18 / 547 us a launch on 15 k / 2.6 M / 84 M `int32` where the lane-strided
-  `MINMAX_PAIR_1D` (an empty second array) took 5.7 / 6.6 / 204 us (0.6 against 1.6 TB/s). Open:
-  route `reduce.minmax`'s CUDA `axis=None` path through a lane-strided fold, checking floats'
-  NaN and `-0.0` handling and the CPU, where the tiled form vectorizes and wins (1.27-1.44x).
+- **`reduce.sum`'s tiled 1-D kernel trails a lane-strided fold on CUDA** (2026-11-13):
+  `SUM1D_TILED` reads 84 M `float32` at 1.05 TB/s where the lane-strided extrema
+  (`kernels/reduce._extrema_1d_strided`) reach 1.65. Open: a lane-strided sum on CUDA. It changes
+  the float bits (a new fixed order, still reproducible) and must keep the deterministic commit
+  (`store_block_*`) and the mapped `term_sum_1d` forms; the CPU keeps the tiled form.
 - **`voxels` grid builds sit at `Volume.allocate_by_voxels`' floor** (2026-11-13): morphology,
   set algebra, `fill_*` and `revoxelize` are 0.35-0.75 ms calls of one or two builds. The
   builder is host-bound: 0.13 ms at 100 cells, 0.23-0.25 ms from 10 k, the same issued back to

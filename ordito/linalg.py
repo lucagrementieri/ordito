@@ -5854,7 +5854,7 @@ def _ratio_bound(ratios: wp.array[wp.float64, Any]) -> wp.array[wp.float64]:
     bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
     if n > 0:
         _launch.launch_tiled(
-            kernel_reduce.MAX1D_TILED[wp.float64],
+            kernel_reduce.extrema_1d("max", wp.float64, wp.get_device(device)),
             dim=[kernel_reduce.blocks_1d(n)],
             inputs=[ratios, bound],
             block_dim=TILE_1D,

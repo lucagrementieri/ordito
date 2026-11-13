@@ -2394,60 +2394,142 @@ MINMAX1D_TILED = KernelTable(
 )
 
 
-def _minmax_pair_1d(name, dtype):
-    """
-    axis=None over two 1-D arrays together, in one launch: ``array.isin``'s joint value span.
+@wp.func
+def strided_extrema(
+    values: Any, begin: wp.int32, end: wp.int32, lane: wp.int32, low: Any, high: Any
+) -> tuple[Any, Any]:
+    # Fold ``values[begin:end]`` into ``(low, high)``, the block's lanes strided by
+    # ``wp.block_dim()``.
+    for k in range(begin + lane, end, wp.block_dim()):
+        v = values[k]
+        low = wp.min(low, v)
+        high = wp.max(high, v)
+    return low, high
 
-    Blocks take ``ITEMS_PER_BLOCK_1D`` of the two arrays' concatenation and stride its lanes by
-    ``wp.block_dim()``, folding into ``out_minmax``'s seeded ``(min, max)`` with one atomic pair a
-    block, where two launches of ``MINMAX1D_TILED`` cost a launch more. CUDA only: on the CPU's
-    one-lane blocks the strided loop does not vectorize and lost 1.27-1.44x to the tiled pair from
-    35 k vertices (still 1.4-1.6x with a branch an element instead of a run of each array).
-    """
 
-    def _k(
-        first: wp.array[wp.Scalar], second: wp.array[wp.Scalar], out_minmax: wp.array[wp.Scalar]
-    ) -> None:
-        # The chunk splits at ``n_first`` into a run of each array, walked without a branch an
-        # element (one cost the CPU's one-lane blocks 1.4-1.6x).
-        block, lane = wp.tid()
-        n_first = first.shape[0]
-        offset, count = block_chunk_1d(n_first + second.shape[0], block)
-        if count <= 0:
-            return
-        split = wp.min(wp.max(n_first - offset, 0), count)
-        if split > 0:
-            low = first[offset]
-        else:
-            low = second[offset - n_first]
-        high = low
-        for k in range(lane, split, wp.block_dim()):
-            v = first[offset + k]
-            low = wp.min(low, v)
-            high = wp.max(high, v)
-        for k in range(split + lane, count, wp.block_dim()):
-            v = second[offset + k - n_first]
-            low = wp.min(low, v)
-            high = wp.max(high, v)
+@wp.func
+def chunk_extrema(
+    first: Any, second: Any, n_first: wp.int32, offset: wp.int32, count: wp.int32, lane: wp.int32
+) -> tuple[Any, Any]:
+    # A lane's ``(low, high)`` over elements ``[offset, offset + count)`` of ``first`` followed by
+    # ``second``: the chunk splits at ``n_first`` into a run of each array, walked with no branch
+    # an element (one cost the CPU's one-lane blocks 1.4-1.6x). Seeded from the chunk's first
+    # element, so no per-dtype identity is needed.
+    split = wp.min(wp.max(n_first - offset, 0), count)
+    if split > 0:
+        low = first[offset]
+    else:
+        low = second[offset - n_first]
+    high = low
+    low, high = strided_extrema(first, offset, offset + split, lane, low, high)
+    return strided_extrema(
+        second, offset + split - n_first, offset + count - n_first, lane, low, high
+    )
+
+
+@wp.func
+def commit_block_extrema(
+    out_result: Any, low_slot: wp.int32, high_slot: wp.int32, lane: wp.int32, low: Any, high: Any
+):
+    # The block's minimum into ``out_result[low_slot]`` and maximum into ``[high_slot]`` by one
+    # atomic each, a slot ``-1`` committing nothing. Kernels pass literal slots, so the unused
+    # branch and its block reduction fold away; the branches are block-uniform either way.
+    if low_slot >= 0:
         block_low = block_min(low)
+        if lane == 0:
+            wp.atomic_min(out_result, low_slot, block_low)
+    if high_slot >= 0:
         block_high = block_max(high)
         if lane == 0:
-            wp.atomic_min(out_minmax, 0, block_low)
-            wp.atomic_max(out_minmax, 1, block_high)
+            wp.atomic_max(out_result, high_slot, block_high)
 
-    _k.__annotations__["first"] = wp.array[dtype]
-    _k.__annotations__["second"] = wp.array[dtype]
-    _k.__annotations__["out_minmax"] = wp.array[dtype]
+
+def _extrema_1d_strided(name, dtype, low_slot, high_slot, pair):
+    """
+    axis=None ``min`` / ``max`` / ``minmax`` on a 1-D array, lane-strided: the CUDA form.
+
+    Each block folds ``ITEMS_PER_BLOCK_1D`` elements (``chunk_extrema``), then one block reduction
+    and one atomic a slot into ``out_result``'s seeds (``commit_block_extrema``; ``low_slot`` /
+    ``high_slot`` ``-1`` where the kernel commits none). ``pair`` takes a second array and folds
+    the two as one concatenation (``array.isin``'s joint span). Against the tiled ``*1D_TILED``
+    forms, whose sixteen tile loads a block each end in a barrier, CUDA 2026-11-13: 5.7 / 6.6 /
+    204 us a launch at 15 k / 2.6 M / 84 M ``int32`` against 15 / 18 / 547 us (1.6 against
+    0.6 TB/s). The CPU keeps the tiled forms (``extrema_1d``): its one-lane blocks run this loop
+    unvectorized, 1.27-1.44x the tiled pair from 35 k elements.
+    """
+    if pair:
+
+        def _k(first: Any, second: Any, out_result: Any) -> None:
+            block, lane = wp.tid()
+            n_first = first.shape[0]
+            offset, count = block_chunk_1d(n_first + second.shape[0], block)
+            if count <= 0:
+                return
+            low, high = chunk_extrema(first, second, n_first, offset, count, lane)
+            commit_block_extrema(out_result, low_slot, high_slot, lane, low, high)
+
+        _k.__annotations__["first"] = wp.array[dtype]
+        _k.__annotations__["second"] = wp.array[dtype]
+    else:
+
+        def _k(values: Any, out_result: Any) -> None:
+            block, lane = wp.tid()
+            n = values.shape[0]
+            offset, count = block_chunk_1d(n, block)
+            if count <= 0:
+                return
+            low, high = chunk_extrema(values, values, n, offset, count, lane)
+            commit_block_extrema(out_result, low_slot, high_slot, lane, low, high)
+
+        _k.__annotations__["values"] = wp.array[dtype]
+    _k.__annotations__["out_result"] = wp.array[dtype]
     return wp.kernel(_k, name=name)
 
 
+MIN1D_STRIDED = KernelTable(
+    "min1d_strided",
+    {
+        d: _extrema_1d_strided(f"min1d_strided_{d.__name__}", d, 0, -1, False)
+        for d in _GLOBAL_DTYPES
+    },
+)
+MAX1D_STRIDED = KernelTable(
+    "max1d_strided",
+    {
+        d: _extrema_1d_strided(f"max1d_strided_{d.__name__}", d, -1, 0, False)
+        for d in _GLOBAL_DTYPES
+    },
+)
+MINMAX1D_STRIDED = KernelTable(
+    "minmax1d_strided",
+    {
+        d: _extrema_1d_strided(f"minmax1d_strided_{d.__name__}", d, 0, 1, False)
+        for d in _GLOBAL_DTYPES
+    },
+)
 MINMAX_PAIR_1D = KernelTable(
     "minmax_pair_1d",
     {
-        d: _minmax_pair_1d(f"minmax_pair_1d_{d.__name__}", d)
+        d: _extrema_1d_strided(f"minmax_pair_1d_{d.__name__}", d, 0, 1, True)
         for d in (wp.int32, wp.int64, wp.uint32, wp.uint64)
     },
 )
+
+
+def extrema_1d(kind: str, dtype: Any, device: Any) -> Any:
+    """
+    Return the axis=None ``"min"`` / ``"max"`` / ``"minmax"`` kernel for a 1-D ``dtype`` array.
+
+    Lane-strided on CUDA, tiled on the CPU (``_extrema_1d_strided``); both launch
+    ``dim=[blocks_1d(n)]`` at ``block_dim=TILE_1D`` with ``(values, out_result)``.
+    """
+    return (_EXTREMA_1D_CUDA if device.is_cuda else _EXTREMA_1D_CPU)[kind][dtype]
+
+
+_EXTREMA_1D_CUDA = {"min": MIN1D_STRIDED, "max": MAX1D_STRIDED, "minmax": MINMAX1D_STRIDED}
+_EXTREMA_1D_CPU = {"min": MIN1D_TILED, "max": MAX1D_TILED, "minmax": MINMAX1D_TILED}
+
+
 MINMAX2D_TILED = KernelTable(
     "minmax2d_tiled",
     {d: _minmax_2d_tiled(f"minmax2d_tiled_{d.__name__}", d) for d in _GLOBAL_DTYPES},
