@@ -1014,9 +1014,9 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> odt.
 
     Notes
     -----
-    The length comes from ``Volume.get_active_stats``, never from ``get_voxel_count``: on a
-    *rebuildable* grid the latter reports the reserved **capacity**, and the trailing rows of
-    ``get_voxels`` are padding at ``[0, 0, 0]`` that would read as real voxels.
+    The length is the grid's *active* voxel count, never a rebuildable grid's ``get_voxel_count``:
+    that reports the reserved **capacity**, and the trailing rows of ``get_voxels`` are padding at
+    ``[0, 0, 0]`` that would read as real voxels.
 
     Examples
     --------
@@ -1037,7 +1037,11 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> odt.
     n_voxels = _voxel_count(grid)
     if n_voxels == 0:
         return odt.empty_2d((0, 3), wp.int32, device=grid.device)
-    rows = odt.as_array2d(odt.as_dense(grid.get_voxels()[:n_voxels]), wp.int32)
+    voxels = grid.get_voxels()
+    # Only a rebuildable grid pads its rows past the active ones; a slice costs a view otherwise.
+    rows = odt.as_array2d(
+        voxels if int(voxels.shape[0]) == n_voxels else odt.as_dense(voxels[:n_voxels]), wp.int32
+    )
     if order == "grid":
         return rows
 
@@ -3523,8 +3527,17 @@ def _select_cells(
 
 
 def _voxel_count(grid: wp.Volume) -> int:
-    """Count the *active* voxels: ``get_voxel_count`` reports capacity instead (see `cells`)."""
-    return int(grid.get_active_stats().voxel_count)
+    """
+    Count the *active* voxels: ``get_voxel_count`` reports a rebuildable grid's capacity instead.
+
+    On any other grid the two are the same count, ``get_voxel_count`` reading it off the header
+    Warp caches on the host where ``get_active_stats`` copies the header back from the device and
+    synchronizes (12 us of a 39 us ``cells``); only ``rebuild`` changes a header, and only a
+    rebuildable grid takes it.
+    """
+    if grid.is_rebuildable:
+        return int(grid.get_active_stats().voxel_count)
+    return int(grid.get_voxel_count())
 
 
 def _translation(origin: wp.vec3, voxel_size: float) -> tuple[float, float, float]:
