@@ -981,6 +981,53 @@ def warp_broadcast(lanes: wp.int32, value: wp.int32, source: wp.int32) -> wp.int
 def warp_broadcast_float(lanes: wp.int32, value: wp.float64, source: wp.int32) -> wp.float64: ...
 
 
+# The inclusive sum of ``value`` over a whole warp's lanes up to each lane (a shuffle scan), the
+# value itself on the CPU device. Every lane of the warp must call it.
+_WARP_INCLUSIVE_SUM = """
+#if defined(__CUDA_ARCH__)
+const unsigned lane = threadIdx.x & 31u;
+int sum = value;
+for (unsigned offset = 1; offset < 32u; offset <<= 1) {
+    const int below = __shfl_up_sync(0xffffffffu, sum, offset);
+    if (lane >= offset)
+        sum += below;
+}
+return sum;
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_INCLUSIVE_SUM)
+def warp_inclusive_sum(value: wp.int32) -> wp.int32: ...
+
+
+# A whole warp's compaction into one register a lane: the lanes of ``passing`` (a full-warp
+# ``warp_ballot``) hand their ``value``, in lane order, to the lanes from ``filled`` on, and every
+# other lane keeps ``held``. A list of up to 32 items lives an item a lane, appended a ballot at
+# a time, the caller keeping ``filled + popcount32(passing) <= 32``; a second register takes the
+# items past the first's 32 at ``filled - 32``. Every lane of the warp must call it. The CPU
+# device's one-lane block keeps ``value`` when it passes.
+_WARP_DEPOSIT = """
+#if defined(__CUDA_ARCH__)
+const int k = (int)(threadIdx.x & 31u) - filled;
+const bool takes = k >= 0 && k < __popc((unsigned)passing);
+const int source = takes ? (int)__fns((unsigned)passing, 0u, k + 1) : 0;
+const int moved = __shfl_sync(0xffffffffu, value, source);
+return takes ? moved : held;
+#else
+return passing != 0 ? value : held;
+#endif
+"""
+
+
+@wp.func_native(_WARP_DEPOSIT)
+def warp_deposit(
+    passing: wp.int32, filled: wp.int32, value: wp.int32, held: wp.int32
+) -> wp.int32: ...
+
+
 @wp.func
 def warp_walk(lanes: wp.int32) -> tuple[wp.int32, wp.int32]:
     # A walk's first entry and stride: a lane's rank among the lanes of ``lanes`` and their count

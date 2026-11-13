@@ -15,7 +15,13 @@ from ordito.kernels.array import (
     walk_item,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.reduce import block_chunk_1d, block_min, thread_fence
+from ordito.kernels.reduce import (
+    block_chunk_1d,
+    block_min,
+    thread_fence,
+    warp_broadcast,
+    warp_inclusive_sum,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -419,6 +425,110 @@ def ball_cell_probe(
         (wp.float32(j) + half) * cell_width,
         (wp.float32(k) + half) * cell_width,
     )
+
+
+# A hash-grid query's cells and their points read off the grid itself, for a walk that hands a
+# query's candidates to several lanes in the one-thread walk's order (``wp.hash_grid_query_next``):
+# the box of ``wp.hash_grid_query(grid, center, radius)`` along ``axis``, as its first cell and
+# cell count (Warp's own ``hash_grid_cell_coord`` and ``hash_grid_query_end``, so the cells are the
+# query's on any grid); a cell's ``[start, end)`` slots, x fastest as the query walks them, empty on
+# an unbuilt grid as the query is; and the point a slot holds.
+_HASH_GRID_BOX_AXIS = """
+const wp::HashGrid& grid = *(const wp::HashGrid*)grid_id;
+const float inv = grid.cell_width_inv;
+const int dim = axis == 0 ? grid.dim_x : (axis == 1 ? grid.dim_y : grid.dim_z);
+const int first = wp::hash_grid_cell_coord((center[axis] - radius) * inv);
+const int last = wp::hash_grid_query_end(
+    first, wp::hash_grid_cell_coord((center[axis] + radius) * inv), dim);
+return wp::vec2i(first, last - first + 1);
+"""
+
+_HASH_GRID_CELL_SLOTS = """
+const wp::HashGrid& grid = *(const wp::HashGrid*)grid_id;
+if (!grid.point_cells)
+    return wp::vec2i(0, 0);
+const int cell = wp::hash_grid_index(grid, x, y, z);
+return wp::vec2i(grid.cell_starts[cell], grid.cell_ends[cell]);
+"""
+
+_HASH_GRID_SLOT_POINT = "return ((const wp::HashGrid*)grid_id)->point_ids[slot];"
+
+
+@wp.func_native(_HASH_GRID_BOX_AXIS)
+def hash_grid_box_axis(
+    grid_id: wp.uint64, center: wp.vec3, radius: wp.float32, axis: wp.int32
+) -> wp.vec2i: ...
+
+
+@wp.func_native(_HASH_GRID_CELL_SLOTS)
+def hash_grid_cell_slots(grid_id: wp.uint64, x: wp.int32, y: wp.int32, z: wp.int32) -> wp.vec2i: ...
+
+
+@wp.func_native(_HASH_GRID_SLOT_POINT)
+def hash_grid_slot_point(grid_id: wp.uint64, slot: wp.int32) -> wp.int32: ...
+
+
+@wp.func
+def hash_grid_box(
+    grid_id: wp.uint64, center: wp.vec3, radius: wp.float32
+) -> tuple[wp.vec3i, wp.vec3i]:
+    # The first cell and the cell count along each axis of the box
+    # ``wp.hash_grid_query(grid, center, radius)`` walks (``hash_grid_box_axis``).
+    x = hash_grid_box_axis(grid_id, center, radius, 0)
+    y = hash_grid_box_axis(grid_id, center, radius, 1)
+    z = hash_grid_box_axis(grid_id, center, radius, 2)
+    return wp.vec3i(x[0], y[0], z[0]), wp.vec3i(x[1], y[1], z[1])
+
+
+@wp.func
+def hash_grid_box_span(
+    grid_id: wp.uint64, first: wp.vec3i, counts: wp.vec3i, c: wp.int32
+) -> wp.vec2i:
+    # The first slot and the slot count of the box's ``c``-th cell (x fastest, the query's order),
+    # none past the box's last cell.
+    if c >= counts[0] * counts[1] * counts[2]:
+        return wp.vec2i(0, 0)
+    slots = hash_grid_cell_slots(
+        grid_id,
+        first[0] + c % counts[0],
+        first[1] + (c // counts[0]) % counts[1],
+        first[2] + c // (counts[0] * counts[1]),
+    )
+    return wp.vec2i(slots[0], slots[1] - slots[0])
+
+
+# A hash-grid query walked by a whole warp in the one-thread walk's order, for a walk whose every
+# step is a dependent load (a cell's bounds, then its points, then what a point decides): the
+# lanes take the box's cells ``wp.block_dim()`` at a time, each lane's ``hash_grid_box_span``, and
+# ``warp_grid_chunk`` scans their sizes; the chunk's candidates are then taken ``wp.block_dim()``
+# at a time, candidate ``t`` read by ``warp_grid_point``. Every lane of the warp calls both, with
+# the same box; cuda device only.
+@wp.func
+def warp_grid_chunk(span: wp.vec2i) -> tuple[wp.int32, wp.int32]:
+    # The slots of the chunk's cells up to the lane's own (an inclusive warp scan), and the chunk's
+    # total.
+    through = warp_inclusive_sum(span[1])
+    return through, warp_broadcast(-1, through, wp.block_dim() - 1)
+
+
+@wp.func
+def warp_grid_point(
+    grid_id: wp.uint64, span: wp.vec2i, through: wp.int32, total: wp.int32, t: wp.int32
+) -> wp.int32:
+    # The point at the chunk's candidate ``t`` (``warp_grid_chunk``), -1 past its last: the lane
+    # whose cell holds it is the number of lanes whose scan is at most ``t``, by binary search.
+    owner = wp.int32(0)
+    step = wp.block_dim() // 2
+    while step > 0:
+        if warp_broadcast(-1, through, owner + step - 1) <= t:
+            owner += step
+        step = step // 2
+    owner = wp.min(owner, wp.block_dim() - 1)
+    start = warp_broadcast(-1, span[0], owner)
+    before = warp_broadcast(-1, through - span[1], owner)
+    if t >= total:
+        return wp.int32(-1)
+    return hash_grid_slot_point(grid_id, start + t - before)
 
 
 @wp.func

@@ -947,6 +947,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 ## 14. Kernel-shape verdicts
 
 - **Block-per-item** wins when the outer dimension alone starves the device and loses when a slice dimension already fills it (§2.3); such kernels use register blocking instead (below). Models: `obscurance`, `shape_diameter`, `farthest_point_sample` as one persistent block. Any-hit tracing suits binary occlusion; a point-major layout wins only on very large clouds. A cuBQL mesh pays only when the caller builds once and traces many rays (`Trimesh.mesh_for_rays` decides). `max_tangent_sphere` answers inside a tolerance window; an "exact" variant is not the true answer on a mesh. A one-walk least tangent radius (nested spheres shrunk in place against each face) was built and refuted 2026-11-12: 35-45 % of radii moved, up to 80 %, and it cost 1.04-2.4x (`kernels/visibility.shrink_tangent_sphere`).
+- **A lone serial hash-grid walk splits across a warp in its own order** (2026-11-13,
+  `kernels/neighbors.warp_grid_chunk` / `warp_grid_point`): a walk whose every step is a dependent
+  load (a cell's bounds, its points, their flags) over ~125 cells takes 32 cells' bounds and then
+  32 candidates at once, a scan of the cell sizes placing each candidate, and ballots keep an
+  order-dependent rule (a cap on stored entries, a first hit): 0.15-0.2x a walk, `ball_pivoting`'s
+  seeding 0.43-0.55x on the bunnies. It pays where few walks run (a launch's slowest block holds
+  one); many short walks of ~27 cells side by side a lane each already overlap, and the warp
+  taking them one after another lost 1.4-1.5x.
 - **Cooperative BVH walks:** the tiled walk beats the hash grid only while concurrent queries are few (a few thousand for a ball of the cell width); the serial BVH does not. Only `ball_pivoting`'s pivot search qualified, so do not re-run the tree-wide sweep. A thread-per-query BVH launch is usually load-imbalanced, not under-pruned: histogram per-thread candidates first. Walk time varies up to 5x with loop spelling, so time a new or fused walk on the device.
 - **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`), unless each launch of a round can return first on a device idle flag: the flip loop's idle round costs ~6 µs below 60 k rows (27 µs at 1.3 M), so it replays 4 a read below `2**18` rows (`_FLIP_BATCH_ROWS`). A `wp.capture_if` round instead costs ~9 µs more an active round, more than the read it saves. A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference. A `capture_while` iteration's conditional test costs ~3 µs (2026-11-10: 7.65 / 6.04 / 4.73 µs a round of four small launches at 1 / 2 / 8 rounds a body). Several rounds a body pay only where a round past the fixpoint is already near-idle: the packed long-ring ear loop takes two (0.95-0.99x, `polyline._LONG_RING_ROUNDS_PER_BODY`); screened Poisson's CG rounds past convergence run the mat-vec and V-cycle whole, and two a body lost 1.02-1.14x.
 - **Tile solves** win for K >= 16-32 with few systems and a large matrix; ordito's dense solves (K = 5, 6) lose, so "rewrite them as tiles" is refuted.
@@ -1309,13 +1317,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`ball_pivoting`'s late seeding waves** (2026-11-11): after the front dies, ~25 seeding waves
-  of 90-150 us remain on `bunny` (~10 % of the call), each a few points a failure has released
-  testing all 2 016 pairs of their neighbourhood and failing (63 steps of a rank a lane, nearly
-  every step waiting on one lane's grid walk). Unbuilt lever: compact the pairs that pass the
-  cheap tests first, then run their empty-ball walks a lane each. Declined on the way: runs of
-  ranks a lane, and skipping a cut-short walk's repeated failure (par; `reference/
-  component-status.md`, `ball_pivoting`).
 - **A hole fill's hub patch holds the one-block solve** (2026-11-11): `refine_and_smooth_region`'s
   smooth solve (`cg_one_block`) costs 162 us a round on `saddle_small` against 71 on bunny at the
   same step count, tracking the patch's hub valence (82 against 11); 5.3 of the call's ~13 ms.

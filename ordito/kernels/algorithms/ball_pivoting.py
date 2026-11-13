@@ -87,11 +87,25 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TWO_PI, UINT64_MAX_CONSTANT
-from ordito.kernels.array import pack_edge_key
+from ordito.kernels.array import device_is_cpu, pack_edge_key, popcount32
 from ordito.kernels.grouping import decode_key, hash_find, hash_find_or_insert
+from ordito.kernels.neighbors import (
+    hash_grid_box,
+    hash_grid_box_span,
+    warp_grid_chunk,
+    warp_grid_point,
+)
 from ordito.kernels.predicates import dihedral_angle, float_inf, triangle_normal
 from ordito.kernels.proximity import flag_overfull_leaf, meets_overfull_leaf, straggler_slab
-from ordito.kernels.reduce import block_argmin, block_min
+from ordito.kernels.reduce import (
+    block_argmin,
+    block_min,
+    warp_ballot,
+    warp_broadcast,
+    warp_deposit,
+    warp_lane_rank,
+    warp_lowest_lane,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -609,6 +623,107 @@ def seed_neighbours(
 
 
 @wp.func
+def seed_neighbours_warp(
+    lane: wp.int32,
+    p: wp.int32,
+    points: wp.array[wp.vec3],
+    point_used: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    wave: wp.int32,
+    nbr: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # ``seed_neighbours`` for one point by a whole warp (``BPA_SEED_BLOCK``, every lane calling it
+    # with the same ``p``): the same three values, and the same list in every lane's ``nbr``.
+    #
+    # **The walk is a chain of dependent loads, so the lanes take it apart.** The one-thread walk
+    # reads a cell's bounds, then its points, then each point's flags, cell after cell, over a box
+    # of about 125 cells. A late seeding wave (a few points a failure released) is two such walks
+    # back to back, the point's own and the block's walk of its list, and they were five sixths of
+    # it: the pair search the walk feeds was a tenth. Here the lanes read 32 cells' bounds at
+    # once, scan their sizes, and then take 32 of the walk's candidates at once
+    # (``neighbors.warp_grid_chunk``, ``warp_grid_point``). Ballots apply the walk's rules in its
+    # order: a candidate is the ``MAX_SEED_NEIGHBORS`` break when that many are stored before it,
+    # and the first lower-index viable orphan before the break is the one the point yields to. The
+    # list is held an entry a lane in two slots (``reduce.warp_deposit``) and copied into every
+    # lane's ``nbr`` at the end. A walk 0.15-0.2x a lane's own; the late waves 0.3-0.45x, the
+    # seeding 0.43x on ``bunny_decimated`` and 0.55x on ``bunny`` (CUDA, the same proposals).
+    width = wp.block_dim()
+    first, counts = hash_grid_box(grid_id, points[p], 2.0 * radius)
+    cells = counts[0] * counts[1] * counts[2]
+    count = wp.int32(0)
+    yields_to = SEED_UNKNOWN
+    truncated = wp.bool(False)
+    low = wp.int32(0)
+    high = wp.int32(0)
+    done = wp.bool(False)
+    base = wp.int32(0)
+    while base < cells and not done:
+        span = hash_grid_box_span(grid_id, first, counts, base + lane)
+        through, total = warp_grid_chunk(span)
+        head = wp.int32(0)
+        while head < total and not done:
+            j = warp_grid_point(grid_id, span, through, total, head + lane)
+            kind = wp.int32(0)
+            if j >= 0:
+                if j != p and not point_used[j]:
+                    kind = 1
+                    if j < p and not seed_failed_before(seed_failed_wave, j, wave):
+                        kind = 2
+            stored_before = count + warp_lane_rank(warp_ballot(-1, wp.where(kind == 1, 1, 0)))
+            past = stored_before >= MAX_SEED_NEIGHBORS
+            yielding = warp_ballot(-1, wp.where(kind == 2 and not past, 1, 0))
+            if yielding != 0:
+                source = warp_lowest_lane(yielding)
+                yields_to = warp_broadcast(-1, j, source)
+                count = warp_broadcast(-1, stored_before, source)
+                done = wp.bool(True)
+            else:
+                kept = warp_ballot(-1, wp.where(kind == 1 and not past, 1, 0))
+                low = warp_deposit(kept, count, j, low)
+                high = warp_deposit(kept, count - width, j, high)
+                count += popcount32(wp.uint32(kept))
+                if warp_ballot(-1, wp.where(j >= 0 and past, 1, 0)) != 0:
+                    truncated = wp.bool(True)
+                    done = wp.bool(True)
+            head += width
+        base += width
+    if yields_to == SEED_UNKNOWN:
+        for k in range(count):
+            nbr[k] = warp_broadcast(-1, wp.where(k < width, low, high), k % width)
+    return count, yields_to, truncated
+
+
+@wp.func
+def seed_pair_resting(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radius: wp.float32,
+    min_cluster_sq: wp.float32,
+    p: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+) -> wp.vec3:
+    # The pair test's cheap half (``seed_pair_ball``): the centre of the ball resting on
+    # ``(p, a, b)`` past the clustering floor between ``a`` and ``b`` and with compatible normals,
+    # an ``inf`` centre otherwise. Squared, matching the same vcglib clustering rule as tested in
+    # ``candidate_is_viable``; see ``ball_is_empty`` for why one module must not spell one
+    # predicate two ways.
+    inf = float_inf(radius)
+    if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
+        return wp.vec3(inf)
+    center = compute_ball_center(
+        points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
+    )
+    if center[0] == wp.inf:
+        return center
+    if not is_compatible(points[p], points[a], points[b], normals[p], normals[a], normals[b]):
+        return wp.vec3(inf)
+    return center
+
+
+@wp.func
 def seed_pair_ball(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
@@ -620,23 +735,12 @@ def seed_pair_ball(
     b: wp.int32,
 ) -> wp.vec3:
     # The centre of the ball resting on ``(p, a, b)`` when the pair passes the seed walk's pair
-    # test, an ``inf`` centre when it does not: the clustering floor between ``a`` and ``b``, a
-    # resting ball, compatible normals and no point inside by distance alone (``ball_holds_point``;
-    # the tie rule, ``ball_band_blocks``, runs once a pair passes). Squared, matching the same
-    # vcglib clustering rule as tested in ``candidate_is_viable``; see ``ball_is_empty`` for why one
-    # module must not spell one predicate two ways.
-    inf = float_inf(radius)
-    if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
-        return wp.vec3(inf)
-    center = compute_ball_center(
-        points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
-    )
-    if center[0] == wp.inf:
-        return center
-    if not is_compatible(points[p], points[a], points[b], normals[p], normals[a], normals[b]):
-        return wp.vec3(inf)
-    if ball_holds_point(grid_id, points, center, radius, p, a, b):
-        return wp.vec3(inf)
+    # test, an ``inf`` centre when it does not: ``seed_pair_resting`` and no point inside by
+    # distance alone (``ball_holds_point``, a hash-grid walk; the tie rule, ``ball_band_blocks``,
+    # runs once a pair passes).
+    center = seed_pair_resting(points, normals, radius, min_cluster_sq, p, a, b)
+    if center[0] != wp.inf and ball_holds_point(grid_id, points, center, radius, p, a, b):
+        return wp.vec3(float_inf(radius))
     return center
 
 
@@ -654,6 +758,143 @@ def seed_pair_at(rank: wp.int32, count: wp.int32) -> tuple[wp.int32, wp.int32]:
     while (i0 + 1) * count - (i0 + 1) * (i0 + 2) // 2 <= rank:
         i0 += 1
     return i0, rank - (i0 * count - i0 * (i0 + 1) // 2) + i0 + 1
+
+
+@wp.func
+def seed_pair_search_serial(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    min_cluster_sq: wp.float32,
+    q: wp.int32,
+    nbr: wp.array[wp.int32],
+    count: wp.int32,
+    resume: wp.int32,
+) -> wp.int32:
+    # The lowest rank from ``resume`` on whose pair passes ``seed_pair_ball``, ``INT32_MAX``
+    # when none does: the serial loop, for the cpu device's one-lane block.
+    pairs = count * (count - 1) // 2
+    if resume >= pairs:
+        return INT32_MAX_CONSTANT
+    i0, i1 = seed_pair_at(resume, count)
+    rank = resume
+    while rank < pairs:
+        center = seed_pair_ball(
+            points, normals, grid_id, radius, min_cluster_sq, q, nbr[i0], nbr[i1]
+        )
+        if center[0] != wp.inf:
+            return rank
+        rank += 1
+        i1 += 1
+        if i1 >= count:
+            i0 += 1
+            i1 = i0 + 1
+    return INT32_MAX_CONSTANT
+
+
+@wp.func
+def seed_survivors_first_empty(
+    lane: wp.int32,
+    held: wp.int32,
+    filled: wp.int32,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    q: wp.int32,
+    nbr: wp.array[wp.int32],
+) -> wp.int32:
+    # The lowest rank among a warp's ``filled`` held pairs (``seed_pair_search_warp``) whose
+    # resting ball holds no point, ``INT32_MAX`` when none: a hash-grid walk a lane, all at once.
+    # The centre is formed again from the pair, the same expression as the cheap test's.
+    #
+    # Declined: the whole warp testing the held balls one after another, lowest rank first, the
+    # lanes taking a ball's cells and points side by side and stopping at the first empty ball (the
+    # walk ``seed_neighbours_warp`` takes): the seeding 1.4-1.5x when it took every list, par when
+    # gated to lists of 8 or fewer, which the late waves' 15-20 survivors a list rarely are. A
+    # ball's walk is some 27 cells and mostly stops early on a point inside, so the lanes' walks
+    # side by side already overlap their latency. The band test of a found pair by the warp the
+    # same way saved 3 % of the first wave and nothing measurable of the call.
+    passed = INT32_MAX_CONSTANT
+    if lane < filled:
+        a = nbr[(held >> 6) & 63]
+        b = nbr[held & 63]
+        center = compute_ball_center(
+            points[q], points[a], points[b], normals[q] + normals[a] + normals[b], radius
+        )
+        if not ball_holds_point(grid_id, points, center, radius, q, a, b):
+            passed = held >> 12
+    return block_min(passed)
+
+
+@wp.func
+def seed_pair_search_warp(
+    lane: wp.int32,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    min_cluster_sq: wp.float32,
+    q: wp.int32,
+    nbr: wp.array[wp.int32],
+    count: wp.int32,
+    resume: wp.int32,
+) -> wp.int32:
+    # ``seed_pair_search_serial`` by a warp (``BPA_SEED_BLOCK``), the same rank. Pairs are ranked
+    # in the serial loop's order, ``(i0, i1)`` with ``i0 < i1`` lexicographic, and tested a rank a
+    # lane a step; ranked rather than a row's partners a step, which left up to half the lanes idle
+    # on a row's tail.
+    #
+    # **Cheap tests a step, grid walks a lane each.** One pair in twenty passes
+    # ``seed_pair_resting`` in the first wave (one in five in the late ones) and reaches
+    # ``ball_holds_point``'s hash-grid walk, so a step that ran both waited on one or two lanes'
+    # walk while the rest idled. The survivors of the cheap half are appended in rank order to a
+    # list held a pair a lane (``reduce.warp_deposit``, packed as ``rank << 12 | i0 << 6 | i1``),
+    # and the list is walked a pair a lane whenever the next step's survivors would overflow it,
+    # and at the end. The list's lowest pass is the serial loop's first: every pair below it either
+    # failed the cheap half or was walked. Against a block reduction a step: the first wave
+    # 0.78-0.83x, the seeding 0.88-0.95x (CUDA, the same proposals). Declined before it: a run of
+    # consecutive ranks a lane a window, each lane stopping at its first pass (the first seeding
+    # wave 1.1x at 2 ranks a lane, 1.9x at 32).
+    pairs = count * (count - 1) // 2
+    width = wp.block_dim()
+    held = wp.int32(0)
+    filled = wp.int32(0)
+    found = INT32_MAX_CONSTANT
+    rank = resume + lane
+    i0 = wp.int32(0)
+    i1 = wp.int32(0)
+    if rank < pairs:
+        i0, i1 = seed_pair_at(rank, count)
+    while rank - lane < pairs and found == INT32_MAX_CONSTANT:
+        resting = wp.int32(0)
+        if rank < pairs:
+            center = seed_pair_resting(points, normals, radius, min_cluster_sq, q, nbr[i0], nbr[i1])
+            if center[0] != wp.inf:
+                resting = 1
+        passing = warp_ballot(-1, resting)
+        arrivals = popcount32(wp.uint32(passing))
+        if filled + arrivals > width:
+            found = seed_survivors_first_empty(
+                lane, held, filled, points, normals, grid_id, radius, q, nbr
+            )
+            filled = 0
+        # A pass among the held pairs ranks below this step's survivors, which are dropped.
+        if found == INT32_MAX_CONSTANT:
+            held = warp_deposit(passing, filled, (rank << 12) | (i0 << 6) | i1, held)
+            filled += arrivals
+        # The lane's next rank, ``width`` on, carried across rows as they end.
+        rank += width
+        i1 += width
+        while i1 >= count and i0 + 2 < count:
+            i1 -= count - i0 - 2
+            i0 += 1
+    if found == INT32_MAX_CONSTANT and filled > 0:
+        found = seed_survivors_first_empty(
+            lane, held, filled, points, normals, grid_id, radius, q, nbr
+        )
+    return found
 
 
 @wp.func
@@ -730,26 +971,48 @@ def seed_triangles_block(
     pending = wp.bool(False)
     own_count = wp.int32(0)
     own_truncated = wp.bool(False)
+    walks = wp.bool(False)
     if p < n and not point_used[p]:
         blocker = seed_blocker[p]
         if blocker != SEED_EXHAUSTED:
-            if (
+            walks = (
                 blocker < 0
                 or point_used[blocker]
                 or seed_failed_before(seed_failed_wave, blocker, wave)
-            ):
-                own_count, yields_to, own_truncated = seed_neighbours(
-                    p, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
-                )
+            )
+    # On the cuda device the warp walks each walking point's neighbours together, one point after
+    # another (``seed_neighbours_warp``). Walked a lane each, in parallel, the first wave (every
+    # point walking) was no faster, and every later wave (a few points) took one serial walk. The
+    # warp forms run on the cuda device only: on the cpu device a block of several lanes
+    # (``wp.config.enable_cpu_blocks``) has no warp intrinsics, and takes the serial forms.
+    warp_walks = width > 1 and device_is_cpu() == 0
+    if warp_walks:
+        walking = warp_ballot(-1, wp.where(walks, 1, 0))
+        while walking != 0:
+            walker = warp_lowest_lane(walking)
+            walking = walking & (walking - 1)
+            _count, yields_to, _truncated = seed_neighbours_warp(
+                lane, block + walker * blocks, points, point_used, seed_failed_wave, grid_id,
+                radius, wave, nbr,
+            )  # fmt: skip
+            if lane == walker:
                 if yields_to >= 0:
                     # A lower-index, still-viable orphan neighbour will seed this instead.
                     seed_blocker[p] = yields_to
                 else:
                     pending = wp.bool(True)
+    elif walks:
+        own_count, yields_to, own_truncated = seed_neighbours(
+            p, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
+        )
+        if yields_to >= 0:
+            seed_blocker[p] = yields_to
+        else:
+            pending = wp.bool(True)
 
     min_cluster_sq = clustering * radius * clustering * radius
     # The block's walking points, lowest lane first: every lane walks the point again (the same
-    # list, ``seed_neighbours``) and takes a share of its pairs.
+    # list) and takes a share of its pairs.
     walker = block_min(wp.where(pending, lane, INT32_MAX_CONSTANT))
     while walker != INT32_MAX_CONSTANT:
         if lane == walker:
@@ -758,52 +1021,33 @@ def seed_triangles_block(
         # A one-lane block (the cpu device) already holds its walker's list.
         count = own_count
         truncated = own_truncated
-        if width > 1:
+        if warp_walks:
+            count, _yields_to, truncated = seed_neighbours_warp(
+                lane, q, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
+            )
+        elif width > 1:
             count, _yields_to, truncated = seed_neighbours(
                 q, points, point_used, seed_failed_wave, grid_id, radius, wave, nbr
             )
-        # Pairs are ranked in the serial loop's order, ``(i0, i1)`` with ``i0 < i1``
-        # lexicographic, and searched a rank a lane a step: the block's lowest pass is the serial
-        # loop's first. Ranked rather than a row's partners a step, which left up to half the lanes
-        # idle on a row's tail. Declined: a run of consecutive ranks a lane a window, each lane
-        # stopping at its first pass, so that a window waits on about one hash-grid walk rather
-        # than a step on one (about one pair in twenty reaches ``ball_holds_point``): the first
-        # seeding wave 1.1x at 2 ranks a lane, 1.2x at 4, 1.2-1.4x at 8 and 1.9x at 32 (CUDA, a
-        # sphere of 2 562 points and the two bunnies).
+        # The lowest passing pair (``seed_pair_search_warp``; the serial loop on a one-lane block,
+        # whose per-pair reduction cost the cpu device's batch 1.03-1.04x).
         #
         # The tie rule (``ball_band_blocks``) runs outside the pair search, once per pair that
         # passes it, resuming the search after a pair a tie rejects: the same predicate as
         # ``ball_is_empty``, with the tie walk out of the loop nest, which keeps it as fast as the
         # plain test was. ``resume`` is the rank of the first pair still to try.
-        pairs = count * (count - 1) // 2
         proposed = wp.bool(False)
         resume = wp.int32(0)
         while resume >= 0:
             found = INT32_MAX_CONSTANT
-            rank = resume + lane
-            i0 = wp.int32(0)
-            i1 = wp.int32(0)
-            if rank < pairs:
-                i0, i1 = seed_pair_at(rank, count)
-            while rank - lane < pairs and found == INT32_MAX_CONSTANT:
-                passed = INT32_MAX_CONSTANT
-                if rank < pairs:
-                    center = seed_pair_ball(
-                        points, normals, grid_id, radius, min_cluster_sq, q, nbr[i0], nbr[i1]
-                    )
-                    if center[0] != wp.inf:
-                        passed = rank
-                # A one-lane block's pass is the block's: the reduction a pair cost the cpu
-                # device's batch 1.03-1.04x.
-                found = passed
-                if width > 1:
-                    found = block_min(passed)
-                # The lane's next rank, ``width`` on, carried across rows as they end.
-                rank += width
-                i1 += width
-                while i1 >= count and i0 + 2 < count:
-                    i1 -= count - i0 - 2
-                    i0 += 1
+            if warp_walks:
+                found = seed_pair_search_warp(
+                    lane, points, normals, grid_id, radius, min_cluster_sq, q, nbr, count, resume
+                )
+            else:
+                found = seed_pair_search_serial(
+                    points, normals, grid_id, radius, min_cluster_sq, q, nbr, count, resume
+                )
             resume = wp.int32(-1)
             if found != INT32_MAX_CONSTANT:
                 i0, i1 = seed_pair_at(found, count)
