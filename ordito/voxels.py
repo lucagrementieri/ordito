@@ -72,7 +72,6 @@ from ordito.constants import INT32_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import interpolation as kernel_interpolation
-from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import voxels as kernel_voxels
 
@@ -1042,15 +1041,14 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> odt.
     if order == "grid":
         return rows
 
-    # The corner pair stays on the device: ``pack_cell_keys`` derives the per-axis shift and the
-    # radix from these two three-element buffers itself, so this whole stage is readback-free.
-    lower, upper = od.reduce.minmax(rows, axis=0)
+    # ``pack_cell_keys`` derives the per-axis shift and the radix from the grid's own box, so this
+    # whole stage is readback-free.
     keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=grid.device)
     payload = _launch.empty(2 * n_voxels, dtype=wp.int32, device=grid.device)
     _launch.launch(
         kernel_voxels.pack_cell_keys,
         dim=n_voxels,
-        inputs=[rows, lower, upper, keys, payload],
+        inputs=[grid.id, rows, keys, payload],
         device=grid.device,
     )
     _sorted_keys, permutation = od.array.sort_and_argsort_in_place(keys, payload)
@@ -3582,23 +3580,17 @@ def _empty_grid(voxel_size: float, origin: wp.vec3, device: wp.DeviceLike) -> wp
 
 def _cell_bounds(grid: wp.Volume) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     """Tight cell bounding box of the occupied voxels, as ``(lower_cell, extent)``."""
-    voxels = cells(grid)
-    if int(voxels.shape[0]) == 0:
+    if _voxel_count(grid) == 0:
         return (0, 0, 0), (1, 1, 1)
-    # One launch and one readback of six integers into one buffer: the dense lattice has to be
-    # sized on the host. Slots 3..5 hold the bit-complemented upper corner; see the kernel. The
-    # ``INT32_MAX`` fill stays: a zero-initialized complement would cost the same allocation and
-    # memset, there being no zeroed buffer here to cut it from.
-    corners = _launch.full(6, INT32_MAX, dtype=wp.int32, device=grid.device)
+    # One launch and one readback of six integers: the grid's root keeps the box, and the dense
+    # lattice has to be sized on the host.
+    corners = _launch.empty(6, dtype=wp.int32, device=grid.device)
     _launch.launch(
-        kernel_reduce.minmax_rows3_int32_chunked,
-        dim=kernel_reduce.chunks_1d(voxels.shape[0]),
-        inputs=[voxels, corners],
-        device=grid.device,
+        kernel_voxels.grid_cell_bounds, dim=1, inputs=[grid.id, corners], device=grid.device
     )
     values = [int(c) for c in read_values(corners, 0, 6)]
     lower = values[:3]
-    upper = [~c for c in values[3:]]
+    upper = values[3:]
     return (
         (lower[0], lower[1], lower[2]),
         (upper[0] - lower[0] + 1, upper[1] - lower[1] + 1, upper[2] - lower[2] + 1),

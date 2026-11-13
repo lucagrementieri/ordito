@@ -7697,9 +7697,8 @@
  },
  "benchmarks/test_voxels.py::test_cells[sphere_small-ordito-cpu-sorted]": {
   "counts": {
-   "launch": 2,
-   "alloc": 5,
-   "h2h": 1,
+   "launch": 1,
+   "alloc": 4,
    "sort": 1
   }
  },
@@ -7748,14 +7747,14 @@
  "benchmarks/test_voxels.py::test_fill_cavities[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 8,
+   "alloc": 7,
    "readback": 2
   }
  },
  "benchmarks/test_voxels.py::test_fill_orthographic[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 6,
+   "alloc": 5,
    "readback": 2
   }
  },
@@ -7832,7 +7831,7 @@
  "benchmarks/test_voxels.py::test_revoxelize[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 4,
+   "alloc": 3,
    "readback": 2
   }
  },
@@ -7880,14 +7879,14 @@
  "benchmarks/test_voxels.py::test_to_dense[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
+   "alloc": 2,
    "readback": 1
   }
  },
  "benchmarks/test_voxels.py::test_to_field[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
+   "alloc": 2,
    "readback": 1
   }
  },

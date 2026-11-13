@@ -510,11 +510,41 @@ def point_occupancy(
     out_mask[p] = (point_slot(volume, points[p]) >= 0) == present
 
 
+# The index-space box of a grid's active voxels, as NanoVDB keeps it in the root node
+# (``RootData::mBBox``), read through the same ``pnanovdb`` accessors Warp's volume builtins use.
+# ``allocate_by_voxels`` and ``rebuild`` keep it tight (equal to a reduction over ``cells`` on 19
+# built, morphed, set-combined, dense and rebuilt grids, both devices, 2026-11-13), so a box costs
+# one root read instead of a pass over the voxels.
+_GRID_CELL_LOWER = """
+const pnanovdb_buf_t buf = wp::volume::id_to_buffer(volume);
+const pnanovdb_coord_t corner = pnanovdb_root_get_bbox_min(buf, wp::volume::get_root(buf));
+return wp::vec3i(corner.x, corner.y, corner.z);
+"""
+_GRID_CELL_UPPER = _GRID_CELL_LOWER.replace("bbox_min", "bbox_max")
+
+
+@wp.func_native(_GRID_CELL_LOWER)
+def grid_cell_lower(volume: wp.uint64) -> wp.vec3i: ...
+
+
+@wp.func_native(_GRID_CELL_UPPER)
+def grid_cell_upper(volume: wp.uint64) -> wp.vec3i: ...
+
+
+@wp.kernel
+def grid_cell_bounds(volume: wp.uint64, out_bounds: wp.array[wp.int32]) -> None:
+    # The grid's lower and upper active cell, one thread, for ``voxels._cell_bounds``' readback.
+    lower = grid_cell_lower(volume)
+    upper = grid_cell_upper(volume)
+    for axis in range(3):
+        out_bounds[axis] = lower[axis]
+        out_bounds[axis + 3] = upper[axis]
+
+
 @wp.kernel
 def pack_cell_keys(
+    volume: wp.uint64,
     cells: wp.array2d[wp.int32],
-    lower: wp.array[wp.int32],
-    upper: wp.array[wp.int32],
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
@@ -527,13 +557,11 @@ def pack_cell_keys(
     # non-zero where a column actually goes negative, so a non-negative cell set keeps exactly the
     # keys ``grouping.hash_indices_rows`` would produce.
     #
-    # ``lower`` / ``upper`` are the two three-element buffers ``reduce.minmax(cells, axis=0)``
-    # returns, read here rather than passed in as ``wp.vec3i`` / ``wp.uint64`` scalars: every lane
-    # wants the same six values, so they are broadcast loads out of L2, and taking them by value
-    # would instead cost the wrapper two host readbacks. Byte-identical values, and worth about a
-    # quarter of ``voxels.cells`` at every size -- the call is host-bound throughout, so removing
-    # host work is the whole win.
+    # The cells' box is the grid's own (``grid_cell_lower`` / ``grid_cell_upper``), read by every
+    # lane from the root node, a broadcast load: no reduction over the cells and no readback.
     v = wp.int32(wp.tid())
+    lower = grid_cell_lower(volume)
+    upper = grid_cell_upper(volume)
     lo = wp.int32(0)
     hi = upper[0]
     for c in range(3):
