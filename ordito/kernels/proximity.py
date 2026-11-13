@@ -145,6 +145,91 @@ def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
     return point_triangle_offset(p, a, b, c)
 
 
+# ``nearest_offset_within``'s walk over a mesh's ``wp.Bvh``, in place of ``wp.bvh_query_sphere``.
+# The tree's arrays are read through addresses taken once: read through the id at every node, a
+# node's load waits on a load of its array's address (the walk 1.05-1.07x). Slot 0 is
+# ``node_lowers``, 1 ``node_uppers``, 2 ``primitive_indices``, 3 ``item_lowers``, 4
+# ``item_uppers``. The layout is Warp's (``warp/native/bvh.h``): re-probe at every upgrade (§12.7).
+_BVH_BALL_ARRAY = """
+const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
+if (slot == 0) return (uint64_t)bvh.node_lowers;
+if (slot == 1) return (uint64_t)bvh.node_uppers;
+if (slot == 2) return (uint64_t)bvh.primitive_indices;
+if (slot == 3) return (uint64_t)bvh.item_lowers;
+return (uint64_t)bvh.item_uppers;
+"""
+
+
+@wp.func_native(_BVH_BALL_ARRAY)
+def bvh_ball_array(bvh_id: wp.uint64, slot: wp.int32) -> wp.uint64: ...
+
+
+_BVH_BALL_ROOT = "return *((const wp::BVH*)bvh_id)->root;"
+
+
+@wp.func_native(_BVH_BALL_ROOT)
+def bvh_ball_root(bvh_id: wp.uint64) -> wp.int32: ...
+
+
+# One child of a ball walk, tested where its parent is popped: ``(-1 - first, end)`` for a leaf
+# meeting the ball (primitives ``[first, end)`` of ``primitive_indices``), ``(left, right)`` for an
+# internal node meeting it, and a negative second entry for a miss. ``radius_sq`` and the
+# sphere-box test are ``wp.bvh_query_sphere``'s own, so the walk reaches the same leaves in the
+# same order.
+_BVH_BALL_CHILD = """
+const wp::BVHPackedNodeHalf lower = wp::bvh_load_node((const wp::BVHPackedNodeHalf*)lowers, node);
+const wp::BVHPackedNodeHalf upper = wp::bvh_load_node((const wp::BVHPackedNodeHalf*)uppers, node);
+if (!wp::intersect_sphere_aabb(center, radius_sq, wp::vec3(lower.x, lower.y, lower.z),
+                               wp::vec3(upper.x, upper.y, upper.z)))
+    return wp::vec2i(0, -1);
+if (lower.b)
+    return wp::vec2i(-1 - (int)lower.i, (int)upper.i);
+return wp::vec2i((int)lower.i, (int)upper.i);
+"""
+
+
+@wp.func_native(_BVH_BALL_CHILD)
+def bvh_ball_child(
+    lowers: wp.uint64, uppers: wp.uint64, node: wp.int32, center: wp.vec3, radius_sq: wp.float32
+) -> wp.vec2i: ...
+
+
+# The primitive at ``slot`` of a leaf meeting the ball, or -1 where its own box misses the ball:
+# ``wp.bvh_query_sphere``'s item test, skipped as it is for a leaf of one primitive (whose box is
+# the leaf's).
+_BVH_BALL_PRIMITIVE = """
+const int primitive = wp::bvh_load_int((const int*)primitives, slot);
+if (single)
+    return primitive;
+if (!wp::intersect_sphere_aabb(center, radius_sq, ((const wp::vec3*)item_lowers)[primitive],
+                               ((const wp::vec3*)item_uppers)[primitive]))
+    return -1;
+return primitive;
+"""
+
+
+@wp.func_native(_BVH_BALL_PRIMITIVE)
+def bvh_ball_primitive(
+    primitives: wp.uint64,
+    item_lowers: wp.uint64,
+    item_uppers: wp.uint64,
+    slot: wp.int32,
+    single: wp.bool,
+    center: wp.vec3,
+    radius_sq: wp.float32,
+) -> wp.int32: ...
+
+
+# ``nearest_offset_within``'s node stack, Warp's ``BVH_QUERY_STACK_SIZE``: a pop pushes at most
+# two hits, so the stack never holds more than the tree's depth plus one. In Warp's block-shared
+# layout instead (``__shared__``, a lane's entries strided by the block), the walk ran 1.00-1.05x.
+BallWalkStack = wp.types.vector(length=32, dtype=wp.int32)
+
+# The least squared distance ``nearest_offset_within`` shrinks its ball to: the smallest normal
+# ``float32``, below which the ``float32`` bound on the distance loses its relative precision.
+SHRINK_MIN_SQ = wp.float32(1.1754943508222875e-38)
+
+
 @wp.func
 def nearest_offset_within(
     mesh_id: wp.uint64, p: wp.vec3d, radius: wp.float64, best: wp.vec3d
@@ -158,16 +243,82 @@ def nearest_offset_within(
     # spheres, 0.75-0.85x on bunny, 0.50-0.52x on dragon. Keeping that face seed with the ball (a
     # face table and one more face evaluation, a ball never looser) bought 1.02x on dragon and
     # lost 1.01-1.04x on the small meshes, so ``registration`` seeds with the last point.
+    #
+    # The walk is ``wp.bvh_query_sphere``'s, in its order (right subtree first), shortened twice
+    # (2026-11-13). A popped node tests both children with their two loads issued together, so a
+    # child that misses costs no step of the chain, where Warp pops it and loads it first. And the
+    # ball shrinks to each nearer offset found (``float32``, its margin covering the ``float64``
+    # one's), so it prunes what cannot replace the best. Neither skips a face as near as the best
+    # so far, and the order is unchanged, so the offset is Warp's walk's bit for bit. The loop
+    # leaves its traversal with one candidate a lane, as Warp's iterator does, so a warp's lanes
+    # evaluate their ``float64`` faces together: evaluated inside the traversal step instead, the
+    # walk took 1.6-2.1x the one it replaced. CUDA new/old, ``icp(method="pyvista")``: spheres
+    # 0.89-0.94x, bunny 0.88-0.92x, dragon 0.69x, happy_buddha 0.67x; CPU 0.8-0.93x.
+    # ``signed_distance_level_set``'s ``float64`` band 0.91x on bunny, 0.87x on dragon.
+    # Declined: the nearer child first (ICP 1.01-1.03x but ``sphere_med`` 0.98x: its balls are
+    # already tight), and carrying the next child in registers rather than through the stack (the
+    # walk 1.03-1.04x).
     best_sq = wp.length_sq(best)
-    margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
-    query = wp.bvh_query_sphere(wp.mesh_get_bvh(mesh_id), wp.vec3(p), wp.float32(radius + margin))
-    candidate = wp.int32(0)
-    while wp.bvh_query_next(query, candidate):
-        offset = face_offset_d(mesh_id, candidate, p)
+    extent = wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2])))
+    margin = wp.float64(1e-6) * (radius + extent)
+    margin_far = wp.float32(1.01e-6) * wp.float32(extent)
+    bvh = wp.mesh_get_bvh(mesh_id)
+    center = wp.vec3(p)
+    r = wp.max(wp.float32(radius + margin), wp.float32(0.0))
+    r_sq = r * r
+    lowers = bvh_ball_array(bvh, 0)
+    uppers = bvh_ball_array(bvh, 1)
+    primitives = bvh_ball_array(bvh, 2)
+    item_lowers = bvh_ball_array(bvh, 3)
+    item_uppers = bvh_ball_array(bvh, 4)
+    firsts = BallWalkStack()
+    seconds = BallWalkStack()
+    count = wp.int32(0)
+    root = bvh_ball_child(lowers, uppers, bvh_ball_root(bvh), center, r_sq)
+    if root[1] >= 0:
+        firsts[0] = root[0]
+        seconds[0] = root[1]
+        count = wp.int32(1)
+    cursor = wp.int32(0)
+    end = wp.int32(0)
+    single = wp.bool(False)
+    while True:
+        face = wp.int32(-1)
+        while face < 0 and (cursor < end or count > 0):
+            if cursor < end:
+                face = bvh_ball_primitive(
+                    primitives, item_lowers, item_uppers, cursor, single, center, r_sq
+                )
+                cursor += 1
+            else:
+                count -= 1
+                first = firsts[count]
+                second = seconds[count]
+                if first < 0:
+                    cursor = -1 - first
+                    end = second
+                    single = end - cursor == wp.int32(1)
+                else:
+                    left = bvh_ball_child(lowers, uppers, first, center, r_sq)
+                    right = bvh_ball_child(lowers, uppers, second, center, r_sq)
+                    if left[1] >= 0:
+                        firsts[count] = left[0]
+                        seconds[count] = left[1]
+                        count += 1
+                    if right[1] >= 0:
+                        firsts[count] = right[0]
+                        seconds[count] = right[1]
+                        count += 1
+        if face < 0:
+            break
+        offset = face_offset_d(mesh_id, face, p)
         offset_sq = wp.length_sq(offset)
         if offset_sq < best_sq:
             best = offset
             best_sq = offset_sq
+            if wp.float32(best_sq) >= SHRINK_MIN_SQ:
+                shrunk = wp.sqrt(wp.float32(best_sq)) * wp.float32(1.000002) + margin_far
+                r_sq = wp.min(r_sq, shrunk * shrunk)
     return best
 
 

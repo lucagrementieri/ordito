@@ -1041,6 +1041,15 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   choice bought about 1 % of the factor.
 - **Gather-form fusion** (recomputing a neighbour's per-face value from positions instead of reading a table) wins below ~100 k faces and on grid-ordered meshes but loses 1.7-2.1x on scrambled ~1 M-face meshes (`cotmatrix`, `filter_normals`). Price it on a scrambled large mesh.
 - **Independent per-item iterations collapse into one in-thread loop:** a per-round launch plus convergence readback over items that converge independently (`max_tangent_sphere`) became one kernel, 1.1-1.2x device time and no per-round sync. Keep that loop out of a kernel holding another long walk (1.1-1.6x, registers).
+- **A walk with costly candidates leaves its traversal loop with one candidate a lane**
+  (2026-11-13, `kernels/proximity.nearest_offset_within`): a warp reconverges at the loop's exit
+  and evaluates its lanes' `float64` candidates together, as Warp's `bvh_query_next` iterator does.
+  Evaluated inside the traversal step, every candidate ran under a partial mask: the same walk
+  1.6-2.1x. Inside that shape, testing both children at the parent (their loads issued together,
+  a miss never popped) took Warp's sphere walk to 0.82-0.87x, and shrinking the ball to each
+  nearer candidate to 0.25-0.76x where the starting ball is loose, bit for bit in Warp's visit
+  order. A block-shared stack in place of a local vector one, a child carried in registers and
+  the nearer child first did not pay.
 - **Occupancy for pointer-chasing tree walks:** a thread-per-query BVH descent that chases nodes through L1 runs faster with fewer warps resident. The `k = 1` point-tree descent (40 registers) at 1024-thread blocks was 0.75-0.87x its 256-wide launch from about two blocks per SM, and 1.04-1.67x below one (too few blocks), so its width is gated on the query count (`kernels/neighbors.DESCENT_WIDE_BLOCK_DIM`). Fewer registers do not make a walk faster by themselves: at 256 the same descent lost 1.1-1.2x to Warp's 53-register mesh query on the same tree, and a line-for-line port of that query lost the same. Check a new walk at two widths before reading its per-node code.
 - **A latency-bound row loads branch-free:** a load behind a divergent branch waits for the one
   before it, so a one-thread dependent chain (a Gauss-Seidel row's 27 window values and screening
@@ -1300,14 +1309,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`icp(method="pyvista")` per iteration** (2026-11-09): what remains is one exact ball walk a
-  landmark an iteration (its radius the distance to its last match since 2026-11-10,
-  `kernels/registration.landmark_rematch`), 62-83 % of a call, a chain of dependent node loads on
-  one SM; a multi-block layout does not shorten a chain. Refuted 2026-11-10 (`reference/
-  component-status.md`, "The ball walk's two refutations"): a `float32` candidate filter and a
-  per-landmark face list scanned instead of walking (spheres 0.74-0.89x, scan meshes 1.08-6x). A
-  start node below the root is not exact (node boxes overlap: a face meeting the ball can sit in
-  another subtree), so what is open is a shorter chain for the same walk.
 - **`ball_pivoting`'s late seeding waves** (2026-11-11): after the front dies, ~25 seeding waves
   of 90-150 us remain on `bunny` (~10 % of the call), each a few points a failure has released
   testing all 2 016 pairs of their neighbourhood and failing (63 steps of a rank a lane, nearly
