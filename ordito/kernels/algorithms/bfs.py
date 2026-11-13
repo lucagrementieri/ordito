@@ -22,7 +22,7 @@ are gone. Anything needing scipy's exact visit order should call scipy.
 import warp as wp
 
 from ordito.kernels import grouping as kernel_grouping
-from ordito.kernels.array import update_argmax, update_argmin
+from ordito.kernels.array import device_is_cpu, row_chunk_entries, update_argmax, update_argmin
 
 wp.set_module_options({"enable_backward": False})
 
@@ -114,17 +114,77 @@ def bfs_extras_pop_nearest(
 
 
 @wp.func
-def bfs_center_distance(
-    vertices: wp.array[wp.vec3], use_geometry: wp.bool, center: wp.vec3, neighbor: wp.int32
-) -> wp.float32:
+def bfs_neighbor_position(
+    vertices: wp.array[wp.vec3], use_geometry: wp.bool, neighbor: wp.int32
+) -> wp.vec3:
+    # A neighbour's position, read only when the traversal is geodesic: with ``use_geometry`` false
+    # ``vertices`` is a length-1 placeholder and is never read.
+    position = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
+    if use_geometry:
+        position = vertices[neighbor]
+    return position
+
+
+@wp.func
+def bfs_center_distance(use_geometry: wp.bool, center: wp.vec3, position: wp.vec3) -> wp.float32:
     # A newly visited neighbour's Euclidean distance to the source, the geodesic ball's predicate
     # and the nearest fallback's key; ``0`` when the traversal is purely topological
-    # (``use_geometry`` false), so ``vertices`` is never read. One definition for the BFS phase and
-    # the fallback drain of ``per_source_bfs_collect``.
+    # (``use_geometry`` false). One definition for the BFS phase and the fallback drain of
+    # ``per_source_bfs_collect``.
     distance = wp.float32(0.0)
     if use_geometry:
-        distance = wp.length(vertices[neighbor] - center)
+        distance = wp.length(position - center)
     return distance
+
+
+@wp.func
+def bfs_visit_neighbor(
+    neighbor: wp.int32,
+    vertices: wp.array[wp.vec3],
+    loaded: wp.bool,
+    position: wp.vec3,
+    use_geometry: wp.bool,
+    center: wp.vec3,
+    radius: wp.float32,
+    min_count: wp.int32,
+    collected: wp.int32,
+    queue: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    mask: wp.int32,
+    ext_dist: wp.array[wp.float32],
+    ext_idx: wp.array[wp.int32],
+    visited_tag: wp.int32,
+    visited_tag_mask: wp.int32,
+    visited_n: wp.int32,
+    q_tail: wp.int32,
+    ext_n: wp.int32,
+    clipped: wp.bool,
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.bool, wp.bool]:
+    # One neighbour of the BFS phase of ``per_source_bfs_collect``: mark it visited, then queue it
+    # when inside the ball, or offer it to the nearest fallback. Returns the updated
+    # ``(visited_n, q_tail, ext_n, clipped, full)``, ``full`` meaning the walk stops here. Both
+    # row walks (an entry a step, four a step) call it once per entry in row order; the chunked one
+    # hands in the ``position`` it loaded with the step (``loaded``), the other has it read here,
+    # only for a new neighbour.
+    is_new = wp.bool(True)
+    is_new, visited_n = bfs_visited_insert(
+        visited, mask, neighbor, visited_n, visited_tag, visited_tag_mask
+    )
+    full = wp.bool(False)
+    if is_new:
+        if not loaded:
+            position = bfs_neighbor_position(vertices, use_geometry, neighbor)
+        distance = bfs_center_distance(use_geometry, center, position)
+        if distance < radius:
+            if q_tail < queue.shape[0]:
+                queue[q_tail] = neighbor
+                q_tail += wp.int32(1)
+            else:
+                clipped = wp.bool(True)
+                full = min_count <= queue.shape[0]
+        elif collected < min_count:
+            ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
+    return visited_n, q_tail, ext_n, clipped, full
 
 
 @wp.func
@@ -197,25 +257,137 @@ def per_source_bfs_collect(
 
         start = adj_offsets[current]
         end = adj_offsets[current + 1]
-        for k in range(start, end):
-            neighbor = adj_columns[k]
-            is_new, visited_n = bfs_visited_insert(
-                visited, mask, neighbor, visited_n, visited_tag, visited_tag_mask
+        if device_is_cpu() != 0:
+            for k in range(start, end):
+                neighbor = adj_columns[k]
+                visited_n, q_tail, ext_n, clipped, full = bfs_visit_neighbor(
+                    neighbor,
+                    vertices,
+                    wp.bool(False),
+                    center,
+                    use_geometry,
+                    center,
+                    radius,
+                    min_count,
+                    collected,
+                    queue,
+                    visited,
+                    mask,
+                    ext_dist,
+                    ext_idx,
+                    visited_tag,
+                    visited_tag_mask,
+                    visited_n,
+                    q_tail,
+                    ext_n,
+                    clipped,
+                )
+                if full:
+                    break
+            continue
+        # Four entries a step on CUDA (``array.row_chunk_entries``): a step's column and position
+        # loads are in flight together, where an entry a step waited on each column, then its
+        # position, before the next. The visits stay in row order, so the queue is the entry-a-step
+        # one entry for entry.
+        for k in range(start, end, 4):
+            ring = row_chunk_entries(adj_columns, k, end)
+            p0 = bfs_neighbor_position(vertices, use_geometry, ring[0])
+            p1 = bfs_neighbor_position(vertices, use_geometry, ring[1])
+            p2 = bfs_neighbor_position(vertices, use_geometry, ring[2])
+            p3 = bfs_neighbor_position(vertices, use_geometry, ring[3])
+            visited_n, q_tail, ext_n, clipped, full = bfs_visit_neighbor(
+                ring[0],
+                vertices,
+                wp.bool(True),
+                p0,
+                use_geometry,
+                center,
+                radius,
+                min_count,
+                collected,
+                queue,
+                visited,
+                mask,
+                ext_dist,
+                ext_idx,
+                visited_tag,
+                visited_tag_mask,
+                visited_n,
+                q_tail,
+                ext_n,
+                clipped,
             )
-            if not is_new:
-                continue
-            distance = bfs_center_distance(vertices, use_geometry, center, neighbor)
-            if distance < radius:
-                if q_tail < queue_cap:
-                    queue[q_tail] = neighbor
-                    q_tail += wp.int32(1)
-                else:
-                    clipped = wp.bool(True)
-                    if min_count <= queue_cap:
-                        full = wp.bool(True)
-                        break
-            elif collected < min_count:
-                ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
+            if not full and k + 1 < end:
+                visited_n, q_tail, ext_n, clipped, full = bfs_visit_neighbor(
+                    ring[1],
+                    vertices,
+                    wp.bool(True),
+                    p1,
+                    use_geometry,
+                    center,
+                    radius,
+                    min_count,
+                    collected,
+                    queue,
+                    visited,
+                    mask,
+                    ext_dist,
+                    ext_idx,
+                    visited_tag,
+                    visited_tag_mask,
+                    visited_n,
+                    q_tail,
+                    ext_n,
+                    clipped,
+                )
+            if not full and k + 2 < end:
+                visited_n, q_tail, ext_n, clipped, full = bfs_visit_neighbor(
+                    ring[2],
+                    vertices,
+                    wp.bool(True),
+                    p2,
+                    use_geometry,
+                    center,
+                    radius,
+                    min_count,
+                    collected,
+                    queue,
+                    visited,
+                    mask,
+                    ext_dist,
+                    ext_idx,
+                    visited_tag,
+                    visited_tag_mask,
+                    visited_n,
+                    q_tail,
+                    ext_n,
+                    clipped,
+                )
+            if not full and k + 3 < end:
+                visited_n, q_tail, ext_n, clipped, full = bfs_visit_neighbor(
+                    ring[3],
+                    vertices,
+                    wp.bool(True),
+                    p3,
+                    use_geometry,
+                    center,
+                    radius,
+                    min_count,
+                    collected,
+                    queue,
+                    visited,
+                    mask,
+                    ext_dist,
+                    ext_idx,
+                    visited_tag,
+                    visited_tag_mask,
+                    visited_n,
+                    q_tail,
+                    ext_n,
+                    clipped,
+                )
+            if full:
+                break
     if full:
         # What the skipped dequeues would have counted.
         collected = q_tail
@@ -245,7 +417,9 @@ def per_source_bfs_collect(
             )
             if not is_new:
                 continue
-            distance = bfs_center_distance(vertices, use_geometry, center, neighbor)
+            distance = bfs_center_distance(
+                use_geometry, center, bfs_neighbor_position(vertices, use_geometry, neighbor)
+            )
             ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
 
     # A visited-table drop leaves ``visited_n`` one past the fill bound (``bfs_visited_insert``).
