@@ -325,7 +325,7 @@
  },
  "benchmarks/test_array.py::test_isin[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
+   "launch": 3,
    "alloc": 3,
    "memset": 2,
    "d2h": 1

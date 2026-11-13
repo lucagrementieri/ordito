@@ -2447,23 +2447,33 @@ def isin(
         # ``_ISIN_MASK_SIZE_FACTOR`` test here would spend the readback to reach the same branch.
         return _reshaped(_isin_lookup_mask(elements_flat, tests, max_index, 0), elements)
 
-    # One ``(min, max)`` accumulator over both inputs: the tiled minmax kernel folds into what the
-    # buffer already holds, so launching it once per input yields the joint bounds for a single
-    # readback, where two ``reduce.minmax`` calls allocate and read back once each.
+    # One ``(min, max)`` accumulator over both inputs, for a single readback: on CUDA one launch
+    # over their concatenation; on the CPU the tiled kernel once per input, folding into what the
+    # buffer holds, since its ``tile_load`` vectorizes where a lane-strided loop does not.
     reduce_dtype = elements_flat.dtype
     bounds = _launch.pattern(
         [odt.dtype_max(reduce_dtype), odt.dtype_min(reduce_dtype)],
         dtype=reduce_dtype,
         device=device,
     )
-    for values in (elements_flat, tests):
+    if wp.get_device(device).is_cuda:
         _launch.launch_tiled(
-            kernel_reduce.MINMAX1D_TILED[reduce_dtype],
-            dim=[kernel_reduce.blocks_1d(values.size)],
-            inputs=[values, bounds],
+            kernel_reduce.MINMAX_PAIR_1D[reduce_dtype],
+            dim=[kernel_reduce.blocks_1d(elements_flat.size + tests.size)],
+            inputs=[elements_flat, tests],
+            outputs=[bounds],
             block_dim=TILE_1D,
             device=device,
         )
+    else:
+        for values in (elements_flat, tests):
+            _launch.launch_tiled(
+                kernel_reduce.MINMAX1D_TILED[reduce_dtype],
+                dim=[kernel_reduce.blocks_1d(values.size)],
+                inputs=[values, bounds],
+                block_dim=TILE_1D,
+                device=device,
+            )
     offset, high = (int(bound) for bound in read_values(bounds, 0, 2))
     span = high - offset + 1
     if span <= _ISIN_MASK_SIZE_FACTOR * k:

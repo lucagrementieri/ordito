@@ -2392,6 +2392,62 @@ MINMAX1D_TILED = KernelTable(
     "minmax1d_tiled",
     {d: _minmax_1d_tiled(f"minmax1d_tiled_{d.__name__}", d) for d in _GLOBAL_DTYPES},
 )
+
+
+def _minmax_pair_1d(name, dtype):
+    """
+    axis=None over two 1-D arrays together, in one launch: ``array.isin``'s joint value span.
+
+    Blocks take ``ITEMS_PER_BLOCK_1D`` of the two arrays' concatenation and stride its lanes by
+    ``wp.block_dim()``, folding into ``out_minmax``'s seeded ``(min, max)`` with one atomic pair a
+    block, where two launches of ``MINMAX1D_TILED`` cost a launch more. CUDA only: on the CPU's
+    one-lane blocks the strided loop does not vectorize and lost 1.27-1.44x to the tiled pair from
+    35 k vertices (still 1.4-1.6x with a branch an element instead of a run of each array).
+    """
+
+    def _k(
+        first: wp.array[wp.Scalar], second: wp.array[wp.Scalar], out_minmax: wp.array[wp.Scalar]
+    ) -> None:
+        # The chunk splits at ``n_first`` into a run of each array, walked without a branch an
+        # element (one cost the CPU's one-lane blocks 1.4-1.6x).
+        block, lane = wp.tid()
+        n_first = first.shape[0]
+        offset, count = block_chunk_1d(n_first + second.shape[0], block)
+        if count <= 0:
+            return
+        split = wp.min(wp.max(n_first - offset, 0), count)
+        if split > 0:
+            low = first[offset]
+        else:
+            low = second[offset - n_first]
+        high = low
+        for k in range(lane, split, wp.block_dim()):
+            v = first[offset + k]
+            low = wp.min(low, v)
+            high = wp.max(high, v)
+        for k in range(split + lane, count, wp.block_dim()):
+            v = second[offset + k - n_first]
+            low = wp.min(low, v)
+            high = wp.max(high, v)
+        block_low = block_min(low)
+        block_high = block_max(high)
+        if lane == 0:
+            wp.atomic_min(out_minmax, 0, block_low)
+            wp.atomic_max(out_minmax, 1, block_high)
+
+    _k.__annotations__["first"] = wp.array[dtype]
+    _k.__annotations__["second"] = wp.array[dtype]
+    _k.__annotations__["out_minmax"] = wp.array[dtype]
+    return wp.kernel(_k, name=name)
+
+
+MINMAX_PAIR_1D = KernelTable(
+    "minmax_pair_1d",
+    {
+        d: _minmax_pair_1d(f"minmax_pair_1d_{d.__name__}", d)
+        for d in (wp.int32, wp.int64, wp.uint32, wp.uint64)
+    },
+)
 MINMAX2D_TILED = KernelTable(
     "minmax2d_tiled",
     {d: _minmax_2d_tiled(f"minmax2d_tiled_{d.__name__}", d) for d in _GLOBAL_DTYPES},
