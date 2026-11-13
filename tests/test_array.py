@@ -1642,22 +1642,31 @@ def test_trim_to_count_keeps_the_written_prefix_of_every_buffer(device: str) -> 
 
     Both buffers are indexed by the same counter, so the contract is that they come back the *same*
     length -- trimming them in separate calls is what this function exists to prevent. Trailing
-    dimensions are preserved, which is why a ``wp.vec3`` buffer is in the call.
+    dimensions are preserved, which is why a ``wp.vec3`` buffer and an ``int32`` table are in the
+    call; a strided column view is copied element by element, not as the table's leading bytes.
     """
     n_written = 3
     counter_wp = wp.array([n_written], dtype=wp.int32, device=device)
     scalars_np = np.arange(10, dtype=np.int32)
     vectors_np = np.arange(30, dtype=np.float32).reshape(10, 3)
 
-    n_out, (scalars_wp, vectors_wp) = od.array.trim_to_count(
+    rows_np = np.arange(40, dtype=np.int32).reshape(10, 4)
+    rows_wp = wp.array(rows_np, dtype=wp.int32, device=device)
+
+    n_out, (scalars_wp, vectors_wp, table_wp, column_wp) = od.array.trim_to_count(
         counter_wp,
         wp.array(scalars_np, dtype=wp.int32, device=device),
         points_to_warp(vectors_np, device),
+        rows_wp,
+        cast("wp.array[Any]", rows_wp[:, 1]),
     )
 
     assert n_out == n_written
     assert np.array_equal(scalars_wp.numpy(), scalars_np[:n_written])
     assert np.array_equal(vectors_wp.numpy(), vectors_np[:n_written])
+    # A rank-2 table keeps its rows; a strided column view keeps its own elements.
+    assert np.array_equal(table_wp.numpy(), rows_np[:n_written])
+    assert np.array_equal(column_wp.numpy(), rows_np[:n_written, 1])
     # A fresh allocation, not a view: writing the source tail must not reach the trimmed copy.
     assert scalars_wp.ptr != counter_wp.ptr
 

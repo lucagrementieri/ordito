@@ -3399,7 +3399,11 @@ def trim_to_count(
         out_shape = (n_out, *(int(dim) for dim in buffer.shape[1:]))
         out = _launch.empty(out_shape, dtype=buffer.dtype, device=buffer.device)
         if n_out > 0:
-            _launch.copy(out, buffer[:n_out])
+            # A contiguous buffer's rows are its leading elements, copied with no view built.
+            if buffer.is_contiguous:
+                _launch.copy(out, buffer, count=int(out.size))
+            else:
+                _launch.copy(out, buffer[:n_out])
         trimmed.append(out)
     return n_out, trimmed
 
