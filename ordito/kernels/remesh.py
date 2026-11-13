@@ -87,6 +87,7 @@ from ordito.kernels.scatter import (
     lock_two_rings,
     mark_corners,
     mean_from_sum,
+    peer_summed_add_vec3_counted,
     record_edge_incidence,
     stamp_two_rings,
 )
@@ -4617,11 +4618,11 @@ def accumulate_cluster_vertex(
     out_count: wp.array[wp.int32],
 ) -> None:
     # Vertex ``v`` into the sum and count of its kept cluster, indexed by output vertex. A cluster
-    # no face keeps has no output slot and contributes nothing.
+    # no face keeps has no output slot and contributes nothing. A scan's consecutive vertices
+    # crowd a cell, so a warp's peers commit once (``scatter.peer_summed_add_vec3_counted``).
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
-        wp.atomic_add(out_sum, r, vertices[v])
-        wp.atomic_add(out_count, r, 1)
+        peer_summed_add_vec3_counted(out_sum, out_count, r, vertices[v])
 
 
 @wp.func

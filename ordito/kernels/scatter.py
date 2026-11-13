@@ -589,6 +589,28 @@ def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec
 
 
 @wp.func
+def peer_summed_add_vec3_counted(
+    out_sum: wp.array[wp.vec3], out_count: wp.array[wp.int32], index: wp.int32, v: wp.vec3
+) -> None:
+    # ``out_sum[index] += v`` and ``out_count[index] += 1``, the lanes of a warp sharing ``index``
+    # (``warp_peer_lanes``) summed in ``float64`` shuffles and committed once, by the lowest, the
+    # count being their number; a lane with no peer and the CPU device take the plain atomics. For
+    # a mean over groups that consecutive items crowd (a cluster grid's cells over a scan's
+    # vertices).
+    lanes = warp_peer_lanes(index)
+    if lanes == 0:
+        wp.atomic_add(out_sum, index, v)
+        wp.atomic_add(out_count, index, 1)
+    else:
+        x = warp_lanes_sum_float(lanes, wp.float64(v[0]))
+        y = warp_lanes_sum_float(lanes, wp.float64(v[1]))
+        z = warp_lanes_sum_float(lanes, wp.float64(v[2]))
+        if warp_lane_leads(lanes) != 0:
+            wp.atomic_add(out_sum, index, wp.vec3(wp.float32(x), wp.float32(y), wp.float32(z)))
+            wp.atomic_add(out_count, index, popcount32(wp.uint32(lanes)))
+
+
+@wp.func
 def scatter_add_vec3_row(
     out_sum: wp.array2d[wp.Float], sums: GroupSumPass, row: wp.int32, v: wp.vec3
 ) -> None:
