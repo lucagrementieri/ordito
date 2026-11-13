@@ -329,15 +329,21 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 
 A default run keeps the CPU references off the two largest scan meshes and honours every
 `skip_larger_than` cap, so it never shows how far apart the libraries get at 28 M triangles.
-[`tools/sweep.py`](tools/sweep.py) lifts both and times only the rows a previous run has no time for, each
-under a wall-clock limit:
+[`tools/sweep.py`](tools/sweep.py) lifts both and times every row, each under a wall-clock limit.
+A full run is two sweeps: the CUDA one keeps the two device libraries, and the CPU one runs with
+CUDA hidden, so it times `ordito-cpu` uncontaminated (see
+[above](#never-time-ordito-cpu-in-a-cuda-initialised-process)) and every CPU reference beside it:
 
 ```bash
-# after a full --bench-all-libs run into results/
-uv run python -m benchmarks.tools.sweep run sweep/ --done results/       # resumable; hours
-uv run python -m benchmarks.tools.sweep merge results/ sweep/ merged/
+uv run python -m benchmarks.tools.sweep run sweep-cuda/ -k "ordito-cuda or pytorch3d-cuda" \
+    --memory-max 72                                                       # resumable; hours
+uv run python -m benchmarks.tools.sweep run sweep-cpu/ --device cpu --memory-max 72   # a day
+uv run python -m benchmarks.tools.sweep merge merged/ sweep-cuda/ sweep-cpu/
 uv run python -m benchmarks.tools.render_docs merged/
 ```
+
+`--done results/` skips the rows a previous run's `--benchmark-json` files already time, and
+`merge --done results/` merges over a copy of them.
 
 - **A row runs at most `--timeout` seconds (600), setup included.** One that runs past it is
   recorded as a timeout, and its module restarts at the next row. A long call into a compiled
@@ -356,6 +362,13 @@ uv run python -m benchmarks.tools.render_docs merged/
   `merge` writes them, with the timeouts, to `incomplete.jsonl`; the docs draw a timeout as a
   `> 10 min` bar and the others as a red cross.
 - **Rerun `run` with the same directory to resume**: recorded rows are skipped.
+- **Memory is capped, and other processes' memory never decides a row.** `--memory-max` runs each
+  pytest process in a `systemd-run --user --scope` with that `MemoryMax` and no swap, so a row
+  that outgrows it is an out-of-memory kill rather than a swapping machine, and a row is also
+  killed below `--min-available` GiB of available host memory (8). Before each module chunk the
+  sweep waits while other processes hold more than `--max-foreign-host` GiB of the host (24) or
+  `--max-foreign-gpu` GiB of the GPU (4); a row that fails while they held more is forgotten and
+  run again, up to three times (`retries.jsonl`).
 
 ## Host-traffic census and its budget
 

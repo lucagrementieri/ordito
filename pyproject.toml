@@ -177,6 +177,10 @@ test = [
 #    needs. On a box with a different toolkit, change the index to match its ``nvcc``.
 [tool.uv]
 no-build-isolation-package = ["pytorch3d"]
+# dash 4.5.0 (open3d's dependency) installs a top-level ``benchmarks`` package into site-packages,
+# which shadows this repository's namespace package ``benchmarks/`` and breaks every
+# ``benchmarks.*`` import (the harness plugins, ``benchmarks.tools``).
+constraint-dependencies = ["dash<4.5"]
 
 [[tool.uv.index]]
 explicit = true
