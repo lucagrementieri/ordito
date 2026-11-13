@@ -335,6 +335,33 @@ def hash_find_or_insert(key: wp.Int, slot_key: wp.array[wp.Int], mask: wp.int32)
 
 
 @wp.func
+def key_set_insert(key: wp.Int, slot_key: wp.array[wp.Int], mask: wp.int32) -> wp.int32:
+    """
+    ``1`` when this call put ``key`` into a ``hash_find_or_insert`` set, ``0`` when it was there.
+
+    The slot is read before it is claimed: a held slot never changes again, so a non-empty read is
+    final and the atomic is paid only on an apparently empty slot, which matters where most
+    inserts repeat a key another thread already holds. The same sizing rule as
+    ``hash_find_or_insert``: the table must have room for every distinct key.
+    """
+    empty = empty_key(key)
+    encoded = encode_key(key)
+    h = hash_slot(key, mask)
+    inserted = wp.int32(0)
+    while True:
+        held = slot_key[h]
+        if held == empty:
+            held = wp.atomic_cas(slot_key, h, empty, encoded)
+            if held == empty:
+                inserted = wp.int32(1)
+                break
+        if held == encoded:
+            break
+        h = next_slot(h, mask)
+    return inserted
+
+
+@wp.func
 def hash_find(key: wp.Int, slot_key: wp.array[wp.Int], mask: wp.int32) -> wp.int32:
     """
     Slot holding ``key``, or ``-1`` when it is absent.

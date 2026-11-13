@@ -8699,10 +8699,10 @@
  },
  "benchmarks/test_voxels.py::test_voxelize_mesh[sphere_small-ordito-cuda-256]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
-   "memset": 1,
-   "d2h": 1,
+   "launch": 3,
+   "alloc": 4,
+   "memset": 3,
+   "d2h": 3,
    "scan": 1
   }
  },

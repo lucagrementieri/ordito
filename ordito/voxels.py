@@ -7,7 +7,8 @@ of the module:
 
 - **The builder is the dedup.** ``Volume.allocate_by_voxels`` collapses repeated cells as it builds,
   so no function here ever calls [`ordito.grouping.unique_rows`][ordito.grouping.unique_rows]
-  first.
+  first. It sorts every row it is handed, though, so a large cloud or mesh is voxelized through a
+  hash set of its cells and the builder is handed each cell once.
 - **The volume's linear index is the row index of its cell array.** ``wp.volume_lookup_index``
   returns exactly the row [`cells`][ordito.voxels.cells] puts that voxel in, so a per-voxel payload
   is a plain ``wp.array`` of length ``n_voxels`` and membership costs one ``O(1)`` probe.
@@ -95,6 +96,15 @@ _FACE_CORNERS = np.array(
 )
 
 _STENCIL_CACHE: dict[tuple[str, int, bool], odt.Array2dInt32] = {}
+
+# Items from which a grid build takes each distinct cell once (``_unique_cells_grid``) instead of
+# handing the builder every row: below them the builder's cost is near its floor, which a key set,
+# a box read and a count read do not repay. On CUDA tri-box candidates and points cross over apart
+# (the builder sorts a scan's points, which arrive coherent, faster than a mesh's candidates); the
+# CPU builder sorts on the host, dear from a few thousand rows.
+_UNIQUE_CANDIDATES_FROM = 1 << 19
+_UNIQUE_POINTS_FROM = 1 << 20
+_UNIQUE_ITEMS_FROM_CPU = 1 << 12
 
 
 def voxelize_mesh(
@@ -201,7 +211,15 @@ def voxelize_mesh(
 
     device = vertices.device
     n_faces = faces.size // 3
-    voxel_size, origin = resolve_voxel_grid(vertices, voxel_size, origin, caller="voxelize_mesh")
+    # A default grid reads the box anyway; it is kept for the deduplicated build.
+    bounds = (
+        od.bounds.aabb(vertices)
+        if (voxel_size is None or origin is None) and n_faces > 0 and vertices.size > 0
+        else None
+    )
+    voxel_size, origin = resolve_voxel_grid(
+        vertices, voxel_size, origin, bounds=bounds, caller="voxelize_mesh"
+    )
     if n_faces == 0:
         return _empty_grid(voxel_size, origin, device)
 
@@ -227,31 +245,45 @@ def voxelize_mesh(
     if total == 0:
         return _empty_grid(voxel_size, origin, device)
 
-    candidate_cells = odt.empty_2d((total, 3), wp.int32, device=device)
-    accepted = _launch.empty(total, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_voxels.test_triangle_candidates,
-        dim=total,
-        inputs=[
-            vertices,
-            faces,
-            offsets,
+    grid = None
+    if total >= (
+        _UNIQUE_ITEMS_FROM_CPU if wp.get_device(device).is_cpu else _UNIQUE_CANDIDATES_FROM
+    ):
+        grid = _unique_cells_grid(
+            kernel_voxels.append_unique_triangle_cells,
+            total,
+            [vertices, faces, offsets, origin, wp.float32(1.0 / voxel_size)],
+            od.bounds.aabb(vertices) if bounds is None else bounds,
+            voxel_size,
             origin,
-            wp.float32(1.0 / voxel_size),
-            candidate_cells,
-            accepted,
-        ],
-        device=device,
-    )
-    # ``point_mask`` lets the builder skip the rejected candidates in place, so no compaction pass
-    # and no second cell buffer.
-    grid = wp.Volume.allocate_by_voxels(
-        cast("wp.array[wp.int32]", candidate_cells),
-        voxel_size=voxel_size,
-        translation=_translation(origin, voxel_size),
-        point_mask=accepted,
-        device=device,
-    )
+            device,
+        )
+    if grid is None:
+        candidate_cells = odt.empty_2d((total, 3), wp.int32, device=device)
+        accepted = _launch.empty(total, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_voxels.test_triangle_candidates,
+            dim=total,
+            inputs=[
+                vertices,
+                faces,
+                offsets,
+                origin,
+                wp.float32(1.0 / voxel_size),
+                candidate_cells,
+                accepted,
+            ],
+            device=device,
+        )
+        # ``point_mask`` lets the builder skip the rejected candidates in place, so no compaction
+        # pass and no second cell buffer.
+        grid = wp.Volume.allocate_by_voxels(
+            cast("wp.array[wp.int32]", candidate_cells),
+            voxel_size=voxel_size,
+            translation=_translation(origin, voxel_size),
+            point_mask=accepted,
+            device=device,
+        )
     if mode == "solid":
         return fill_cavities(grid)
     return grid
@@ -263,8 +295,9 @@ def voxelize_points(
     """
     Occupancy grid of a point cloud: one active voxel per cell that contains at least one point.
 
-    Open3D's ``VoxelGrid.create_from_point_cloud``. There is no dedup step to write — the builder
-    collapses repeated cells itself.
+    Open3D's ``VoxelGrid.create_from_point_cloud``. A large cloud's cells are deduplicated through a
+    hash set before the grid is built, so the cost follows the points once and the occupied cells
+    after that.
 
     Parameters
     ----------
@@ -307,10 +340,82 @@ def voxelize_points(
     ```
     """
     device = points.device
-    voxel_size, origin = resolve_voxel_grid(points, voxel_size, origin, caller="voxelize_points")
-    if points.size == 0:
+    n_points = points.size
+    unique = n_points >= (
+        _UNIQUE_ITEMS_FROM_CPU if wp.get_device(device).is_cpu else _UNIQUE_POINTS_FROM
+    )
+    # A default grid reads the box anyway; it is kept for the deduplicated build.
+    bounds = (
+        od.bounds.aabb(points)
+        if n_points > 0 and (unique or voxel_size is None or origin is None)
+        else None
+    )
+    voxel_size, origin = resolve_voxel_grid(
+        points, voxel_size, origin, bounds=bounds, caller="voxelize_points"
+    )
+    if n_points == 0:
         return _empty_grid(voxel_size, origin, device)
+    if unique:
+        assert bounds is not None
+        grid = _unique_cells_grid(
+            kernel_voxels.append_unique_point_cells,
+            n_points,
+            [points, origin, wp.float32(1.0 / voxel_size)],
+            bounds,
+            voxel_size,
+            origin,
+            device,
+        )
+        if grid is not None:
+            return grid
     return from_cells(cell_indices(points, voxel_size, origin=origin), voxel_size, origin)
+
+
+def _unique_cells_grid(
+    kernel: odt.Kernel,
+    dim: int,
+    inputs: list[object],
+    bounds: tuple[wp.vec3, wp.vec3],
+    voxel_size: float,
+    origin: wp.vec3,
+    device: wp.DeviceLike,
+) -> wp.Volume | None:
+    """
+    Build the grid of a producer's distinct cells, or ``None`` when its box has too many cells.
+
+    ``kernel`` (``kernels/voxels.append_unique_cell``'s producers) launched over ``dim`` items
+    appends each kept cell once, keyed by its rank in the box of the cells ``bounds`` can reach,
+    so the builder sorts the distinct cells alone. The key set holds at most ``min(dim, box)``
+    keys and the builder takes the appended prefix after one count read.
+    """
+    inverse = float(np.float32(1.0 / voxel_size))
+    lower: list[int] = []
+    shape: list[int] = []
+    for axis in range(3):
+        low = (float(bounds[0][axis]) - float(origin[axis])) * inverse
+        high = (float(bounds[1][axis]) - float(origin[axis])) * inverse
+        # The kernels round a float32 lattice position, which can land a cell past the float64
+        # quotient here, and a triangle's window reaches one cell below its box: two cells of
+        # slack a side, more where float32 cannot resolve a cell.
+        slack = 2 + math.ceil(max(abs(low), abs(high)) * 2.0**-22)
+        lower.append(math.floor(low) - slack)
+        shape.append(math.floor(high) + slack - lower[-1] + 1)
+    box = shape[0] * shape[1] * shape[2]
+    if box >= 1 << 62 or min(lower) < -INT32_MAX or max(lower) + max(shape) > INT32_MAX:
+        return None
+    mask = kernel_grouping.hash_table_mask(min(dim, box))
+    slot_key, counter = _launch.carve_typed(
+        ((wp.int64, mask + 1), (wp.int32, 1)), device, zeroed=True
+    )
+    cells = odt.empty_2d((min(dim, box), 3), wp.int32, device=device)
+    _launch.launch(
+        kernel,
+        dim=dim,
+        inputs=[*inputs, wp.vec3i(*lower), wp.vec3i(*shape), slot_key, mask, counter],
+        outputs=[cells],
+        device=device,
+    )
+    return _allocate_appended(cells, counter, voxel_size, origin)
 
 
 @overload

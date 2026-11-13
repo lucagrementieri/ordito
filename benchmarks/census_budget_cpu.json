@@ -7923,17 +7923,17 @@
  },
  "benchmarks/test_voxels.py::test_voxelize_mesh[sphere_small-ordito-cpu-256]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
-   "readback": 1,
+   "launch": 3,
+   "alloc": 4,
+   "readback": 3,
    "scan": 1
   }
  },
  "benchmarks/test_voxels.py::test_voxelize_mesh[sphere_small-ordito-cpu-64]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
-   "readback": 1,
+   "launch": 3,
+   "alloc": 4,
+   "readback": 3,
    "scan": 1
   }
  },

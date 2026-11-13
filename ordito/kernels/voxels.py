@@ -26,6 +26,7 @@ import warp as wp
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
     append_slot,
+    append_slot_if,
     binary_search_index,
     cube_corner_offset,
     curve_cell,
@@ -33,7 +34,7 @@ from ordito.kernels.array import (
     lattice_position,
     ravel_index,
 )
-from ordito.kernels.grouping import hash_slot_words3, next_slot
+from ordito.kernels.grouping import hash_slot_words3, key_set_insert, next_slot
 from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from ordito.kernels.triangles import face_vertices, row_triple, write_row_triple
 
@@ -182,20 +183,21 @@ def count_triangle_candidates(
     )
 
 
-@wp.kernel
-def test_triangle_candidates(
+@wp.func
+def triangle_candidate(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int64],
     origin: wp.vec3,
     inverse_size: wp.float32,
-    out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
-) -> None:
-    # One thread per (triangle, candidate cell) pair: per-triangle window sizes span orders of
-    # magnitude on any real mesh, so a thread-per-triangle launch is load-imbalanced by that same
-    # factor. ``binary_search_index`` recovers the owning triangle from the flat work-item id
-    # (``wp.lower_bound`` clamps to ``n - 1`` and would misattribute the last window).
+    item: wp.int32,
+) -> tuple[wp.vec3i, wp.bool]:
+    # The cell of one (triangle, candidate cell) work item and whether the triangle meets it. One
+    # item a thread: per-triangle window sizes span orders of magnitude on any real mesh, so a
+    # thread-per-triangle launch is load-imbalanced by that same factor. ``binary_search_index``
+    # recovers the owning triangle from the flat work-item id (``wp.lower_bound`` clamps to
+    # ``n - 1`` and would misattribute the last window). ``test_triangle_candidates`` writes every
+    # item and its verdict; ``append_unique_triangle_cells`` keeps the accepted cells once each.
     #
     # The per-item decode below (``span_y``/``span_z``/``plane``/``i``/``j``/``k``) stays int32,
     # unlike ``count_triangle_candidates``'s widened axis spans above -- a single axis wide enough
@@ -204,7 +206,6 @@ def test_triangle_candidates(
     # buffers alone would be tens of GB at that width). Left as a documented residual rather than
     # widening this hot loop's arithmetic to int64 for a practically unreachable input; revisit only
     # if a caller legitimately needs a wider ``max_candidates``.
-    item = wp.int32(wp.tid())
     f = binary_search_index(offsets, wp.int64(item)) - 1
     p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
     lo, hi = triangle_lattice_window(p0, p1, p2)
@@ -229,8 +230,100 @@ def test_triangle_candidates(
     center = wp.vec3(
         wp.float32(cell[0]) + 0.5, wp.float32(cell[1]) + 0.5, wp.float32(cell[2]) + 0.5
     )
+    return cell, triangle_aabb_overlap(center, half, p0, p1, p2)
+
+
+@wp.kernel
+def test_triangle_candidates(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int64],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    out_cells: wp.array2d[wp.int32],
+    out_mask: wp.array[wp.int32],
+) -> None:
+    # Every candidate and its verdict, for a ``point_mask`` build: the form a small candidate set
+    # takes, where the builder's cost is its floor and a dedup's table and count read would not pay
+    # (``append_unique_triangle_cells`` is the large form).
+    item = wp.int32(wp.tid())
+    cell, accepted = triangle_candidate(vertices, faces, offsets, origin, inverse_size, item)
     write_row_triple(out_cells, item, cell[0], cell[1], cell[2])
-    out_mask[item] = wp.where(triangle_aabb_overlap(center, half, p0, p1, p2), 1, 0)
+    out_mask[item] = wp.where(accepted, 1, 0)
+
+
+@wp.func
+def box_cell_key(cell: wp.vec3i, box_lower: wp.vec3i, box_shape: wp.vec3i) -> wp.int64:
+    # A cell's C-order rank in the box ``[box_lower, box_lower + box_shape)``: a key that is
+    # distinct for distinct cells of the box and never ``-1`` (``encode_key``'s empty sentinel).
+    return (
+        wp.int64(cell[0] - box_lower[0]) * wp.int64(box_shape[1]) + wp.int64(cell[1] - box_lower[1])
+    ) * wp.int64(box_shape[2]) + wp.int64(cell[2] - box_lower[2])
+
+
+@wp.func
+def append_unique_cell(
+    cell: wp.vec3i,
+    kept: wp.bool,
+    box_lower: wp.vec3i,
+    box_shape: wp.vec3i,
+    slot_key: wp.array[wp.int64],
+    mask: wp.int32,
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
+):
+    # A kept cell appended to ``out_cells`` by the first thread to insert it into the key set, so a
+    # producer that meets each cell many times (a cloud's points, a mesh's tri-box candidates) hands
+    # ``Volume.allocate_by_voxels`` its distinct cells alone: the builder keys and sorts every row
+    # it is given, duplicates and masked rows included, and that sort was most of a large call
+    # (lucy's 28 M faces at 64 cells across: ~14 of 17 ms). Called by every lane, the append is one
+    # ballot a warp (``append_slot_if``). The builder sorts its keys, so arrival order decides
+    # nothing.
+    inserted = wp.int32(0)
+    if kept:
+        inserted = key_set_insert(box_cell_key(cell, box_lower, box_shape), slot_key, mask)
+    slot = append_slot_if(counter, 0, inserted)
+    if slot >= 0:
+        write_row_triple(out_cells, slot, cell[0], cell[1], cell[2])
+
+
+@wp.kernel
+def append_unique_triangle_cells(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int64],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    box_lower: wp.vec3i,
+    box_shape: wp.vec3i,
+    slot_key: wp.array[wp.int64],
+    mask: wp.int32,
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
+) -> None:
+    # ``test_triangle_candidates``' items, each accepted cell kept once (``append_unique_cell``).
+    # ``slot_key`` and ``counter`` are scratch carried out to the build.
+    item = wp.int32(wp.tid())
+    cell, accepted = triangle_candidate(vertices, faces, offsets, origin, inverse_size, item)
+    append_unique_cell(cell, accepted, box_lower, box_shape, slot_key, mask, counter, out_cells)
+
+
+@wp.kernel
+def append_unique_point_cells(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    box_lower: wp.vec3i,
+    box_shape: wp.vec3i,
+    slot_key: wp.array[wp.int64],
+    mask: wp.int32,
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
+) -> None:
+    # ``voxel_cell_indices``' cells, each kept once (``append_unique_cell``).
+    v = wp.int32(wp.tid())
+    cell = voxel_cell(points[v], origin, inverse_size)
+    append_unique_cell(cell, True, box_lower, box_shape, slot_key, mask, counter, out_cells)
 
 
 # ---------------------------------------------------------------------------------------------

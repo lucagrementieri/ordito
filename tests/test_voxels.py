@@ -86,6 +86,21 @@ def sphere(
     return (mesh_tm, *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device))
 
 
+@pytest.fixture(params=["masked", "deduplicated"])
+def grid_build(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Run a voxelization through each of its two grid builds.
+
+    ``voxelize_mesh`` and ``voxelize_points`` hand the builder every row below an item count and
+    each distinct cell once from it; the fixtures here sit below those counts, so the
+    ``"deduplicated"`` arm lowers them to zero. Both arms must give the reference's cells.
+    """
+    if request.param == "deduplicated":
+        monkeypatch.setattr("ordito.voxels._UNIQUE_CANDIDATES_FROM", 0)
+        monkeypatch.setattr("ordito.voxels._UNIQUE_POINTS_FROM", 0)
+        monkeypatch.setattr("ordito.voxels._UNIQUE_ITEMS_FROM_CPU", 0)
+
+
 def _cloud(
     mesh_tm: tm.Trimesh, device: str, n: int = 20000
 ) -> tuple[np.ndarray, wp.array[wp.vec3]]:
@@ -107,6 +122,7 @@ def _dense(
 
 
 @pytest.mark.parity("voxelize_mesh", "open3d")
+@pytest.mark.usefixtures("grid_build")
 def test_voxelize_mesh_matches_open3d(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
 ):
@@ -329,6 +345,7 @@ def test_voxelize_mesh_solid_contains_the_pyvista_mask(
     ],
 )
 @pytest.mark.parametrize("mode", ["surface", "solid"])
+@pytest.mark.usefixtures("grid_build")
 def test_voxelize_mesh_box_on_cell_planes_matches_exact_count(
     device: str,
     voxel_size: float,
@@ -390,6 +407,7 @@ def test_voxelize_mesh_box_on_cell_planes_matches_exact_count(
 
 
 @pytest.mark.parity("voxelize_points", "open3d")
+@pytest.mark.usefixtures("grid_build")
 def test_voxelize_points_matches_open3d(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
