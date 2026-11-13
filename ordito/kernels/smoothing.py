@@ -674,6 +674,35 @@ def normal_equations_setup(
 
 
 @wp.func
+def shift_up_one(
+    columns: wp.array[wp.int32], values: wp.array[wp.float64], first: wp.int32, end: wp.int32
+) -> None:
+    # Move entries ``first`` to ``end - 1`` of both arrays up one slot, from the top. On CUDA eight
+    # at a time, every load of a chunk issued before its stores: a store waits on its own load, so
+    # an entry a step paid a full load latency per entry. ``normal_equations_rows`` on a hole
+    # fill's hub patch 1.54 -> 1.21 ms (``saddle_small``), 0.89x ``hemisphere``, 0.93x bunny,
+    # bit-identical; calls 0.97x there, at par elsewhere (2026-11-13). Sixteen a chunk no faster.
+    if device_is_cpu() != 0:
+        for t in range(end, first, -1):
+            columns[t] = columns[t - 1]
+            values[t] = values[t - 1]
+        return
+    top = end
+    while top > first:
+        c = wp.vector(length=8, dtype=wp.int32)
+        v = wp.vector(length=8, dtype=wp.float64)
+        for j in range(8):
+            source = wp.max(top - 1 - j, first)
+            c[j] = columns[source]
+            v[j] = values[source]
+        for j in range(8):
+            if top - j > first:
+                columns[top - j] = c[j]
+                values[top - j] = v[j]
+        top -= 8
+
+
+@wp.func
 def accumulate_term(
     column: wp.int32,
     m_vi: wp.float64,
@@ -699,9 +728,7 @@ def accumulate_term(
     if lo < width and out_columns[slot] == column:
         out_values[slot] = out_values[slot] + m_vi * m_vu
         return width
-    for t in range(start + width, slot, -1):
-        out_columns[t] = out_columns[t - 1]
-        out_values[t] = out_values[t - 1]
+    shift_up_one(out_columns, out_values, slot, start + width)
     out_columns[slot] = column
     out_values[slot] = m_vi * m_vu
     return width + 1
