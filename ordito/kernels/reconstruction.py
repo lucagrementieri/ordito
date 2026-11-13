@@ -1801,6 +1801,10 @@ def count_live_margin(
 ):
     # Unvisited live fan ``u``'s margin ``weight``, when positive, counted in ``hist`` and listed
     # under its class. One atomic a fan: ``append_slot`` would pool a warp's lanes into one class.
+    # Declined (2026-11-13): the bins pooled over a warp's peers (``reduce.peer_counted_add``)
+    # and each class's slots reserved by one atomic of the lanes sharing it (a ``__match_any_sync``
+    # ``append_slot``) left unoriented ``triangulate_point_cloud`` at par (1.00-1.02x from
+    # sphere_small to dragon, faces identical).
     if weight > 0:
         wp.atomic_add(hist, weight, 1)
         c = margin_class(weight)

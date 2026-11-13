@@ -426,7 +426,10 @@ def spread_aggregate_labels(
     # labels are final, also counts each aggregate's rows into the zeroed ``out_sizes`` (the first
     # hop passes ``None`` and never reads it), so no separate counting pass runs over the labels.
     # A row counts its ``node_weight``: the finest rows it stands for, so ``out_sizes`` holds each
-    # aggregate's, the next level's weights.
+    # aggregate's, the next level's weights. Declined (2026-11-13): pooling a warp's lanes adding
+    # into one aggregate (an ``int64`` shuffle sum of their weights, one commit) cost this kernel
+    # 1.05-1.07x on sphere_med and bunny and read par on dragon and lucy: an aggregate's few rows
+    # rarely share a warp.
     #
     # The spread walks the same *strong* graph the independent set was selected on
     # (``mg_strong_neighbor``), which is what keeps the tiling consistent: every excluded node has

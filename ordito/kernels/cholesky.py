@@ -1643,7 +1643,9 @@ def dissection_crossings(
 ) -> None:
     # The pattern edges from a segment's lower half to its upper half: both endpoints marked with
     # this depth's ``stamp``, and each segment's count of marked endpoints per side (an upper
-    # endpoint counted by the first thread to mark it).
+    # endpoint counted by the first thread to mark it). Declined (2026-11-13): the lower count
+    # pooled over a warp's peers (``reduce.peer_counted_add``) read 0.98-1.03x on sphere_med and
+    # bunny; only separator vertices count, too few to contend.
     p = wp.int32(wp.tid())
     if p >= live_count(segment_start):
         return

@@ -1364,18 +1364,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Chunked row walks and pooled counts not yet tried** (2026-11-11 survey; technique and prices
-  in §14; on ~6-entry mesh rings it pays only past L2, `kernels/laplacian.OPERATOR_ROW_CHUNK_FROM`):
-  row walks `graph.shortest_path_envelope`'s relaxation (168-668 passes, rows ~6),
-  `cholesky.breadth_first_level`, `neighbors.query_geodesic_ball_collect` (90-94 % of `relax_approx`'s device time). Counts: `reconstruction.count_live_margin` (a few margin
-  bins in a one-block loop; its class-list slot needs a multi-bin peer allocator, not
-  `peer_counted_add`), `cholesky.emit_structure_rows` (sorted keys: the count is the run length,
-  no atomic needed), `cholesky.dissection_crossings` (1-16 bins at shallow depths),
-  `cholesky.front_terms_and_keys`' 2-D level stats, `reduce.scatter_mean`'s `count_occurrences`
-  (pool when groups are few), `voxels.record_point_bucket`'s out-of-grid sentinel bin,
-  `remesh.accumulate_cluster_vertex` (count plus its vec3 sum), `multigrid.spread_aggregate_labels`'
-  weighted sizes. Single-slot `atomic_add(..., 1)` counters that `append_slot` fits (geodesic_walk
-  `SHORTEN_CHANGED`, repair round counters, halfedge defect counts) were not priced.
 - **`voxels` grid builds sit at `Volume.allocate_by_voxels`' floor** (2026-11-13): morphology,
   set algebra, `fill_*` and `revoxelize` are 0.35-0.75 ms calls of one or two builds. The
   builder is host-bound: 0.13 ms at 100 cells, 0.23-0.25 ms from 10 k, the same issued back to
