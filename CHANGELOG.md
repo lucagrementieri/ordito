@@ -22,6 +22,21 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+### Added
+
+- Documentation: [Sharing the GPU](https://lucagrementieri.github.io/ordito/streams/) states that
+  ordito must not be called from two threads at once, why, and the lock that makes a threaded
+  process safe.
+
+### Fixed
+
+- ordito's graph recordings no longer break PyTorch running on its default stream in another
+  thread, or get broken by it. One side raised `CUDA error: operation would make the legacy stream
+  depend on a capturing blocking stream` and the other `Warp CUDA error 901: operation failed due
+  to a previous error during capture`. The recordings now happen on a private non-blocking stream.
+  `linalg.solve_spd` when it does not batch, and `smoothing.filter_laplacian`'s implicit solve
+  when its fixed-point step does not apply, still need the side stream described on that page.
+
 ## [0.5.1] - 2026-11-23
 
 ### Added

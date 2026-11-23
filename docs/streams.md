@@ -1,7 +1,7 @@
 ---
 head_title: "Using ordito beside PyTorch and other CUDA libraries"
 description: >-
-  How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, freed memory and the two memory pools.
+  How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, threads, freed memory and the two memory pools.
 ---
 
 # Sharing the GPU with other libraries
@@ -51,10 +51,11 @@ event or a synchronization, whether torch is on its default stream or inside a
 
 Torch's default stream is CUDA's *legacy* default stream, on which CUDA cannot record a graph.
 ordito records its loops (solver iterations, remeshing rounds, sweeps) on a private stream of its
-own when the current stream is that one, and replays them on yours, so every function works under
-it. Calls into Warp's own iterative solvers run on that private stream too. Warp creates its
-streams *blocking*, so their work is ordered against the legacy stream in both directions, exactly
-as if it had been issued there.
+own whenever the current stream is a blocking one, the legacy stream included, and replays them on
+yours, so every function works under it. Recording issues no work, so that private stream is
+*non-blocking*: it never stands between the legacy stream and anything else. Calls into Warp's own
+iterative solvers run on a private *blocking* stream instead, since their work runs there: it is
+ordered against the legacy stream in both directions, exactly as if it had been issued there.
 
 Without `wp.ScopedStream`, ordito runs on Warp's own stream, which is also blocking: its work is
 still ordered against torch's default stream, but not against a torch side stream.
@@ -76,10 +77,14 @@ or against Warp's own stream. Two consequences:
 
 While a graph is being recorded on a *blocking* stream, CUDA refuses work on the legacy default
 stream from any thread: torch raises `cudaErrorStreamCaptureImplicit` ("operation would make the
-legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito
-records on a blocking stream whenever it runs on Warp's own stream or on torch's default stream.
-If another thread runs torch on its default stream at the same time, run ordito on a torch side
-stream instead, which is non-blocking:
+legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito's own
+recordings never use a blocking stream, so torch can keep running on its default stream in another
+thread while ordito runs in this one.
+
+Two calls still record on a blocking stream: `linalg.solve_spd` when it does not batch, and
+`smoothing.filter_laplacian`'s implicit solve when its fixed-point step does not apply, both of
+which hand the loop to Warp's own solvers. If another thread runs torch on its default stream at
+the same time as one of those, run ordito on a torch side stream instead, which is non-blocking:
 
 ```python
 import torch
@@ -98,6 +103,45 @@ if torch.cuda.is_available():
     torch.cuda.current_stream().wait_stream(side)  # before torch reads the result
     print(smoothed.shape)  # (2562,)
 ```
+
+## Calling ordito from several threads
+
+Do not call ordito from two threads at the same time. Warp keeps one current stream per device for
+the whole process, not one per thread: `wp.ScopedStream` in one thread changes the stream every
+other thread launches on, and a launch issued while another thread records a graph is recorded
+into that graph instead of running. Two concurrent calls fail with CUDA errors, hang or crash the
+process, whatever stream each thread set.
+
+A threaded process shares one lock among everything that uses Warp, ordito included, and holds it
+for the whole call, the `wp.ScopedStream` block around it included:
+
+```python
+import threading
+
+import ordito as od
+
+ORDITO_LOCK = threading.Lock()
+
+
+def smooth(subdivisions: int, counts: list[int]) -> None:
+    with ORDITO_LOCK:
+        vertices, faces = od.creation.icosphere(subdivisions=subdivisions)
+        smoothed = od.smoothing.filter_laplacian(vertices, faces, iterations=4)
+        counts.append(smoothed.shape[0])
+
+
+counts: list[int] = []
+workers = [threading.Thread(target=smooth, args=(level, counts)) for level in (2, 3, 4)]
+for worker in workers:
+    worker.start()
+for worker in workers:
+    worker.join()
+print(sorted(counts))  # [162, 642, 2562]
+```
+
+The lock costs no GPU throughput: the calls would queue on one stream anyway. Threads that do not
+use Warp need no lock: PyTorch can run on its default stream in another thread throughout, as the
+previous section describes.
 
 ## Graph capture by the caller
 
