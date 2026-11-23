@@ -51,10 +51,11 @@ event or a synchronization, whether torch is on its default stream or inside a
 
 Torch's default stream is CUDA's *legacy* default stream, on which CUDA cannot record a graph.
 ordito records its loops (solver iterations, remeshing rounds, sweeps) on a private stream of its
-own when the current stream is that one, and replays them on yours, so every function works under
-it. Calls into Warp's own iterative solvers run on that private stream too. Warp creates its
-streams *blocking*, so their work is ordered against the legacy stream in both directions, exactly
-as if it had been issued there.
+own whenever the current stream is a blocking one, the legacy stream included, and replays them on
+yours, so every function works under it. Recording issues no work, so that private stream is
+*non-blocking*: it never stands between the legacy stream and anything else. Calls into Warp's own
+iterative solvers run on a private *blocking* stream instead, since their work runs there: it is
+ordered against the legacy stream in both directions, exactly as if it had been issued there.
 
 Without `wp.ScopedStream`, ordito runs on Warp's own stream, which is also blocking: its work is
 still ordered against torch's default stream, but not against a torch side stream.
@@ -76,10 +77,14 @@ or against Warp's own stream. Two consequences:
 
 While a graph is being recorded on a *blocking* stream, CUDA refuses work on the legacy default
 stream from any thread: torch raises `cudaErrorStreamCaptureImplicit` ("operation would make the
-legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito
-records on a blocking stream whenever it runs on Warp's own stream or on torch's default stream.
-If another thread runs torch on its default stream at the same time, run ordito on a torch side
-stream instead, which is non-blocking:
+legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito's own
+recordings never use a blocking stream, so torch can keep running on its default stream in another
+thread while ordito runs in this one.
+
+Two calls still record on a blocking stream: `linalg.solve_spd` when it does not batch, and
+`smoothing.filter_laplacian`'s implicit solve when its fixed-point step does not apply, both of
+which hand the loop to Warp's own solvers. If another thread runs torch on its default stream at
+the same time as one of those, run ordito on a torch side stream instead, which is non-blocking:
 
 ```python
 import torch

@@ -8,15 +8,18 @@ byte for byte.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 import numpy as np
 import pytest
+import torch
 import trimesh as tm
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
+from ordito import _common
 
 _Call = Callable[[wp.array[wp.vec3], wp.array[wp.int32]], odt.ArrayNd]
 
@@ -62,3 +65,54 @@ def test_recordings_run_on_the_legacy_stream(
         assert device.stream.cuda_stream == 0
         actual_np = run(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.array_equal(actual_np, expected_np)
+
+
+def test_a_recording_leaves_the_legacy_stream_to_other_threads(device: str) -> None:
+    """
+    Ordito against ordito: torch's default stream stays usable while another thread records.
+
+    While a graph is recorded on a *blocking* stream, CUDA refuses work on the legacy default
+    stream from every thread (``cudaErrorStreamCaptureImplicit``, "operation would make the legacy
+    stream depend on a capturing blocking stream") and invalidates the recording. A process that
+    runs torch in one thread and ordito in another (a model server's worker threads) hit it.
+    ``_common.scoped_capture`` records on a private non-blocking stream instead, so the other
+    thread's torch work runs and the recording replays what it recorded.
+    """
+    resolved = wp.get_device(device)
+    if not resolved.is_cuda:
+        pytest.skip("only a CUDA device has streams")
+    values = wp.zeros(1024, dtype=wp.float32, device=device)
+    recording = threading.Event()
+    torch_done = threading.Event()
+    failures: list[BaseException] = []
+
+    def run_torch() -> None:
+        # Legacy-stream work issued while the main thread's recording is open.
+        assert recording.wait(timeout=30.0)
+        try:
+            ones = torch.ones(4096, device=device)
+            assert float((ones + 1.0).sum().item()) == 2.0 * 4096
+        except BaseException as error:  # noqa: BLE001 -- surfaced in the main thread
+            failures.append(error)
+        finally:
+            torch_done.set()
+
+    worker = threading.Thread(target=run_torch)
+    worker.start()
+    with (
+        wp.ScopedStream(wp.Stream(resolved, cuda_stream=0)),
+        _common.scoped_capture(resolved) as capture,
+    ):
+        values.fill_(2.0)
+        recording.set()
+        assert torch_done.wait(timeout=30.0)
+    worker.join()
+    assert not failures, failures
+    graph = capture.graph
+    assert graph is not None
+    # Recorded, not run: the fill lands only when the graph replays.
+    assert np.array_equal(values.numpy(), np.zeros(1024, dtype=np.float32))
+    with wp.ScopedStream(wp.Stream(resolved, cuda_stream=0)):
+        wp.capture_launch(graph)
+        actual_np = values.numpy()
+    assert np.array_equal(actual_np, np.full(1024, 2.0, dtype=np.float32))
