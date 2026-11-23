@@ -245,7 +245,7 @@ If ordito is useful in your research, please cite it:
   title   = {{ordito}: GPU-accelerated triangular mesh processing on NVIDIA Warp},
   year    = {2026},
   url     = {https://github.com/lucagrementieri/ordito},
-  version = {0.5.1}
+  version = {0.5.2}
 }
 ```
 

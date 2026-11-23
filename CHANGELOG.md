@@ -22,20 +22,17 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
-### Added
+## [0.5.2] - 2026-11-23
 
-- Documentation: [Sharing the GPU](https://lucagrementieri.github.io/ordito/streams/) states that
-  ordito must not be called from two threads at once, why, and the lock that makes a threaded
-  process safe.
-
-### Fixed
-
-- ordito's graph recordings no longer break PyTorch running on its default stream in another
-  thread, or get broken by it. One side raised `CUDA error: operation would make the legacy stream
-  depend on a capturing blocking stream` and the other `Warp CUDA error 901: operation failed due
-  to a previous error during capture`. The recordings now happen on a private non-blocking stream.
+- ordito can now run in one thread while PyTorch runs on its default stream in another. A graph
+  recording used to break both: PyTorch raised `CUDA error: operation would make the legacy stream
+  depend on a capturing blocking stream` and ordito `Warp CUDA error 901: operation failed due to
+  a previous error during capture`. The recordings now happen on a private non-blocking stream.
   `linalg.solve_spd` when it does not batch, and `smoothing.filter_laplacian`'s implicit solve
-  when its fixed-point step does not apply, still need the side stream described on that page.
+  when its fixed-point step does not apply, still need the side stream described in
+  [Sharing the GPU](https://lucagrementieri.github.io/ordito/streams/).
+- That page now states that ordito must not be called from two threads at once, why, and the lock
+  that makes a threaded process safe.
 
 ## [0.5.1] - 2026-11-23
 
@@ -378,7 +375,8 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/lucagrementieri/ordito/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/lucagrementieri/ordito/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lucagrementieri/ordito/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...v0.4.0
