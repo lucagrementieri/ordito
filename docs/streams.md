@@ -1,7 +1,7 @@
 ---
 head_title: "Using ordito beside PyTorch and other CUDA libraries"
 description: >-
-  How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, freed memory and the two memory pools.
+  How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, threads, freed memory and the two memory pools.
 ---
 
 # Sharing the GPU with other libraries
@@ -103,6 +103,45 @@ if torch.cuda.is_available():
     torch.cuda.current_stream().wait_stream(side)  # before torch reads the result
     print(smoothed.shape)  # (2562,)
 ```
+
+## Calling ordito from several threads
+
+Do not call ordito from two threads at the same time. Warp keeps one current stream per device for
+the whole process, not one per thread: `wp.ScopedStream` in one thread changes the stream every
+other thread launches on, and a launch issued while another thread records a graph is recorded
+into that graph instead of running. Two concurrent calls fail with CUDA errors, hang or crash the
+process, whatever stream each thread set.
+
+A threaded process shares one lock among everything that uses Warp, ordito included, and holds it
+for the whole call, the `wp.ScopedStream` block around it included:
+
+```python
+import threading
+
+import ordito as od
+
+ORDITO_LOCK = threading.Lock()
+
+
+def smooth(subdivisions: int, counts: list[int]) -> None:
+    with ORDITO_LOCK:
+        vertices, faces = od.creation.icosphere(subdivisions=subdivisions)
+        smoothed = od.smoothing.filter_laplacian(vertices, faces, iterations=4)
+        counts.append(smoothed.shape[0])
+
+
+counts: list[int] = []
+workers = [threading.Thread(target=smooth, args=(level, counts)) for level in (2, 3, 4)]
+for worker in workers:
+    worker.start()
+for worker in workers:
+    worker.join()
+print(sorted(counts))  # [162, 642, 2562]
+```
+
+The lock costs no GPU throughput: the calls would queue on one stream anyway. Threads that do not
+use Warp need no lock: PyTorch can run on its default stream in another thread throughout, as the
+previous section describes.
 
 ## Graph capture by the caller
 
