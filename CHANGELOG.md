@@ -22,6 +22,9 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+- Python 3.15 is a supported version. Before it publishes, the release pipeline now installs the
+  built wheel on every supported Python, 3.11 to 3.15, and runs it there.
+
 ## [0.5.2] - 2026-11-23
 
 - ordito can now run in one thread while PyTorch runs on its default stream in another. A graph

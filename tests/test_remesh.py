@@ -3783,7 +3783,7 @@ def _intrinsic_faces_meshlib(edge_mesh_ml: mm.EdgeLengthMesh) -> tuple[np.ndarra
     """
     topology = edge_mesh_ml.topology
     lengths_ml = meshlib_scalars_to_numpy(edge_mesh_ml.edgeLengths).astype(np.float64)
-    faces_np = np.asarray(topology.getAllTriVerts(), dtype=np.int64).reshape(-1, 3)
+    faces_np = np.asarray(mn.getNumpyFaces(topology), dtype=np.int64)
     lengths_np = np.empty(faces_np.shape, dtype=np.float64)
     for face_index, face in enumerate(faces_np):
         edges = (mm.EdgeId(), mm.EdgeId(), mm.EdgeId())

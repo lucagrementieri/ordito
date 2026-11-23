@@ -25,7 +25,7 @@ jobs:
       # `enable-cache` is load-bearing in *this* workflow, where elsewhere it only restates
       # the default: setup-uv's default is `auto`, which turns caching off for tag pushes --
       # the only event that triggers this file.
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
       - run: uv python install
@@ -53,27 +53,6 @@ jobs:
       # after the upload that cannot be undone.
       - name: Check package metadata
         run: uvx twine check dist/*
-
-      # The end-user configuration: a bare interpreter, no CUDA, no reference libraries, no dev
-      # tooling. Kept minimal on purpose -- the regression suite is `test.yml`; this asserts the
-      # artifact about to be published is importable and can run a kernel.
-      - name: CPU-only smoke test of the built wheel
-        run: |
-          python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install --upgrade pip
-          /tmp/smoke/bin/pip install dist/*.whl
-          /tmp/smoke/bin/python -c "
-          import os, ordito as od
-          # The version the wheel actually reports, checked against the tag being released.
-          expected = os.environ['GITHUB_REF_NAME'].lstrip('v')
-          assert od.__version__ == expected, (od.__version__, expected)
-          vertices, faces = od.creation.icosphere(subdivisions=2)
-          assert faces.shape[0] == 960, faces.shape
-          mesh = od.Trimesh(vertices, faces)
-          assert mesh.is_watertight
-          assert mesh.euler_characteristic == 2
-          print('ok: ordito', od.__version__, '--', vertices.shape[0], 'vertices on', vertices.device)
-          "
 
       # The body of the GitHub Release, cut from the changelog section matching this tag, so the
       # release notes and the changelog cannot drift. Fails loudly if the section is missing --
@@ -104,8 +83,50 @@ jobs:
             dist/
             RELEASE_NOTES.md
 
-  publish:
+  # The end-user configuration, on every Python the classifiers claim: a bare interpreter, no
+  # CUDA, no reference libraries, no dev tooling. The wheel is `py3-none-any`, so one artifact
+  # serves every interpreter, and this asserts that the exact file about to be published imports
+  # and runs a kernel on each of them. Kept minimal on purpose: the regression suite is
+  # `test.yml`. `publish` waits on every leg, so one failing interpreter stops the release before
+  # anything leaves the runner.
+  smoke:
     needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: .
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the built wheel into a bare interpreter
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/*.whl
+      - name: CPU-only smoke test of the built wheel
+        run: |
+          /tmp/smoke/bin/python -c "
+          import os, sys, ordito as od
+          # The version the wheel actually reports, checked against the tag being released.
+          expected = os.environ['GITHUB_REF_NAME'].lstrip('v')
+          assert od.__version__ == expected, (od.__version__, expected)
+          vertices, faces = od.creation.icosphere(subdivisions=2)
+          assert faces.shape[0] == 960, faces.shape
+          mesh = od.Trimesh(vertices, faces)
+          assert mesh.is_watertight
+          assert mesh.euler_characteristic == 2
+          print('ok: ordito', od.__version__, 'on Python', sys.version.split()[0], '--',
+                vertices.shape[0], 'vertices on', vertices.device)
+          "
+
+  publish:
+    needs: [build, smoke]
     runs-on: ubuntu-latest
     # Trusted Publishing (OIDC) rather than a stored `PYPI_API_TOKEN`: no long-lived credential
     # in the repository to rotate or leak. Configure once at

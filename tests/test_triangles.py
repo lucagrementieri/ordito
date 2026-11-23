@@ -1114,7 +1114,11 @@ def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name
     interpolated_ml = np.empty((n_faces, 3))
     for f in range(n_faces):
         edge_ml = topology_ml.edgeWithLeft(mm.FaceId(f))
-        corners_ml = [int(v) for v in topology_ml.getLeftTriVerts(edge_ml)]
+        # The out-parameter overload, never the one returning ``ThreeVertIds``: that object is not
+        # bounds-checked, and reading its entries segfaulted the worker once in a full-suite run.
+        corner_ids_ml = (mm.VertId(), mm.VertId(), mm.VertId())
+        topology_ml.getLeftTriVerts(edge_ml, *corner_ids_ml)
+        corners_ml = [corner_ml.get() for corner_ml in corner_ids_ml]
         weights = {int(v): float(w) for v, w in zip(faces_np[f], barycentric_np[f], strict=True)}
         interpolated_ml[f] = [
             *mm.triPoint(
