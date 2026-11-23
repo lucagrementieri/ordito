@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How ordito orders its GPU work: Warp&#x27;s current stream, PyTorch&#x27;s default and side streams, graph recording, freed memory and the two memory pools.">
+        <meta name="description" content="How ordito orders its GPU work: Warp&#x27;s current stream, PyTorch&#x27;s default and side streams, graph recording, threads, freed memory and the two memory pools.">
       
       
       
@@ -67,7 +67,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
   <meta property="og:title" content="Using ordito beside PyTorch and other CUDA libraries - ordito">
-  <meta property="og:description" content="How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, freed memory and the two memory pools.">
+  <meta property="og:description" content="How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, threads, freed memory and the two memory pools.">
   <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/streams/">
   <meta property="og:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
   <meta property="og:image:type" content="image/png">
@@ -76,7 +76,7 @@
   <meta property="og:image:alt" content="ordito: GPU mesh processing in Python">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Using ordito beside PyTorch and other CUDA libraries - ordito">
-  <meta name="twitter:description" content="How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, freed memory and the two memory pools.">
+  <meta name="twitter:description" content="How ordito orders its GPU work: Warp's current stream, PyTorch's default and side streams, graph recording, threads, freed memory and the two memory pools.">
   <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
 
   </head>
@@ -793,6 +793,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Torch in another thread
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calling-ordito-from-several-threads" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Calling ordito from several threads
       </span>
     </span>
   </a>
@@ -6268,6 +6279,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#calling-ordito-from-several-threads" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Calling ordito from several threads
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#graph-capture-by-the-caller" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6347,10 +6369,11 @@ event or a synchronization, whether torch is on its default stream or inside a
 <code>torch.cuda.stream(...)</code> block.</p>
 <p>Torch's default stream is CUDA's <em>legacy</em> default stream, on which CUDA cannot record a graph.
 ordito records its loops (solver iterations, remeshing rounds, sweeps) on a private stream of its
-own when the current stream is that one, and replays them on yours, so every function works under
-it. Calls into Warp's own iterative solvers run on that private stream too. Warp creates its
-streams <em>blocking</em>, so their work is ordered against the legacy stream in both directions, exactly
-as if it had been issued there.</p>
+own whenever the current stream is a blocking one, the legacy stream included, and replays them on
+yours, so every function works under it. Recording issues no work, so that private stream is
+<em>non-blocking</em>: it never stands between the legacy stream and anything else. Calls into Warp's own
+iterative solvers run on a private <em>blocking</em> stream instead, since their work runs there: it is
+ordered against the legacy stream in both directions, exactly as if it had been issued there.</p>
 <p>Without <code>wp.ScopedStream</code>, ordito runs on Warp's own stream, which is also blocking: its work is
 still ordered against torch's default stream, but not against a torch side stream.</p>
 <h2 id="side-streams-and-freed-memory">Side streams and freed memory</h2>
@@ -6368,10 +6391,13 @@ or against Warp's own stream. Two consequences:</p>
 <h2 id="torch-in-another-thread">Torch in another thread</h2>
 <p>While a graph is being recorded on a <em>blocking</em> stream, CUDA refuses work on the legacy default
 stream from any thread: torch raises <code>cudaErrorStreamCaptureImplicit</code> ("operation would make the
-legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito
-records on a blocking stream whenever it runs on Warp's own stream or on torch's default stream.
-If another thread runs torch on its default stream at the same time, run ordito on a torch side
-stream instead, which is non-blocking:</p>
+legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito's own
+recordings never use a blocking stream, so torch can keep running on its default stream in another
+thread while ordito runs in this one.</p>
+<p>Two calls still record on a blocking stream: <code>linalg.solve_spd</code> when it does not batch, and
+<code>smoothing.filter_laplacian</code>'s implicit solve when its fixed-point step does not apply, both of
+which hand the loop to Warp's own solvers. If another thread runs torch on its default stream at
+the same time as one of those, run ordito on a torch side stream instead, which is non-blocking:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
@@ -6388,6 +6414,39 @@ stream instead, which is non-blocking:</p>
     <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_stream</span><span class="p">()</span><span class="o">.</span><span class="n">wait_stream</span><span class="p">(</span><span class="n">side</span><span class="p">)</span>  <span class="c1"># before torch reads the result</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">smoothed</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (2562,)</span>
 </code></pre></div>
+<h2 id="calling-ordito-from-several-threads">Calling ordito from several threads</h2>
+<p>Do not call ordito from two threads at the same time. Warp keeps one current stream per device for
+the whole process, not one per thread: <code>wp.ScopedStream</code> in one thread changes the stream every
+other thread launches on, and a launch issued while another thread records a graph is recorded
+into that graph instead of running. Two concurrent calls fail with CUDA errors, hang or crash the
+process, whatever stream each thread set.</p>
+<p>A threaded process shares one lock among everything that uses Warp, ordito included, and holds it
+for the whole call, the <code>wp.ScopedStream</code> block around it included:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">ORDITO_LOCK</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">smooth</span><span class="p">(</span><span class="n">subdivisions</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">counts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">with</span> <span class="n">ORDITO_LOCK</span><span class="p">:</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="n">subdivisions</span><span class="p">)</span>
+        <span class="n">smoothed</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_laplacian</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+        <span class="n">counts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">smoothed</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+
+
+<span class="n">counts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">workers</span> <span class="o">=</span> <span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">smooth</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="n">counts</span><span class="p">))</span> <span class="k">for</span> <span class="n">level</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">)]</span>
+<span class="k">for</span> <span class="n">worker</span> <span class="ow">in</span> <span class="n">workers</span><span class="p">:</span>
+    <span class="n">worker</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<span class="k">for</span> <span class="n">worker</span> <span class="ow">in</span> <span class="n">workers</span><span class="p">:</span>
+    <span class="n">worker</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">counts</span><span class="p">))</span>  <span class="c1"># [162, 642, 2562]</span>
+</code></pre></div>
+<p>The lock costs no GPU throughput: the calls would queue on one stream anyway. Threads that do not
+use Warp need no lock: PyTorch can run on its default stream in another thread throughout, as the
+previous section describes.</p>
 <h2 id="graph-capture-by-the-caller">Graph capture by the caller</h2>
 <p>Do not call ordito inside your own <code>wp.ScopedCapture</code> or <code>torch.cuda.graph</code>. Most calls read a
 size or a convergence flag back to the host, which a capture forbids, and the loops record graphs
