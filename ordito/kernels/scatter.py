@@ -1015,6 +1015,39 @@ def scatter_face_values_sum_and_valence(
         add_value_and_count(faces[f * 3 + j], value, wp.float32(1.0), out_sum, out_valence, 1)
 
 
+@wp.kernel
+def scatter_face_vectors_sum_and_valence(
+    faces: wp.array[wp.int32],
+    face_values: wp.array[Any],
+    sums: GroupSumPass,
+    out_sums: wp.array[Any],
+    out_valence: wp.array[wp.float32],
+) -> None:
+    # ``scatter_face_values_sum_and_valence`` for a vector field. With the deterministic setting
+    # off, one pooled atomic per corner into the vector accumulator ``out_sums`` (lanes pooled as
+    # the scalar's, ``ARRIVAL_POOL_PEERS``). On, each component is its own scalar group sum, slot
+    # ``vertex * n + c``, so it takes its own exponent field: ``scatter_add_vector`` shares one
+    # field across a vector's components, which resolves a component only to the largest's
+    # precision (a ``1e-12`` component beside a ``1e6`` one summed to zero), and the scalar's
+    # ``float64`` accumulator is exact only while a vertex's terms span under ``2^29``. The
+    # valence is counted once, in the off mode's one launch or the on mode's word pass.
+    f = wp.int32(wp.tid())
+    value = face_values[f]
+    n = len(value)
+    if sums.words.shape[0] == 0:
+        for j in range(3):
+            vertex = faces[f * 3 + j]
+            arrival_order_add_vector(out_sums, vertex, value, ARRIVAL_POOL_PEERS)
+            arrival_order_add(out_valence, vertex, wp.float32(1.0), ARRIVAL_POOL_PEERS)
+    else:
+        for j in range(3):
+            vertex = faces[f * 3 + j]
+            for c in range(n):
+                group_sum_term(sums, vertex * n + c, wp.float64(value[c]))
+            if sums.phase == 1:
+                wp.atomic_add(out_valence, vertex, wp.float32(1.0))
+
+
 @wp.func
 def accumulate_endpoint_value(
     vi: wp.int32,
@@ -1415,6 +1448,7 @@ SCATTER_SUM_VEC_EXACT: OverloadTable
 SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 SCATTER_WEIGHTED_SUM_VEC_EXACT: OverloadTable
 SCATTER_FACE_VALUES_SUM_AND_VALENCE: OverloadTable
+SCATTER_FACE_VECTORS_SUM_AND_VALENCE: OverloadTable
 SCATTER_EDGES_SUM_AND_VALENCE: OverloadTable
 
 
@@ -1422,6 +1456,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR
     global SCATTER_FACE_VALUES_SUM_AND_VALENCE, SCATTER_EDGES_SUM_AND_VALENCE
+    global SCATTER_FACE_VECTORS_SUM_AND_VALENCE
     global SCATTER_SUM_SCALARS, SCATTER_SUM_VECTORS, SEGMENT_SUM_SCALARS, SEGMENT_SUM_VECTORS
     SCATTER_SUM_SCALARS = OverloadTable(
         scatter_sum_scalars,
@@ -1558,6 +1593,13 @@ def _register_overloads() -> None:
         {
             d: [wp.array[wp.int32], wp.array[wp.float32], wp.array[d], wp.array[wp.float32]]
             for d in (wp.float32, wp.float64)
+        },
+    )
+    SCATTER_FACE_VECTORS_SUM_AND_VALENCE = OverloadTable(
+        scatter_face_vectors_sum_and_valence,
+        {
+            d: [wp.array[wp.int32], wp.array[d], GroupSumPass, wp.array[d], wp.array[wp.float32]]
+            for d in (wp.vec2, wp.vec3, wp.vec4)
         },
     )
     SCATTER_EDGES_SUM_AND_VALENCE = OverloadTable(

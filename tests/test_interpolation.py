@@ -1,5 +1,7 @@
 """Regression tests for ``ordito.interpolation`` against igl (CPU reference)."""
 
+from collections.abc import Callable
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -9,6 +11,7 @@ import scipy.sparse as sp
 import torch
 import trimesh as tm
 import warp as wp
+from trimesh.visual.color import face_to_vertex_color, vertex_to_face_color
 
 import ordito as od
 import ordito.typing as odt
@@ -140,6 +143,157 @@ def test_average_onto_vertices_rejects_a_misaligned_face_field(device: str) -> N
     face_values_wp = wp.array([1.0], dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="one entry per face, got 1 for 2 faces"):
         od.interpolation.average_onto_vertices(4, faces_wp, face_values_wp)
+
+
+_VECTOR_FIELDS = [
+    pytest.param(wp.vec2, 2, id="vec2"),
+    pytest.param(wp.vec3, 3, id="vec3"),
+    pytest.param(wp.vec4, 4, id="vec4"),
+]
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+@pytest.mark.parametrize(("dtype", "width"), _VECTOR_FIELDS)
+def test_averages_of_vector_fields_match_igl(
+    request: pytest.FixtureRequest, mesh_name: str, dtype: type, width: int
+) -> None:
+    """
+    Class A against libigl, a column at a time: both averages of a vector field, componentwise.
+
+    igl's ``average_onto_faces`` / ``average_onto_vertices`` take one scalar column, so each
+    component is compared with igl's average of that column. The components' scales differ by
+    eighteen decades (``1``, ``1e-12``, ``1e6``), so a component read from another's slot fails on
+    value, and the vertex sums run through the exact group sum with the deterministic setting on
+    (``tests/conftest.py``), where a ``float64`` accumulator would not be exact.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    rng = np.random.default_rng(4)
+    scales_np = np.array([1.0, 1e-12, 1e6, 1.0])[:width]
+    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
+    vertex_field_np = (rng.standard_normal((len(vertices_np), width)) * scales_np).astype(
+        np.float32
+    )
+    face_field_np = (rng.standard_normal((len(faces_np), width)) * scales_np).astype(np.float32)
+
+    faces_igl = np.column_stack(
+        [
+            igl.average_onto_faces(faces_np, vertex_field_np[:, c].astype(np.float64))
+            for c in range(width)
+        ]
+    )
+    vertices_igl = np.column_stack(
+        [
+            igl.average_onto_vertices(vertices_np, faces_np, face_field_np[:, c].astype(np.float64))
+            for c in range(width)
+        ]
+    )
+    device = mesh_wp.device
+    faces_wp = od.interpolation.average_onto_faces(
+        mesh_wp.indices, wp.array(vertex_field_np, dtype=dtype, device=device)
+    )
+    vertices_wp = od.interpolation.average_onto_vertices(
+        len(vertices_np), mesh_wp.indices, wp.array(face_field_np, dtype=dtype, device=device)
+    )
+    assert faces_wp.dtype is dtype
+    assert vertices_wp.dtype is dtype
+    for c in range(width):
+        atol = 1e-5 * scales_np[c]
+        assert np.allclose(faces_wp.numpy()[:, c], faces_igl[:, c], rtol=1e-5, atol=atol)
+        assert np.allclose(vertices_wp.numpy()[:, c], vertices_igl[:, c], rtol=1e-5, atol=atol)
+
+
+@pytest.mark.parity("average_onto_faces_vec4", "trimesh")
+@pytest.mark.parity("average_onto_vertices_vec4", "trimesh")
+def test_color_averages_match_trimesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Class B against trimesh's colour conversions: the same means, in ``[0, 1]`` against bytes.
+
+    ``vertex_to_face_color`` and ``face_to_vertex_color`` average byte colours in ``float64`` and
+    **truncate** to bytes; ordito averages ``[0, 1]`` floats. The transform is the unit (times
+    255) and the truncation, so each trimesh byte must be the floor of ordito's value times 255,
+    to rounding: within ``[byte, byte + 1)``. A mean taken over the wrong corners or faces misses
+    by whole bytes on these random colours.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rng = np.random.default_rng(5)
+    device = mesh_wp.device
+    vertex_colors_np = rng.integers(0, 256, size=(len(mesh_tm.vertices), 4), dtype=np.uint8)
+    face_colors_np = rng.integers(0, 256, size=(len(mesh_tm.faces), 4), dtype=np.uint8)
+
+    face_colors_tm = vertex_to_face_color(vertex_colors_np, mesh_tm.faces)
+    vertex_colors_tm = face_to_vertex_color(mesh_tm, face_colors_np)
+    assert np.unique(vertex_colors_tm, axis=0).shape[0] > 1
+
+    face_colors_wp = od.interpolation.average_onto_faces(
+        mesh_wp.indices, wp.array(vertex_colors_np / 255.0, dtype=wp.vec4, device=device)
+    )
+    vertex_colors_wp = od.interpolation.average_onto_vertices(
+        len(mesh_tm.vertices),
+        mesh_wp.indices,
+        wp.array(face_colors_np / 255.0, dtype=wp.vec4, device=device),
+    )
+    for colors_wp, colors_tm in (
+        (face_colors_wp, face_colors_tm),
+        (vertex_colors_wp, vertex_colors_tm),
+    ):
+        scaled_np = colors_wp.numpy().astype(np.float64) * 255.0
+        assert np.all(scaled_np > colors_tm - 1e-3)
+        assert np.all(scaled_np < colors_tm.astype(np.float64) + 1.0 + 1e-3)
+
+
+def test_vector_average_onto_vertices_repeats_bit_for_bit(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: with the deterministic setting on, the vector means repeat exactly.
+
+    Their comparison with a reference is ``test_averages_of_vector_fields_match_igl``. Here the
+    setting is the claim: two calls agree bit for bit on components of mixed sizes, and the
+    arrival-order form (setting off) agrees with them to ``float32`` rounding of its sums.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    n_vertices = len(mesh_tm.vertices)
+    field_np = np.random.default_rng(6).standard_normal((len(mesh_tm.faces), 3)) * [1.0, 1e-12, 1e6]
+    field_wp = wp.array(field_np.astype(np.float32), dtype=wp.vec3, device=mesh_wp.device)
+
+    with od.config.deterministic(True):
+        first_np = od.interpolation.average_onto_vertices(
+            n_vertices, mesh_wp.indices, field_wp
+        ).numpy()
+        second_np = od.interpolation.average_onto_vertices(
+            n_vertices, mesh_wp.indices, field_wp
+        ).numpy()
+    with od.config.deterministic(False):
+        arrival_np = od.interpolation.average_onto_vertices(
+            n_vertices, mesh_wp.indices, field_wp
+        ).numpy()
+    assert first_np.tobytes() == second_np.tobytes()
+    # A vertex's few terms, each of its component's scale, summed in ``float32`` in some order.
+    tolerance_np = 8.0 * float(np.finfo(np.float32).eps) * np.array([1.0, 1e-12, 1e6])
+    assert np.all(np.abs(arrival_np - first_np) <= tolerance_np)
+
+
+@pytest.mark.parametrize(
+    "average",
+    [
+        pytest.param(
+            lambda faces, values: od.interpolation.average_onto_faces(faces, values), id="faces"
+        ),
+        pytest.param(
+            lambda faces, values: od.interpolation.average_onto_vertices(3, faces, values),
+            id="vertices",
+        ),
+    ],
+)
+def test_averages_reject_another_dtype(device: str, average: Callable[..., object]) -> None:
+    """Not a library comparison: a field of a dtype the averages do not take is a ``TypeError``."""
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    values_wp = wp.zeros(3, dtype=wp.float64, device=device)
+    with pytest.raises(
+        TypeError, match=r"must be wp\.float32, wp\.vec2, wp\.vec3 or wp\.vec4, got"
+    ):
+        average(faces_wp, values_wp)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])

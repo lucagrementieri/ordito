@@ -3248,6 +3248,12 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_interpolation.py::test_average_onto_faces_vec4[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_interpolation.py::test_average_onto_vertices[fan_hub-ordito-cpu]": {
   "counts": {
    "launch": 2,
@@ -3255,6 +3261,18 @@
   }
  },
  "benchmarks/test_interpolation.py::test_average_onto_vertices[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_vertices_vec4[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_vertices_vec4[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 2,
    "alloc": 2

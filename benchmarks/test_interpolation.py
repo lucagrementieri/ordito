@@ -71,6 +71,7 @@ import pyvista as pv
 import torch
 import trimesh as tm
 import warp as wp
+from trimesh.visual.color import face_to_vertex_color, vertex_to_face_color
 
 import ordito as od
 import ordito.typing as odt
@@ -228,6 +229,60 @@ def test_average_onto_vertices(bench_case: BenchCase) -> None:
     values = _face_field_wp(bench_case)
     result = bench_case.run(
         lambda: od.interpolation.average_onto_vertices(n_vertices, faces, values)
+    )
+    assert result.shape == (n_vertices,)
+
+
+def _colors_np(count: int) -> np.ndarray:
+    """Return ``count`` seeded RGBA byte colours."""
+    return np.random.default_rng(0).integers(0, 256, size=(count, 4), dtype=np.uint8)
+
+
+@pytest.mark.benchmark(group="average_onto_faces_vec4")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_average_onto_faces_vec4(bench_case: BenchCase) -> None:
+    """
+    Vertex colours to face colours: the ``average_onto_faces`` gather of a ``wp.vec4`` field.
+
+    trimesh's ``vertex_to_face_color`` is the same mean of byte colours in NumPy, truncated to
+    bytes; ``tests/test_interpolation.py`` compares the two (Class B: the unit and the truncation).
+    """
+    colors_np = _colors_np(bench_case.n_vertices)
+    if bench_case.kind == "trimesh":
+        faces_np = bench_case.faces_np
+        result_tm = bench_case.run(lambda: vertex_to_face_color(colors_np, faces_np))
+        assert result_tm.shape == (bench_case.n_faces, 4)
+        return
+    faces = bench_case.faces_wp
+    colors = wp.array(colors_np / 255.0, dtype=wp.vec4, device=bench_case.device)
+    result = bench_case.run(lambda: od.interpolation.average_onto_faces(faces, colors))
+    assert result.shape == (bench_case.n_faces,)
+
+
+@pytest.mark.benchmark(group="average_onto_vertices_vec4")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_average_onto_vertices_vec4(bench_case: BenchCase) -> None:
+    """
+    Face colours to vertex colours: the ``average_onto_vertices`` scatter of a ``wp.vec4`` field.
+
+    One pooled vector atomic per corner with the deterministic setting off (the benchmarks'
+    setting); on, an exact group sum per component. trimesh's ``face_to_vertex_color`` is a sparse
+    product over its ``faces_sparse`` matrix, built once outside the timed callable, then a divide
+    by the valence and a truncation to bytes.
+    """
+    colors_np = _colors_np(bench_case.n_faces)
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "trimesh":
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        _ = mesh_tm.faces_sparse, mesh_tm.vertex_degree
+        result_tm = bench_case.run(lambda: face_to_vertex_color(mesh_tm, colors_np))
+        assert result_tm.shape == (n_vertices, 4)
+        return
+    faces = bench_case.faces_wp
+    colors = wp.array(colors_np / 255.0, dtype=wp.vec4, device=bench_case.device)
+    result = bench_case.run(
+        lambda: od.interpolation.average_onto_vertices(n_vertices, faces, colors)
     )
     assert result.shape == (n_vertices,)
 

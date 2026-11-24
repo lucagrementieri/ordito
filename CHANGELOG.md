@@ -22,6 +22,11 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+- `interpolation.average_onto_faces` and `average_onto_vertices` average `wp.vec2`, `wp.vec3`
+  and `wp.vec4` fields as well as `wp.float32`, so vertex colours become face colours and back
+  (trimesh's `vertex_to_face_color` / `face_to_vertex_color`, without the truncation to bytes).
+  Under the deterministic setting each component of each vertex is an exact group sum of its own,
+  identical run to run and on the CPU and CUDA devices. Another dtype raises a `TypeError`.
 - Colours, UVs and textures on `Trimesh`, as in trimesh. A `"color"` vertex or face attribute
   (`wp.vec4`, RGBA in `[0, 1]`) reads as `vertex_colors` / `face_colors`, a `"uv"` vertex
   attribute (`wp.vec2`) as `uv`; both now blend through every edit like any float attribute. The

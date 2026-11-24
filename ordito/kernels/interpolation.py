@@ -14,7 +14,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
 from ordito.kernels.proximity import closest_point_query
-from ordito.kernels.reduce import peer_counted_add
+from ordito.kernels.reduce import GroupSumPass, group_sum_value, peer_counted_add
 from ordito.kernels.triangles import face_vertices, point_barycentric
 
 wp.set_module_options({"enable_backward": False})
@@ -22,10 +22,9 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def average_onto_faces(
-    faces: wp.array[wp.int32],
-    vertex_values: wp.array[wp.float32],
-    out_face_values: wp.array[wp.float32],
+    faces: wp.array[wp.int32], vertex_values: wp.array[Any], out_face_values: wp.array[Any]
 ) -> None:
+    # Each face's corner mean, of any ``FIELD_DTYPES`` field (a vector componentwise).
     f = wp.int32(wp.tid())
     x0, x1, x2 = face_vertices(vertex_values, faces, f)
     out_face_values[f] = (x0 + x1 + x2) / wp.float32(3.0)
@@ -37,6 +36,32 @@ def mean_rounded(total: wp.float64, count: wp.float32) -> wp.float32:
     # under the deterministic setting. Unguarded, so a zero count is ``nan`` as in the
     # arrival-order ``wp.div``.
     return wp.float32(total / wp.float64(count))
+
+
+@wp.kernel
+def vector_means_of_sums(
+    sums: GroupSumPass,
+    vertex_sums: wp.array[Any],
+    valence: wp.array[wp.float32],
+    out_means: wp.array[Any],
+) -> None:
+    # ``average_onto_vertices`` of a vector field: each vertex's sum
+    # (``scatter.scatter_face_vectors_sum_and_valence``) over its valence. Off, the arrival-order
+    # vector accumulator, which ``out_means`` may be; on, each component's exact group sum (slot
+    # ``v * n + c``) divided in ``float64`` and rounded once, as ``mean_rounded`` does a scalar's,
+    # read here so no finish launch or result buffer is needed. A vertex no face names is
+    # ``0 / 0``, NaN, in either mode.
+    v = wp.int32(wp.tid())
+    if sums.words.shape[0] == 0:
+        total = vertex_sums[v]
+        out_means[v] = total / type(total[0])(valence[v])
+    else:
+        mean = out_means.dtype()
+        n = len(mean)
+        for c in range(n):
+            slot = v * n + c
+            mean[c] = wp.float32(group_sum_value(sums, slot, slot) / wp.float64(valence[v]))
+        out_means[v] = mean
 
 
 @wp.func
@@ -788,6 +813,8 @@ def sample_grid_trilinear(
 # operators are assembled from ``float32`` vertex data, so carrying one would advertise precision
 # the weights do not have.
 FIELD_DTYPES = (wp.float32, wp.vec2, wp.vec3, wp.vec4)
+# The vector half, which ``average_onto_vertices`` sums through the group sum.
+FIELD_VECTOR_DTYPES = (wp.vec2, wp.vec3, wp.vec4)
 
 # Attribute dtypes a provenance gather copies (``gather_or_zero``): a copy needs no arithmetic, so
 # labels, masks, colours stored as bytes and ``float64`` fields are in as well as the field dtypes.
@@ -817,6 +844,8 @@ INTERPOLATE_TILED_MAX_QUERIES = 1 << 14
 
 # The concrete handles keyed by the caller's value dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
+AVERAGE_ONTO_FACES: OverloadTable
+VECTOR_MEANS_OF_SUMS: OverloadTable
 APPLY_TRANSFER_OPERATOR: OverloadTable
 GATHER_OR_ZERO: OverloadTable
 INTERPOLATE_BARYCENTRIC: OverloadTable
@@ -831,7 +860,18 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global APPLY_TRANSFER_OPERATOR, GATHER_OR_ZERO, INTERPOLATE_BARYCENTRIC, SAMPLE_GRID_TRILINEAR
     global TRANSFER_ONTO_VERTICES, INTERPOLATE_FROM_POINTS_NEAREST, INTERPOLATE_FROM_POINTS_IN_BALL
-    global INTERPOLATE_FROM_POINTS_IN_BALL_TILED
+    global INTERPOLATE_FROM_POINTS_IN_BALL_TILED, AVERAGE_ONTO_FACES, VECTOR_MEANS_OF_SUMS
+    AVERAGE_ONTO_FACES = OverloadTable(
+        average_onto_faces,
+        {d: [wp.array[wp.int32], wp.array[d], wp.array[d]] for d in FIELD_DTYPES},
+    )
+    VECTOR_MEANS_OF_SUMS = OverloadTable(
+        vector_means_of_sums,
+        {
+            d: [GroupSumPass, wp.array[d], wp.array[wp.float32], wp.array[d]]
+            for d in FIELD_VECTOR_DTYPES
+        },
+    )
     APPLY_TRANSFER_OPERATOR = OverloadTable(
         apply_transfer_operator,
         {

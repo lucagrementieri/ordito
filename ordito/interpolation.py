@@ -60,7 +60,8 @@ kernel_array.declare_block_dims(
 
 DType = TypeVar("DType")
 """
-Element type of a transferred field: ``wp.float32``, ``wp.vec2`` or ``wp.vec3``.
+Element type of a transferred or averaged field: ``wp.float32``, ``wp.vec2``, ``wp.vec3`` or
+``wp.vec4``.
 
 The set is bounded by the weights, which are ``float32``: Warp requires both operands of a product
 to share a scalar type, so a field whose scalar is not ``float32`` -- a ``float64`` one, say --
@@ -71,29 +72,41 @@ are not part of the rendered reference, so this one is not a link).
 
 
 def average_onto_faces(
-    faces: wp.array[wp.int32], vertex_values: wp.array[wp.float32]
-) -> wp.array[wp.float32]:
+    faces: wp.array[wp.int32], vertex_values: wp.array[DType]
+) -> wp.array[DType]:
     """
-    Move a scalar field defined on vertices to faces by averaging.
+    Move a field defined on vertices to faces by averaging.
 
-    Each face value is the mean of ``vertex_values`` at its three corners.
+    Each face value is the mean of ``vertex_values`` at its three corners, componentwise for a
+    vector field: vertex colours to face colours, say.
 
     Parameters
     ----------
     faces
         ``(3 * n_faces,)`` face index buffer.
     vertex_values
-        ``(n_vertices,)`` scalar field defined on vertices.
+        ``(n_vertices,)`` field defined on vertices: ``wp.float32``, or a ``wp.vec2`` /
+        ``wp.vec3`` / ``wp.vec4``.
 
     Returns
     -------
-    wp.array[wp.float32]
-        ``(n_faces,)`` scalar field defined on faces. Empty when ``n_faces == 0``.
+    wp.array
+        ``(n_faces,)`` field defined on faces, of ``vertex_values``' dtype. Empty when
+        ``n_faces == 0``.
 
     Raises
     ------
+    TypeError
+        If ``vertex_values`` has another dtype.
     RuntimeError
         If ``faces`` and ``vertex_values`` are not all on one device.
+
+    See Also
+    --------
+    [`average_onto_vertices`][ordito.interpolation.average_onto_vertices]
+        The other direction.
+    ``trimesh.visual.color.vertex_to_face_color``
+        The same mean for byte colours, truncated to bytes (no Sphinx inventory entry to link).
 
     Examples
     --------
@@ -106,34 +119,48 @@ def average_onto_faces(
     values = wp.array([0.0, 3.0, 6.0, 9.0], dtype=wp.float32)
     print(od.interpolation.average_onto_faces(faces, values).numpy())  # [3. 6.]
     ```
+
+    Vertex colours become face colours:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    colors = wp.array([[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]], dtype=wp.vec4)
+    print(od.interpolation.average_onto_faces(faces, colors).numpy().round(4).tolist())
+    # [[0.3333, 0.3333, 0.3333, 1.0]]
+    ```
     """
     require_same_device(faces=faces, vertex_values=vertex_values)
+    _require_field_dtype(vertex_values, "vertex_values")
     n_faces = faces.size // 3
     device = vertex_values.device
     if n_faces == 0:
-        return _launch.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=vertex_values.dtype, device=device)
 
-    out_face_values = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    out_face_values = _launch.empty(n_faces, dtype=vertex_values.dtype, device=device)
     _launch.launch(
-        kernel_interpolation.average_onto_faces,
+        kernel_interpolation.AVERAGE_ONTO_FACES[vertex_values.dtype],
         dim=n_faces,
         inputs=[faces, vertex_values, out_face_values],
         device=device,
     )
-    return out_face_values
+    return cast("wp.array[DType]", out_face_values)
 
 
 def average_onto_vertices(
-    n_vertices: int, faces: wp.array[wp.int32], face_values: wp.array[wp.float32]
-) -> wp.array[wp.float32]:
+    n_vertices: int, faces: wp.array[wp.int32], face_values: wp.array[DType]
+) -> wp.array[DType]:
     """
-    Move a scalar field defined on faces to vertices by averaging.
+    Move a field defined on faces to vertices by averaging.
 
-    Each vertex value is the mean of ``face_values`` over incident triangle corners.
-    Vertices referenced by no face divide by a zero valence and are ``nan``, matching
-    the unguarded division in ``igl::average_onto_vertices``. Under
-    [`is_deterministic`][ordito.config.is_deterministic] each sum is formed exactly and rounded
-    once, so the result repeats bit for bit.
+    Each vertex value is the mean of ``face_values`` over incident triangle corners,
+    componentwise for a vector field: face colours to vertex colours, say. Vertices referenced by
+    no face divide by a zero valence and are ``nan``, matching the unguarded division in
+    ``igl::average_onto_vertices``. Under [`is_deterministic`][ordito.config.is_deterministic]
+    each sum is formed exactly, so the result repeats bit for bit.
 
     Parameters
     ----------
@@ -142,15 +169,18 @@ def average_onto_vertices(
     faces
         ``(3 * n_faces,)`` face index buffer.
     face_values
-        ``(n_faces,)`` scalar field defined on faces.
+        ``(n_faces,)`` field defined on faces: ``wp.float32``, or a ``wp.vec2`` / ``wp.vec3`` /
+        ``wp.vec4``.
 
     Returns
     -------
-    wp.array[wp.float32]
-        ``(n_vertices,)`` scalar field defined on vertices.
+    wp.array
+        ``(n_vertices,)`` field defined on vertices, of ``face_values``' dtype.
 
     Raises
     ------
+    TypeError
+        If ``face_values`` has another dtype.
     ValueError
         If ``face_values`` does not have one entry per face.
     RuntimeError
@@ -158,6 +188,10 @@ def average_onto_vertices(
 
     See Also
     --------
+    [`average_onto_faces`][ordito.interpolation.average_onto_faces]
+        The other direction.
+    ``trimesh.visual.color.face_to_vertex_color``
+        The same mean for byte colours, truncated to bytes (no Sphinx inventory entry to link).
     [`average_from_edges_onto_vertices`][ordito.interpolation.average_from_edges_onto_vertices]
         The same scatter-sum-then-divide over edges instead of faces. The two disagree on a
         **zero-valence** vertex on purpose, each mirroring its own igl function: this one divides
@@ -180,22 +214,85 @@ def average_onto_vertices(
     ```
     """
     require_same_device(faces=faces, face_values=face_values)
+    _require_field_dtype(face_values, "face_values")
     device = faces.device
     n_faces = faces.size // 3
     if face_values.size != n_faces:
         raise ValueError(
             f"face_values must have one entry per face, got {face_values.size} for {n_faces} faces"
         )
+    if face_values.dtype is not wp.float32:
+        return _vertex_vector_mean(n_vertices, faces, face_values)
 
-    return _vertex_mean(
-        n_vertices,
-        n_faces,
-        kernel_scatter.SCATTER_FACE_VALUES_SUM_AND_VALENCE,
-        [faces, face_values],
-        wp.div,
-        kernel_interpolation.mean_rounded,
-        device,
+    return cast(
+        "wp.array[DType]",
+        _vertex_mean(
+            n_vertices,
+            n_faces,
+            kernel_scatter.SCATTER_FACE_VALUES_SUM_AND_VALENCE,
+            [faces, face_values],
+            wp.div,
+            kernel_interpolation.mean_rounded,
+            device,
+        ),
     )
+
+
+def _require_field_dtype(values: wp.array[DType], name: str) -> None:
+    """Raise ``TypeError`` unless ``values`` holds a field the averages take."""
+    if values.dtype not in kernel_interpolation.FIELD_DTYPES:
+        raise TypeError(
+            f"{name} must be wp.float32, wp.vec2, wp.vec3 or wp.vec4, got "
+            f"{wp.types.type_repr(values.dtype)}"
+        )
+
+
+def _vertex_vector_mean(
+    n_vertices: int, faces: wp.array[wp.int32], face_values: wp.array[DType]
+) -> wp.array[DType]:
+    """
+    ``average_onto_vertices`` of a vector field, per the deterministic setting.
+
+    Off: one arrival-order vector accumulator, divided in place. On: an exact group sum for each
+    component of each vertex (``n_vertices * width`` scalar groups), so every component takes its
+    own precision, read and divided by the means kernel itself (no finish launch, no result
+    buffer). See ``kernels/scatter.scatter_face_vectors_sum_and_valence`` for why not the shared
+    vector group sum or the scalar path's ``float64`` accumulator.
+    """
+    device = faces.device
+    n_faces = faces.size // 3
+    dtype = face_values.dtype
+    if is_deterministic():
+        width = int(dtype._length_)
+        # A vertex takes at most three terms a face (a degenerate face naming it thrice).
+        sums = _launch.group_sums(
+            n_vertices * width, wp.float32, max(3 * n_faces, 1), device, fused=True
+        )
+        out_means = _launch.empty(n_vertices, dtype=dtype, device=device)
+    else:
+        accumulator = _launch.zeros(n_vertices, dtype=dtype, device=device)
+        sums = _launch.GroupSums(accumulator, _launch.empty_group_sum_pass(), (0,), None)
+        # The means overwrite the accumulator they are read from, a vertex a thread.
+        out_means = accumulator
+    valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    if n_faces > 0 and n_vertices > 0:
+        _launch.launch_group_sums(
+            kernel_scatter.SCATTER_FACE_VECTORS_SUM_AND_VALENCE[dtype],
+            n_faces,
+            [faces, face_values],
+            sums,
+            outputs=[valence],
+            device=device,
+        )
+    if n_vertices > 0:
+        _launch.launch(
+            kernel_interpolation.VECTOR_MEANS_OF_SUMS[dtype],
+            dim=n_vertices,
+            inputs=[sums.launch_pass, sums.out, valence],
+            outputs=[out_means],
+            device=device,
+        )
+    return cast("wp.array[DType]", out_means)
 
 
 def average_from_edges_onto_vertices(
