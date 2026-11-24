@@ -207,6 +207,10 @@ uv run zensical serve           # preview the docs locally
 uv run pytest --device=cpu -n 4 --cov=ordito   # coverage, the way CI measures it
 ```
 
+Development needs uv 0.13.9 or newer (`uv self update`): `uv.lock` is written in that release's
+format, and `pyproject.toml` sets it as `required-version`, so an older uv refuses to run rather
+than misread the lock. CI installs the newest uv satisfying the same bound.
+
 The coverage badge measures the Python wrapper layer on the CPU backend, which is what CI can
 run, and is refreshed by the `main` build. It deliberately excludes `ordito/kernels/`: a
 `@wp.kernel` body is compiled from its AST and executed on the device, never called as Python, so
@@ -215,8 +219,11 @@ is covered instead by running the suite on both backends (`uv run python -m test
 is a two-process job and needs a GPU.
 
 The test environment installs the reference stack (trimesh, libigl, Open3D, potpourri3d,
-PyMeshLab, PyVista, MeshLib, PyMeshFix, PyTorch3D, SciPy, and more) so the comparison suite runs
-in full.
+PyMeshLab, PyVista, MeshLib, PyMeshFix, manifold3d, PyTorch3D, SciPy, and more) so the comparison
+suite runs in full. The comparison tests are written against the exact answers of the versions in
+`uv.lock`, so each reference library's minimum version in the `test` group is its locked version:
+upgrading one means re-running the suite and raising its floor in the same change. PyTorch3D has
+no release to pin and is built from the upstream commit the lock records.
 Benchmarks live in `benchmarks/` and use `pytest-benchmark`; PyTorch3D is the one reference with
 CUDA kernels of its own, so it is also the suite's only GPU-against-GPU comparison. To reproduce
 them, follow [benchmarks/README.md § Reproduce](benchmarks/README.md#reproduce): a two-step install,
