@@ -17,7 +17,8 @@ A sweep delivers three things:
 `.claude/CLAUDE.md` is the rulebook. A sweep leans on §2.2 (the deterministic setting), §2.4
 (fusion means extraction), §3.10 (readbacks), §9 (measure first), §13 (cost model), §14 (kernel
 shape verdicts, including the refuted list) and §15 (measurement traps). Before proposing anything
-for a component in scope, read its section of `reference/component-status.md`.
+for a component in scope, read its section of `reference/component-status.md`, and the full
+§13-§15 record in `reference/measured-facts.md` (CLAUDE.md Part II is only its digest).
 
 ---
 

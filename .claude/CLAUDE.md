@@ -5,17 +5,18 @@ Follow every rule below when writing kernels, `@wp.func` helpers, Python-scope w
 benchmarks.
 
 - **Part I (§1-§11)** — rules: how code in this repository must be written.
-- **Part II (§12-§16)** — measured facts on this hardware (RTX 5090, warp-lang 1.19.0; numbers
-  dated before 2026-11-03 were measured on 1.18.0): platform bugs, cost model, kernel-shape
-  verdicts, measurement traps, open items. Read the relevant
-  section before proposing an optimization or diagnosing a slowdown; most plausible ideas here have
-  already been built and priced, and several lost.
-- Deeper material lives outside this file and is read on demand: `reference/reference-libraries.md`
-  (traps of each test/benchmark reference library) and `reference/component-status.md` (per-component
-  measured facts and refuted plans).
-- Record a new measured finding in the section that owns it (Part II here, or the reference files);
-  a rule that follows from it goes into Part I. A measured decline is a result: do not re-propose it
-  without new evidence.
+- **Part II (§12-§16)** — a digest of what was measured on this hardware (RTX 5090, warp-lang
+  1.19.0): one line a verdict. The full record, with numbers, dates and sites, is
+  `reference/measured-facts.md` under the same section numbers. **Read the matching section there
+  before proposing an optimization or diagnosing a slowdown**: most plausible ideas have already
+  been built and priced, and several lost.
+- Also read on demand: `reference/reference-libraries.md` (traps of each test/benchmark reference
+  library) and `reference/component-status.md` (per-component measured facts and refuted plans).
+- Record a new measured finding in `reference/measured-facts.md` (or the component's section of
+  `component-status.md`); add one line here only when it changes what to do, and a rule that
+  follows from it goes into Part I. A measured decline is a result: do not re-propose it without
+  new evidence.
+- Section numbers are cited from code comments (check 24): never renumber or remove a heading.
 - A Warp version claim is spelled `Warp 1.19` (the word "Warp" immediately before the number); the
   staleness check (§4.5, check 9) reads only that anchored form.
 
@@ -40,14 +41,14 @@ benchmarks.
 - Subscript-style array annotations: `wp.array[wp.vec3]` (check 14).
 - In `ordito/kernels/` only: `wp.array2d[T]` / `array3d` / `array4d` with multi-index `wp.tid()`. Wrappers use `ordito.typing` aliases (§3.2).
 - No bare `bool` / `int` / `float` annotation in a kernel or `@wp.func` signature (check 18); kernel factories are ordinary Python and keep them.
-- Do not call `wp.constant()` (§12.4). The typed constructor is what matters: `TOLERANCE_MERGE = wp.float32(1e-8)`. A plain Python float is `float32` in kernels and mixing it with `float64` is a parse error; use `wp.float64(...)`.
+- Do not call `wp.constant()` (an identity). The typed constructor is what matters: `TOLERANCE_MERGE = wp.float32(1e-8)`. A plain Python float is `float32` in kernels and mixing it with `float64` is a parse error; use `wp.float64(...)`.
 - Prefer dtype-generic `@wp.func`s (`wp.Float` / `wp.Scalar`, `Any` for vectors; the `kernels/predicates.py` convention). Limits: §12.3. `Any` is also generic over rank and dimension, so do not pin a helper to one; use rank-free reductions (`wp.min(wp.abs(wp.get_diag(r))) < tol`, since a matrix has no `.shape` in kernels).
 
 ### 1.3 Casts and conversions
 
 - Cast `wp.tid()` when used as an index: `f = wp.int32(wp.tid())` (check 22; multi-index unpacks cannot carry a cast).
-- `wp.int32` / `wp.float32` are the only cast spelling; never bare `int(...)` / `float(...)` (check 16). `float(...)` fails inside `wp.Float`-generic functions; use `type(x)(...)` where a function is or could be generic (§12.3).
-- A cast to the type a value already has is noise; delete it. This includes same-type constructors such as `wp.vec3(*(a - b))`, which check 16 does not see. The tid cast is the one kept exception.
+- `wp.int32` / `wp.float32` are the only cast spelling; never bare `int(...)` / `float(...)` (check 16). `float(...)` fails inside `wp.Float`-generic functions; use `type(x)(...)` where a function is or could be generic.
+- A cast to the type a value already has is noise; delete it, same-type constructors such as `wp.vec3(*(a - b))` included. The tid cast is the one kept exception.
 - A cast of a bare literal is never redundant: `wp.int32(0)` is mutable, `0` is a constant (§1.6).
 - `wp.cast(expr, T)` reinterprets bits between same-size types only; widen or narrow with the constructor. Whole-array conversion: §3.6.
 
@@ -56,31 +57,22 @@ benchmarks.
 Not supported inside kernels and `@wp.func`s: lambdas, comprehensions, sets, dicts, `list.append()`, `eval()`, recursion, exceptions, Python tuples for initialization (use `wp.vec3(1.0, 2.0, 3.0)`).
 
 - Small fixed collections are vector types; larger ones are `wp.types.vector(length=N)`, not `wp.zeros(shape=N, ...)` (§2.9).
-- A tuple cannot be indexed at runtime; a vector can: unpack into locals first (`a, b, c = corner_triple(faces, f)`, then `wp.vec3i(a, b, c)`). A starred call over a `@wp.func` returning a tuple (`wp.vec3i(*corner_triple(faces, f))`, or `side_lengths(*face_vertices(...))` into another `@wp.func`) fails to parse in Warp 1.19 and 1.18 alike, concrete or generic (`'list' object has no attribute 'type'`); a warm kernel cache hides it until the module is next built. Prefer an index form to a slice.
+- A tuple cannot be indexed at runtime; a vector can: unpack into locals first (`a, b, c = corner_triple(faces, f)`, then `wp.vec3i(a, b, c)`). A starred call over a `@wp.func` returning a tuple (`wp.vec3i(*corner_triple(faces, f))`) fails to parse, and a warm kernel cache hides it until the module is next built.
 - A variable defined only inside an `if` branch is uninitialized when the branch is skipped; initialize first.
 
 ### 1.5 Arithmetic and conditional spellings
 
-- `%` follows C++11 (sign of the dividend). Since Warp 1.18 integer `//` floors while `/` and `%` truncate, so they differ on a negative dividend. Check the dividend's sign before relying on either.
-- Spell integer division `//`, never `/` (check 17; the scan types operands by declaration only). Do not respell `//` as `/` for speed.
+- Integer `//` floors while `/` and `%` truncate (C++ sign of the dividend), so they differ on a negative dividend. Check the dividend's sign before relying on either.
+- Spell integer division `//`, never `/` (check 17). Do not respell `//` as `/` for speed.
 - A conditional value is `wp.where(cond, a, b)`, not a ternary (check 20). It evaluates both arms; use an `if` when one must not run.
-
-Checks 16, 17, 18, 20 and 22 are one family: every spelling is legal and generates identical code, so only a scan holds the line.
 
 ### 1.6 Mutable loop accumulators
 
-A variable initialized to a bare literal (`count = 0.0`, `n = 0`) is a compile-time constant and cannot be mutated in a dynamic loop (an error, or silently the initial value). Declare accumulators with the typed constructor: `count = wp.float32(0.0)`, `n = wp.int32(0)`.
-
-Never let `ruff check --fix` strip the constructor (it rewrites `int(0)` to `0`); legacy spellings carry `# noqa: UP018, RUF046`.
-
-An accumulator initialized from a **module-level constant** (`best = wp.float64(_DBL_MAX)`) is that constant's own codegen variable: the loop's assignments rewrite it, and a later `best < wp.float64(_DBL_MAX)` reads `best < best` (2026-11-15, `kernels/holes.serial_fill_dp_diagonal`: every DP cell took the unreachable branch, both devices). Initialize from a computed expression, `wp.float64(_DBL_MAX) + wp.float64(0.0)`, and read the generated `.cpp` when a branch never fires.
-
-The same rewrite strikes a **cast of a compile-time constant to another type**: an unrolled
-`for side in range(6)` variable or a module constant passed to `wp.uint64(...)` / `wp.int64(...)`
-becomes that constant's variable, assigned only where the cast stands, so every read before it
-(another cast, a comparison) reads it unset (§12.3). Never change a constant's type in kernel
-scope: cast a variable derived from it (`f = wp.int32(side)`, then `wp.uint64(f)`), or give the
-other type its own module constant (`GROUP_SUM_NONFINITE_WORD`).
+- A variable initialized to a bare literal (`count = 0.0`, `n = 0`) is a compile-time constant and cannot be mutated in a dynamic loop (an error, or silently the initial value). Declare accumulators with the typed constructor: `count = wp.float32(0.0)`, `n = wp.int32(0)`.
+- Never let `ruff check --fix` strip the constructor (it rewrites `int(0)` to `0`); legacy spellings carry `# noqa: UP018, RUF046`.
+- An accumulator initialized from a **module-level constant** (`best = wp.float64(_DBL_MAX)`) *is* that constant's codegen variable: the loop rewrites it and a later comparison with the constant reads `best < best`. Initialize from a computed expression: `wp.float64(_DBL_MAX) + wp.float64(0.0)`.
+- Never change a compile-time constant's type in kernel scope (an unrolled `for side in range(6)` variable or a module constant passed to `wp.uint64(...)`): the cast rewrites the constant's variable where it stands and earlier reads see it unset (release builds hide it, `-O0` reads garbage). Cast a variable derived from it (`f = wp.int32(side)`, then `wp.uint64(f)`), or give the other type its own module constant.
+- When a branch never fires, read the generated `.cpp`.
 
 ---
 
@@ -89,29 +81,37 @@ other type its own module constant (`GROUP_SUM_NONFINITE_WORD`).
 ### 2.1 Launch discipline
 
 - `wp.launch(kernel=..., dim=..., inputs=[...], device=...)`. Always forward `device` from the input arrays: a memory-safety rule (§3.9, check 15).
-- Prefix output arguments `out_` and put them after all inputs (check 13). Exempt (`_KERNEL_OUTPUT_ALLOWLIST`): in-place arguments and scratch / persistent-state buffers, which are named for what they hold. A read-only input never wears `out_`.
+- Prefix output arguments `out_` and put them after all inputs (check 13). Exempt (`_KERNEL_OUTPUT_ALLOWLIST`): in-place arguments and scratch / persistent-state buffers, named for what they hold. A read-only input never wears `out_`.
 - Derive the face count as `f = faces.shape[0] // 3`.
-- Every launch runs on Warp's current stream, which the caller owns (`docs/streams.md`); ordito never picks one. A graph is recorded through `_common.scoped_capture`, never `wp.ScopedCapture`, and a `warp.optim.linear` solver (which records on its own) is called inside `with _common.recordable_stream(device):` (check 33). `scoped_capture` records on a private non-blocking stream whenever the current one is blocking (the legacy default stream, on which CUDA cannot record, or a Warp stream), so no other thread's legacy-stream work breaks the recording; `recordable_stream` moves a solver to a private blocking stream on the legacy stream, since the solver's work runs there (§12.1).
+- Every launch runs on Warp's current stream, which the caller owns (`docs/streams.md`); ordito never picks one. A graph is recorded through `_common.scoped_capture`, never `wp.ScopedCapture`, and a `warp.optim.linear` solver is called inside `with _common.recordable_stream(device):` (check 33). ordito is not safe to call from two threads at once (§12.1).
 
 ### 2.2 A lane-parallel kernel strides by `wp.block_dim()`, or it stays lane-free
 
-A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max` per lane, a `wp.tile_bvh_query_aabb` walk) is correct on both devices only when its lanes partition a sequence the block already owns, with the stride taken from `wp.block_dim()`, never from a kernel argument or constant.
+A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max`, a `wp.tile_bvh_query_aabb` walk) is correct on both devices only when its lanes partition a sequence the block already owns, with the stride taken from `wp.block_dim()`, never from a kernel argument or constant.
 
-- `launch_tiled` runs one lane per block on CPU, where `wp.block_dim()` reads 1; a one-element tile is not a bug, an arg-strided sum is. Do not conclude tiles do not work on CPU (§12.2).
-- Where lanes would partition the outer work (a whole-array reduction with no per-item dimension, e.g. `metrics.chamfer_*_tiled`), keep a constant stride on CUDA only with a lane-free `_sliced` sibling for CPU (`_common.prefers_tiled_reduction`), or stay lane-free on both.
-- For a lane-strided reduction, tune the fold width: launch `dim=kernel_reduce.blocks_1d(n)` so each block owns `ITEMS_PER_BLOCK_1D` elements, never `dim=n / TILE_1D`. Assemble a wide accumulator before the single commit (§13.2).
-- A float block commit goes through `kernels/reduce.store_block_sum` / `store_block_total` into a `_launch.block_partials` buffer, never a bare per-block `atomic_add` (arrival order, §12.3); integer commits keep `commit_block_*`. A float scan goes through `_launch.array_scan`. Both read the global setting `ordito.config` (`set_deterministic`, the scoped `with deterministic(True):`; off by default in the library and the benchmarks, on for every test via `tests/conftest.py`) at the call, so a new reduction or float scan obeys it by routing through them. The same flag fixes output order (an atomic-slot fill becomes a stable sort); there is no separate order setting. Never add a per-call `deterministic` keyword or thread the mode through signatures; a caller that reads more than the result slots tells the two buffer forms apart by the buffer's size. Benchmarks run with the setting off for the whole session (`benchmarks/conftest.py`, `benchmarks/README.md`).
-- A new per-group float sum goes through `kernels/scatter.scatter_add` / `scatter_add_vector` / `scatter_add_matrix` with a `_launch.group_sums` buffer (`launch_group_sums`, `finish_group_sums`): the buffer picks the mode, a plain `atomic_add` with the setting off and the exact fixed-point sum of `kernels/reduce` with it on (identical on CPU and CUDA). A kernel that consumes the sums reads them through `kernels/reduce.read_group_sum` from `group_sums(fused=True)` (no finish launch and no result buffer when on; repair's component sums). The public forms are `reduce.scatter_sum` and `reduce.segment_sum`. A vector or matrix through `scatter_add_vector` / `_matrix` shares one exponent field across its components, set by the largest, so a component is resolved only to the largest's precision (2026-11-24: a `1e-12` component beside a `1e6` one summed to zero); a field whose components need not share a scale sums each component as its own scalar group, slot `group * n + c` (`kernels/scatter.scatter_face_vectors_sum_and_valence`). Every call names its off-mode lane pooling by its keys' structure: `ARRIVAL_POOL_PEERS` where the lanes sharing a group hit an address hot across the launch (component and region labels), `ARRIVAL_POOL_UNIFORM` for sorted or clustered keys (segments, a face's corners, cells); §14 prices both. Keep a site's existing form where §14 prices it faster.
-- A per-vertex float scatter (`add_corner_triple`) obeys the same setting. `float32` values sum exactly into `float64` whatever the order only while one vertex's terms span under `2^29` (less their count's bits): positive areas and corner angles rely on it (`scatter_sum_exact`, `scatter_face_areas_exact`), signed vector components that cancel break it (an `icosphere(5)` pole's normal moved by `5e-19` between runs), so the normal scatters take the exact group sum through `kernels/scatter.scatter_add_vec3_row` (`_common.scatter_normal_sums`, read by `kernels/normals.accumulated_row_normal`); `float64` values are written per corner and summed by `kernels/scatter.sum_sorted_corner_values` over one stable sort of the faces, with the atomic scatter kept for the off mode. `vertex_face_adjacency` obeys it too (ascending rows from a stable corner sort; the atomic scatter when off), so a consumer emitting triplets in its row order is reproducible through it.
-- **A reproducibility fix is gated on the setting, never unconditional.** With it off (the default) the code is the fast arrival-order path it was: the same kernels, launches, allocations and buffer dtypes, non-reproducible by design. With it on, the output is bit-identical run to run. "Costs nothing measurable" or "exact anyway" does not justify making a fix unconditional. A reproducibility test claims the on mode only (`tests/conftest.py` sets it).
-- **Determinism is the requirement, not a particular summation order.** A sum may change order (a block's fixed tree for a hub row, a chunked fold) as long as the on mode repeats bit for bit; matching another form's or a triplet sort's order, or the CPU's, is never a reason to keep a slow shape. Compare against a reference at tolerance.
+- `launch_tiled` runs one lane per block on CPU, where `wp.block_dim()` reads 1; a one-element tile is not a bug, an arg-strided sum is (§12.2).
+- Where lanes would partition the outer work (a whole-array reduction with no per-item dimension), keep a constant stride on CUDA only with a lane-free `_sliced` sibling for CPU (`_common.prefers_tiled_reduction`), or stay lane-free on both.
+- A lane-strided reduction launches at `dim=kernel_reduce.blocks_1d(n)`, never `dim=n / TILE_1D`. Assemble a wide accumulator before the single commit (§13.2).
+
+**Determinism** is one global setting, `ordito.config` (`set_deterministic`, `with deterministic(True):`), off by default in the library and benchmarks, on for every test (`tests/conftest.py`). It also fixes output order (an atomic-slot fill becomes a stable sort).
+
+- New code obeys it by routing through the shared forms, which read it at the call:
+    - a float block commit: `kernels/reduce.store_block_sum` / `store_block_total` into a `_launch.block_partials` buffer, never a bare per-block `atomic_add`; integer commits keep `commit_block_*`;
+    - a float scan: `_launch.array_scan`;
+    - a per-group float sum: `kernels/scatter.scatter_add` / `scatter_add_vector` / `scatter_add_matrix` with a `_launch.group_sums` buffer (`launch_group_sums`, `finish_group_sums`); a consuming kernel reads through `kernels/reduce.read_group_sum` from `group_sums(fused=True)`. Public forms: `reduce.scatter_sum`, `reduce.segment_sum`. Each call names its off-mode pooling: `ARRIVAL_POOL_PEERS` for keys hot across the launch (component / region labels), `ARRIVAL_POOL_UNIFORM` for sorted or clustered keys;
+    - a per-vertex float scatter (`add_corner_triple`, normals through `_common.scatter_normal_sums`) and `vertex_face_adjacency` obey it too.
+- A vector or matrix group sum shares one exponent across its components, so a small component beside a large one is lost; components of unrelated scale sum as scalar groups (slot `group * n + c`).
+- Never add a per-call `deterministic` keyword or thread the mode through signatures.
+- **A reproducibility fix is gated on the setting, never unconditional.** Off, the code is the fast arrival-order path it was (same kernels, launches, allocations, dtypes). "Costs nothing measurable" does not justify making it unconditional. A reproducibility test claims the on mode only.
+- **Determinism is the requirement, not a particular summation order.** Matching another form's order, or the CPU's, is never a reason to keep a slow shape; compare against a reference at tolerance.
+- Keep a site's existing form where §14 prices it faster.
 
 ### 2.3 Block-per-item is an occupancy trade, not a shape choice
 
 Use one block per item only when the outer per-item dimension alone would starve the device. A kernel that already has a slice dimension does not qualify; collapsing it into lanes loses 2-8x. Compute the launch's thread count and measure at the large end first, since the small end flatters. Verdicts: §14.
 
-- A thread-per-item serial walk (a trace, a descent, a search per root, a loop walk) launched over few items gives each item a warp through the shared pair, never a hand-written mapping: `dim = m * _launch.walk_lanes(m, device)` (one on the CPU) and `item = kernels/array.walk_item(wp.int32(wp.tid()), lanes)`, returning on `-1`.
-- A serial walk counted in one launch and written in another walks once: the counting pass stages its points (`kernels/array.stage_point`, from `first_staged_chunk`), the writing pass copies them (`copy_staged`) and walks again only on `False`; `_common.staging_pool` allocates the pool. Price it first: it pays where the walk is the device time (§14), not on a host-bound call.
+- A thread-per-item serial walk launched over few items gives each item a warp through the shared pair, never a hand-written mapping: `dim = m * _launch.walk_lanes(m, device)` (one on the CPU) and `item = kernels/array.walk_item(wp.int32(wp.tid()), lanes)`, returning on `-1`.
+- A serial walk counted in one launch and written in another walks once: the counting pass stages its points (`kernels/array.stage_point`, from `first_staged_chunk`), the writing pass copies them (`copy_staged`) and walks again only on `False`; `_common.staging_pool` allocates the pool. Price it first: it pays where the walk is the device time, not on a host-bound call.
 
 ### 2.4 Fusing a kernel: extract the shared part as a `@wp.func` in the same commit
 
@@ -119,9 +119,7 @@ A fusion is done when the code it duplicated has a name. Whenever a kernel is fu
 
 1. Name each shared statement run (corner load, window computation, emit protocol, guard sequence) as one `@wp.func` both kernels call.
 2. Put it where the quantity lives: predicates in `kernels/predicates.py`, per-face quantities in `kernels/triangles.py`, index/sort/search helpers in `kernels/array.py`, scatters in `kernels/scatter.py` (§3.1).
-3. Say in a comment what the kernels still differ by. Prefer one kernel with a warp-uniform int selector (§2.7, the `ACCEL_HASHGRID` / `ACCEL_BVH` pattern) when the difference is a parameter; keep two kernels naming each other when they are two algorithms.
-
-Further rules:
+3. Say in a comment what the kernels still differ by. Prefer one kernel with a warp-uniform int selector (§2.7) when the difference is a parameter; keep two kernels naming each other when they are two algorithms.
 
 - A comment naming the other copy ("mirrors X") is the finding: extract a shared `@wp.func`.
 - A duplicated decision rule is a correctness hazard even when the control flow differs; extract it as a `@wp.func` returning the classification (a sentinel for "reject").
@@ -131,17 +129,16 @@ Further rules:
 
 ### 2.5 A generic kernel registers its overloads at import (`wp.overload`)
 
-A `@wp.kernel` generic over a dtype (`wp.Scalar`, `wp.Float`, `wp.Int`, `Any`) must register its concrete overloads at import, in a `_register_overloads()` at the bottom of the file. Otherwise the first launch at each new dtype recompiles every kernel in the module, silently.
+A `@wp.kernel` generic over a dtype (`wp.Scalar`, `wp.Float`, `wp.Int`, `Any`) must register its concrete overloads at import, in a `_register_overloads()` at the bottom of the file. Otherwise the first launch at each new dtype silently recompiles every kernel in the module.
 
 - Register what the wrapper's dispatch can reach; for independent generic arguments register the cross product, not a diagonal.
 - Registration is not compilation: never call `wp.load_module` / `wp.force_load` at import.
-- `test_generic_kernels_register_their_overloads` only checks that some overload exists; a missing dtype shows up as a slowdown (§15).
-- `wp.map` has the same chain: §3.5 (check 23).
-- Keep the `wp.Kernel` that `wp.overload` returns and launch through it. A module builds a dtype-keyed [`OverloadTable`][ordito.kernels.array.OverloadTable] and the wrapper writes `kernel_laplacian.COTMATRIX_TRIPLETS[cot_entries.dtype, dtype]`. A new generic kernel adds a table, not a bare `wp.overload` call.
+- The test only checks that some overload exists; a missing dtype shows up as a slowdown (§15).
+- Keep the `wp.Kernel` that `wp.overload` returns and launch through it: a module builds a dtype-keyed `kernels/array.OverloadTable` and the wrapper writes `kernel_laplacian.COTMATRIX_TRIPLETS[cot_entries.dtype, dtype]`. A new generic kernel adds a table, not a bare `wp.overload` call.
 
 ### 2.6 Backward passes, and in-place `@wp.func` parameters (`wp.ref[T]`)
 
-Only `ordito/kernels/metrics.py` is differentiated. Every other kernel module sets `wp.set_module_options({"enable_backward": False})` right after its imports; a new module copies the line (`test_only_the_taped_kernel_module_compiles_backward_passes`).
+Only `ordito/kernels/metrics.py` is differentiated. Every other kernel module sets `wp.set_module_options({"enable_backward": False})` right after its imports; a new module copies the line.
 
 - `@wp.func` helpers may take `wp.ref[T]` parameters to mutate caller storage (`update_argmin` in `kernels/array.py`); `T` must be concrete (§12.3).
 - Any kernel calling a `wp.ref` helper must be `@wp.kernel(enable_backward=False)`; the module option is not consulted at parse time.
@@ -150,7 +147,7 @@ Only `ordito/kernels/metrics.py` is differentiated. Every other kernel module se
 ### 2.7 Function-valued parameters and kernel factories
 
 - A `@wp.func` may take `fn: wp.Function`, bound at compile time per call site (user `@wp.func`s and simple builtins, not tile intrinsics).
-- `wp.launch` cannot pass a `wp.Function`. For runtime selection pass an int and branch in a dispatch `@wp.func` (`registration.robust_weight`).
+- `wp.launch` cannot pass a `wp.Function`. For runtime selection pass an int and branch in a dispatch `@wp.func` (`registration.robust_weight`, the `ACCEL_HASHGRID` / `ACCEL_BVH` pattern).
 - Name a factory kernel with `wp.kernel(f, name=...)` (a valid C++ identifier), not by mutating `__name__`.
 - A factory avoids generic-launch dispatch cost. Set `__annotations__` after defining the body, and give `dtype` no generic default:
   ```python
@@ -166,12 +163,12 @@ Only `ordito/kernels/metrics.py` is differentiated. Every other kernel module se
 
 Each launch argument costs ~1 µs of host time (§13.1). Bundle the invariant tables of a kernel with a dozen or more arguments, launched in a Python loop, into a `@wp.struct` built once in the wrapper.
 
-- Do not bundle a kernel whose launch is captured (§13.1).
-- After introducing a struct, re-check static checks that match AST node types (check 13, §4.5).
+- Do not bundle a kernel whose launch is captured.
+- After introducing a struct, re-check static checks that match AST node types (check 13, §4.5), and the `+cu12` miscompile scan (§12.4).
 
 ### 2.9 Per-thread row storage
 
-`wp.zeros(shape=K, dtype=T)` in a kernel is not register storage (it is pointer-addressed, 2x slower). Use `wp.types.vector(length=K, dtype=T)` (the `vec5d` pattern in `kernels/curvature.py`), which wins up to K near 64 before spilling.
+`wp.zeros(shape=K, dtype=T)` in a kernel is not register storage (pointer-addressed, 2x slower). Use `wp.types.vector(length=K, dtype=T)` (the `vec5d` pattern in `kernels/curvature.py`), which wins up to K near 64.
 
 - Never pass the vector to a `@wp.func` (it spills); inline it per call site.
 - Any runtime index spills it: read the k-th element with an unrolled `for slot in range(K): if slot == k - 1:`, closing over `K` in a factory (one kernel per bucket, unique `name`, `KNN_ROW_BUCKETS`).
@@ -180,18 +177,18 @@ Each launch argument costs ~1 µs of host time (§13.1). Bundle the invariant ta
 ### 2.10 Every launch width and lazy kernel is declared for `ordito.precompile`
 
 `python -m ordito.precompile` builds what `precompile.kernel_variants` lists without running a
-workload, so a module a launch reaches only at run time must be declared (§12.4 for the mechanics).
+workload, so a module a launch reaches only at run time must be declared.
 
 - A launch at a `block_dim` other than its module's default declares the width with
-  `kernels/array.declare_block_dims`: in a `_declare_block_dims()` at the bottom of the kernel module
-  whose constant names it, or beside the wrapper constant that does. A width chosen at run time
-  declares every value it can take (`descent_block_dim`'s two); name a literal width as a constant
-  first.
+  `kernels/array.declare_block_dims`: in a `_declare_block_dims()` at the bottom of the kernel
+  module whose constant names it, or beside the wrapper constant that does. A width chosen at run
+  time declares every value it can take; name a literal width as a constant first. A kernel
+  launched at its own width lives in its own module (`module="unique"`, §12.4).
 - A kernel created on first use (a factory, `cast_kernel`, an `int_vector_scan_kernels` dtype, a
-  `wp.map` op at a signature no import-time table declares) is created in a function decorated with
+  `wp.map` op at an undeclared signature) is created in a function decorated with
   `kernels/array.declare_lazy_kernels`, and lives in a module of its own (`module="unique"`).
-- The census (§15) fails on a load the list misses. CI's CPU run sees modules only (the CPU loads
-  every module at width 1): re-run the CUDA census after adding a width.
+- The census (§15) fails on a load the list misses. CI's CPU run sees modules only: re-run the
+  CUDA census after adding a width.
 
 ---
 
@@ -207,9 +204,9 @@ workload, so a module a launch reaches only at run time must be declared (§12.4
   Put a helper reached from a second module in the one it belongs to; never make unrelated modules
   import an algorithm module to reach geometry.
 - `ordito/__init__.py` is lazy (PEP 562 `__getattr__`) and must stay so.
-- The radix sort is stable under both deterministic settings, so with an identity payload each
-  class's first occurrence sits at the start of its run: a grouping that needs representatives
-  reads them off the emit pass (`grouping._unique_keys_core`), not `first_occurrence_indices`.
+- The radix sort is stable, so with an identity payload each class's first occurrence starts its
+  run: a grouping that needs representatives reads them off the emit pass
+  (`grouping._unique_keys_core`), not `first_occurrence_indices`.
 - The three searches in `kernels/array.py` differ silently: `binary_search_index` is
   `searchsorted(side="right")` (`slot + 1` on an exact hit), `binary_search_index_left` is
   `side="left"` (for a lookup add `index < n and values[index] == v`),
@@ -233,163 +230,128 @@ Import as `import ordito.typing as odt`; do not re-export typing symbols from `o
 - 1D outputs: `wp.empty(n, dtype=..., device=input.device)`; `odt.empty_1d` only in `reduce`,
   `metrics` and `neighbors`, whose signatures carry the rank.
 - At Python scope a rank-1 array's length is `.size`. Keep `.shape[0]` in kernels, for rank-2 row
-  counts (`.size` is rows x cols), and for rank-free or `Any` operands.
+  counts, and for rank-free or `Any` operands.
 - Always pass `device=` to every allocation, including in `_*.py` (check 10).
 - Size buffers for their final use at allocation; never allocate-then-grow (the producer allocates
   the `n + 1` terminated form, `counts_to_offsets`).
 - Warp raises on a zero-length slice; guard a trailing `fill_` with `if stop > start`.
 - A buffer whose initial value matters is allocated holding it (`wp.zeros`,
-  `wp.full(n, value, dtype=..., device=...)`, at rank 2
-  `odt.as_array2d(wp.full((rows, cols), value, ...), dtype)`), never `wp.empty` then
-  `fill_` / `zero_`. `wp.empty` is right where every element is written before it is read.
+  `wp.full(n, value, dtype=..., device=...)`), never `wp.empty` then `fill_` / `zero_`.
+  `wp.empty` is right where every element is written before it is read.
 
 ### 3.4 Python-scope gather indexing (prefer over trivial gather kernels)
 
-`src[indices]` yields a `wp.indexedarray`; materialize it with `wp.copy(dst, view)` when callers
-need `.reshape()` or a dense `wp.array`. Do not add per-element gather kernels when this suffices.
+`src[indices]` yields a `wp.indexedarray`. Do not add per-element gather kernels when this suffices.
 
-- Index arrays must be 1D: flatten, gather, `wp.copy`, `.reshape(shape)`.
-- The index array must be contiguous: Warp silently ignores a view's stride, so
+- Materialize a gather through `array.gather`, not `wp.copy(dst, src[indices])` (faster on CUDA).
+- Index arrays must be 1D and **contiguous**: Warp silently ignores a view's stride, so
   `payload[edges[:, 0]]` returns the flat buffer's leading entries. A prefix slice (`arr[:n]`) is
-  safe; a column or step slice must be `wp.copy`'d to a dense buffer first, and a prefix slice must
-  not be cloned. This is why `kernels/edges.py:edge_lengths` stays a kernel (§12.1).
+  safe; a column or step slice must be `wp.copy`'d to a dense buffer first. This is why
+  `kernels/edges.py:edge_lengths` stays a kernel.
 - When converting a gather, verify values: the corrupt version is faster.
-- Materialize a gather through `array.gather`, not `wp.copy(dst, src[indices])`: on CUDA it copies
-  through one word kernel (`kernels/array.gather_words`), 0.5-0.65x Warp's indexed copy.
 - Indexed assignment is unsupported; keep a small kernel (`mark_membership_mask`).
 
 ### 3.5 Elementwise ops at Python scope (`wp.map`)
 
 Do not write a `@wp.kernel` whose body is only `out[i] = f(in[i], ...)`. Keep the op as a named
-`@wp.func` in `kernels/` (or a builtin such as `wp.neg`, `wp.normalize`) and call
-`wp.map(op, *inputs, out=...)`.
+`@wp.func` in `kernels/` (or a builtin such as `wp.neg`) and call `wp.map(op, *inputs, out=...)`.
 
-- Named `@wp.func` only, never lambdas (the cache keys on the unqualified name plus dtypes).
-- Always pass `out=` (in-place: `out=<an input>`; multi-output: `out=[a, b]`).
+- Named `@wp.func` only, never lambdas. Always pass `out=` (in-place: `out=<an input>`;
+  multi-output: `out=[a, b]`).
 - `wp.map` infers a bare Python `int` as `wp.int32`: cast explicitly, e.g. `wp.uint64(bvh.id)`.
 - In per-iteration loops, hoist the kernel with `wp.map(..., return_kernel=True)` and `wp.launch`
-  it (`smoothing.py`; §13.1).
-- An op reached at more than one call signature must declare those signatures at import
-  (check 23), because each signature forks the generated `map_<op>` module and recompiles it (as in
-  §2.5). Tables live in `_declare_map_kernels()` at the bottom of the owning module; Warp builtins
-  are declared in `kernels/array.py` (`declare_map_signatures`). Declare with
-  `return_kernel=True` on a zero-length CPU array (this also declares the CUDA overload).
-- A length-1 array, an `indexedarray` and the rank also fork the module, not only dtype; derive a
-  table by instrumenting `wp.map` over a suite run (check 23 asserts only that one exists).
+  it (`smoothing.py`).
+- Each call signature (dtype, rank, a length-1 array, an `indexedarray`) forks the generated
+  `map_<op>` module and recompiles it. An op reached at more than one signature declares them at
+  import (check 23) in `_declare_map_kernels()` at the bottom of the owning module; Warp builtins
+  in `kernels/array.py` (`declare_map_signatures`). Declare with `return_kernel=True` on a
+  zero-length CPU array. Derive a table by instrumenting `wp.map` over a suite run.
 - Never declare via `ordito/__init__.py`, `wp.load_module` or `wp.force_load`.
 - Still a real kernel: thread index as data, whole-array arguments, scatters, row-indexed outputs.
 
 ### 3.6 Dtype conversion at Python scope
 
 `wp.cast` is kernel scope only. Convert arrays with `od.array.astype(src, dtype)` (new array) or
-`od.array.copyto(dst, src)` (into a buffer you hold).
-Never call `wp.utils.array_cast` from `ordito/` (check 30): its generic kernel lives in Warp's own
-module, so every new dtype pair rebuilds that module (§12.4). A kernel created lazily must go in its
-own module (`wp.kernel(..., module="unique")`), or it recompiles every kernel in the existing one.
+`od.array.copyto(dst, src)` (into a buffer you hold). Never call `wp.utils.array_cast` from
+`ordito/` (check 30). A kernel created lazily goes in its own module
+(`wp.kernel(..., module="unique")`), or it recompiles every kernel in the existing one.
 
 ### 3.7 Sparse: assemble from keys, never through `bsr_from_triplets`; and `nnz` is a stale capacity
 
-No `ordito/` module calls `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` (check 27); it
-allocates scratch several times the matrix. Tests may call it for an independent input. Build CSR
-in `ordito/array.py`, with no host readback:
+No `ordito/` module calls `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` (check 27);
+tests may, for an independent input. Build CSR in `ordito/array.py`, with no host readback:
 
 - **Sparsity follows from the mesh: write keys, not triplets.** A producer writes one
-  `kernels/array.csr_key(row, col, n_rows, n_cols)` per contribution (sentinel `n_rows * n_cols` for
-  an empty slot) into [`csr_key_buffers`][ordito.array.csr_key_buffers];
-  [`csr_from_keys`][ordito.array.csr_from_keys] sorts and returns `offsets`, `columns` and each
-  entry's first sorted position; a per-row value kernel forms the entries.
-  `laplacian._mesh_operator_pattern` is the model. A caller assembling repeatedly over fixed faces
-  builds the pattern once with `laplacian.mesh_operator_pattern` and passes `pattern=`.
-- **A genuinely unordered coordinate list:** [`csr_from_triplets`][ordito.array.csr_from_triplets].
-  `prune_numerical_zeros` drops entries whose sum is zero (Warp drops zero-valued triplets).
-- **A CSR the producer can write directly** is written directly and wrapped by
-  [`bsr_from_csr`][ordito.array.bsr_from_csr].
+  `kernels/array.csr_key(row, col, n_rows, n_cols)` per contribution (sentinel `n_rows * n_cols`
+  for an empty slot) into `array.csr_key_buffers`; `array.csr_from_keys` sorts and returns
+  `offsets`, `columns` and each entry's first sorted position; a per-row value kernel forms the
+  entries. `laplacian._mesh_operator_pattern` is the model; a caller assembling repeatedly over
+  fixed faces builds it once with `laplacian.mesh_operator_pattern` and passes `pattern=`.
+- **A genuinely unordered coordinate list:** `array.csr_from_triplets` (`prune_numerical_zeros`
+  drops entries whose sum is zero).
+- **A CSR the producer can write directly** is written directly and wrapped by `array.bsr_from_csr`.
+- An operator summing many contributions into each entry builds its pattern first (keys for the
+  entries' pairs, `csr_from_keys`, one count readback to cut `columns`), then gathers each entry's
+  contributions (`energies.hessian_energy` / `curved_hessian_energy`). Look for the factorization
+  the contributions share before tuning a row gather (§14).
 
-Never size a buffer, slice or launch `dim` off `matrix.nnz`.
+**Never size a buffer, slice or launch `dim` off `matrix.nnz`.** After a triplet build it is the
+triplet count handed in, duplicates included, and only `nnz_sync()` repairs it; use `nnz_sync()`
+or read `offsets[nrow]`. The failure is silent (an unwritten `wp.empty` tail feeds garbage into
+real entries).
 
-- After a triplet build `nnz` is the triplet count handed in, duplicates included. Use
-  `matrix.nnz_sync()` (one readback) or read `offsets[nrow]`.
-- `nnz` is a cache that only `nnz_sync()` repairs (`bsr_mv`, `.numpy()` do not), so a `.nnz` read is
-  order-dependent (tests build two operators: one to measure, one to hand over).
-- The failure is silent: an allocation sized by `nnz` leaves an unwritten `wp.empty` tail that
-  feeds garbage into real entries.
-- A writer leaving triplet slots unwritten must point them out of range, not at `(0, 0, 0.0)`
-  (§12.5).
+- A writer leaving triplet slots unwritten points them out of range, not at `(0, 0, 0.0)`.
 - Any Warp `*_count` / `.nnz` field is a capacity until proven otherwise
   (`Volume.get_voxel_count()`; use `get_active_stats().voxel_count`).
-- A key assembly keeps `columns` / `values` at the contribution count. Every public one returns
-  at most a handful of spare slots, where a cutting readback, and on a few duplicates a full copy,
-  buys nothing; leave them as they are. An operator that sums many contributions into each entry
-  builds its pattern first instead: keys for the entries' pairs alone, `csr_from_keys`, one entry
-  count readback to cut `columns`, then a row a thread gathering each entry's contributions in the
-  order the triplet sort summed them, through a thread-owned `wp.atomic_add` so the product is
-  rounded before the add (`energies.hessian_energy` / `curved_hessian_energy`, byte-identical to
-  their triplet forms: call peak 6.3 -> 0.7 GB and 5.5 -> 1.0 GB on `dragon`, 0.5x / 0.76x time;
-  both since regrouped: `hessian_energy` an entry a thread from the stacked Hessian's 3x3 blocks,
-  `curved_hessian_energy` each face's 6x6 block written in the sorted keys' spent lower half and
-  an entry summing its run, `kernels/energies.*_values`).
+- A key assembly may return a handful of spare slots in `columns` / `values`; leave them.
 - A scanned `int32` count that sizes buffers is checked for a wrap through
-  `_common.scan_count_checked` (`kernels/array.flag_wrapped_scan`, read with the total): a total
-  past `2**32` wraps back to a small positive count, so its sign alone does not tell
-  (`hessian_energy` on `lucy`, CUDA error 700). Any per-row count that sums neighbours' row
-  lengths grows as the square of the largest valence: `smooth_region` on `fan_hub` wrapped its
-  normal-equation terms and wrote past them (CUDA error 700) until it took the check.
+  `_common.scan_count_checked`: a total past `2**32` wraps to a small positive count. Any per-row
+  count summing neighbours' row lengths grows as the square of the largest valence.
 
 More `warp.sparse` behaviour: §12.5.
 
 ### 3.8 NumPy at Python scope is sanctioned; leaking it through the API is not
 
-NumPy is a core dependency of `warp-lang` and a device round trip costs far more than small host
-arithmetic. **Do not open a "remove NumPy" pass.** Host metadata math and host-sequential algorithms
-stay in NumPy; a closed-form parallel map with independent elements whose output scales with a
-resolution parameter (`creation.icosphere`, `creation.grid`) is a kernel.
-
-Three things are defects:
+A device round trip costs far more than small host arithmetic. **Do not open a "remove NumPy"
+pass.** Host metadata math and host-sequential algorithms stay in NumPy; a closed-form parallel
+map whose output scales with a resolution parameter (`creation.icosphere`, `creation.grid`) is a
+kernel. Three things are defects:
 
 - **A public signature or return that names `np.ndarray`** (outside `ordito/io.py`). Return
   `wp.mat33d` / `wp.vec3`; annotate duck-typed inputs `Sequence[Sequence[float]]`.
-- **NumPy standing in for a Warp Python-scope equivalent, unless pricing says otherwise.** Python-scope
-  builtins are dispatch calls and often slower than NumPy or `math` (§13.1); the rule is to avoid a
-  host round trip and `np.ndarray` in public signatures. `wp.full`, `arr[k:].fill_()`,
-  `wp.determinant`, `wp.inverse` and `wp.svd3` need no host buffer. Prefer `math.pi` /
-  `float("nan")` over `np` constants.
-- **NumPy reducing a full `.numpy()` readback** (`.min()`, `.max()`, `.any()`, `.sum(axis=0)`). Use
-  `ordito.reduce` or `wp.utils.array_sum`. Decide on the CUDA measurement (§9, §14), but keep the
-  host path where the buffer never scales with the mesh.
+- **NumPy standing in for a Warp Python-scope equivalent that needs no host buffer** (`wp.full`,
+  `arr[k:].fill_()`, `wp.determinant`, `wp.inverse`, `wp.svd3`), unless pricing says otherwise:
+  Python-scope builtins are dispatch calls and often slower than NumPy or `math` (§13.1). Prefer
+  `math.pi` / `float("nan")` over `np` constants.
+- **NumPy reducing a full `.numpy()` readback** (`.min()`, `.any()`, `.sum(axis=0)`). Use
+  `ordito.reduce` or `wp.utils.array_sum`; decide on the CUDA measurement, and keep the host path
+  where the buffer never scales with the mesh.
 
-Not defects to fix the other way: delete a `.tolist()` immediately splatted into a Warp vector or
-matrix constructor in `ordito/` (keep it in `tests/`, §7.1, and where it is a `list[...]` return or
-plain bookkeeping); `arr.numpy().tolist()` equals `arr.list()` only for rank 1, since `.list()`
-flattens.
+In `ordito/`, delete a `.tolist()` immediately splatted into a Warp vector or matrix constructor
+(keep it in `tests/`). `arr.numpy().tolist()` equals `arr.list()` only for rank 1.
 
 ### 3.9 Device checks and the launch-device memory-safety rule
 
 Every public function with two or more device-bearing arguments calls
 `_common.require_same_device(**named)` as its first statement, passing every array, mesh, BVH, hash
 grid, `wp.Volume` or list/tuple of those, including `X | None` arguments. It raises `RuntimeError`;
-document it with a `Raises` entry (§4.3; check 11 cannot see the delegation). Internal code stays
-trusting and forwards `device=` from an input array (§2.1).
+document it with a `Raises` entry (check 11 cannot see the delegation). Internal code stays
+trusting and forwards `device=` from an input array.
 
 `wp.launch` does not raise on a device mismatch: it corrupts the host heap or segfaults.
-
-- `tests/conftest.py` sets `LaunchArrayAccessMode.STRICT`; keep the suite green under it.
-- `STRICT` misses an omitted `device=` on a CUDA run; check 15 scans every launch. Always forward
-  `device=`.
-- `.numpy()` is not a sync on a CPU array (§12.1).
+`tests/conftest.py` sets `LaunchArrayAccessMode.STRICT` (keep the suite green under it), but
+`STRICT` misses an omitted `device=` on a CUDA run; check 15 scans every launch.
 
 ### 3.10 Readbacks
 
 - An array read back to the host is `ordito._common.read_array(arr)`, never `arr.numpy()` (check 32;
-  docstring examples keep `.numpy()`): the same array, ~7 us less on CUDA.
+  docstring examples keep `.numpy()`).
 - Every readback (`read_array`, `int(<device value>)`) carries a comment naming why it is
-  unavoidable.
-  When the caller can supply the bound a readback infers, expose a keyword
-  (`face_adjacency(n_vertices=...)`) and pass it from every in-repo caller that knows it (§14).
-- Several adjacent small values: `ordito._common.read_values(arr, start, count)`. A tail value:
-  `ordito._common.read_scalar(arr, index=-1)`, never a hand-rolled spelling (a pinned scratch races,
-  §12.1).
-- Several small device values go into one buffer and are read once (`points.fit_plane`); a tail
-  read of a mesh-sized array stays `read_scalar`.
+  unavoidable. When the caller can supply the bound a readback infers, expose a keyword
+  (`face_adjacency(n_vertices=...)`) and pass it from every in-repo caller that knows it.
+- Several adjacent small values: `_common.read_values(arr, start, count)`. A tail value:
+  `_common.read_scalar(arr, index=-1)`, never a hand-rolled spelling (a pinned scratch races).
+- Several small device values go into one buffer and are read once (`points.fit_plane`).
 
 ---
 
@@ -399,26 +361,26 @@ trusting and forwards `device=` from an input array (§2.1).
 
 - Name a function after what it returns, in NumPy vocabulary, never after the Warp call it wraps.
 - A mask is named `<element>_<property>_mask`, element first.
-- A wrapper whose whole device side is one kernel nobody else launches shares that kernel's name. Reject filler affixes (`init_`, `do_`, `compute_`, `run_`, `make_`, `kernel_`, `_impl`, `_inner`); informative ones stay (plural for batched, `_pass` / `_step`, `finalize_`, a shared kernel library's vocabulary, one ingredient).
+- A wrapper whose whole device side is one kernel nobody else launches shares that kernel's name. Reject filler affixes (`init_`, `do_`, `compute_`, `run_`, `make_`, `kernel_`, `_impl`, `_inner`); informative ones stay (plural for batched, `_pass` / `_step`, `finalize_`).
 - A tuning choice is a keyword, not a name (`backend="hashgrid" | "bvh"`); use `None` for "not passed". Keep the discriminator in the benchmark group name and test that merged paths agree.
 - One operation family, one module; place a function by what it computes, not where the reference library keeps it.
 
 ### 4.2 Signatures and returns
 
 - A packed buffer and its offsets are returned and accepted values first: `(values, offsets)`, any per-item array last. A transposed unpack type-checks and indexes garbage.
-- Offsets are always the `n + 1` total-terminated form (`indptr`; empty is `[0]`). Build by allocating `n + 1`, writing counts into `offsets[1:]` and scanning in place. Never read an item count as `offsets.shape[0]` (CPU heap corruption, §12.1).
+- Offsets are always the `n + 1` total-terminated form (`indptr`; empty is `[0]`). Build by allocating `n + 1`, writing counts into `offsets[1:]` and scanning in place. Never read an item count as `offsets.shape[0]`.
 - A variable-length-item function has a packed sibling `<name>_with_offsets` (the list form is that plus `array.split`); one taking the packed form is `<name>_from_offsets`.
-- A function that rebuilds a mesh's connectivity reports where its output came from through one keyword, `return_provenance: bool = False`, appending an `interpolation.Provenance` to its returns (`Literal` overloads for both arms). Never a bespoke `return_index` / `return_operator` / index-carrying argument: a caller chains edits with `Provenance.then`. Off, the call issues exactly what it did; on, build it from what the edit already holds (a compaction's vertex map, an emit's source face, the split edges in rank order) through `Provenance.from_edge_points`, `from_rows` or `from_clusters`, never by a geometric search. A float field carried through it must reproduce the output positions where the edit forms them by interpolation; `tests/comparisons.assert_provenance_describes` is the check.
-- No public signature may name `np.ndarray`, outside `ordito/io.py` (§3.8). A guard must encode a real limitation.
+- A function that rebuilds a mesh's connectivity reports where its output came from through one keyword, `return_provenance: bool = False`, appending an `interpolation.Provenance` to its returns (`Literal` overloads for both arms). Never a bespoke `return_index` / `return_operator`; a caller chains edits with `Provenance.then`. Off, the call issues exactly what it did; on, build it from what the edit already holds through `Provenance.from_edge_points`, `from_rows` or `from_clusters`, never by a geometric search. `tests/comparisons.assert_provenance_describes` is the check.
+- No public signature may name `np.ndarray`, outside `ordito/io.py`. A guard must encode a real limitation.
 - A `Literal` menu argument is validated at the public boundary and raises `ValueError` naming the argument, value and options; a delegating wrapper documents it and its test calls through the wrapper.
 - When mirroring a NumPy function, mirror its positional signature and make `device` keyword-only.
 - No speculative generality: add a parameter only when an in-repo caller needs it; remove unread ones.
 - Inverse pairs cross-reference each other and have a round-trip test.
-- Every public `ordito/<module>.py` has `tests/test_<module>.py` and `benchmarks/test_<module>.py` (check 4); tests live in the file mirroring the function's module (§5). Every public function and method has a benchmark row (check 31).
+- Every public `ordito/<module>.py` has `tests/test_<module>.py` and `benchmarks/test_<module>.py` (check 4). Every public function and method has a benchmark row (check 31).
 
 ### 4.3 Docstring, signature and body must agree
 
-- A documented `Raises` must be reachable; a direct `raise` needs a `Raises` block (check 11). Delegating to a shared guard means documenting its `Raises` (`_common.require_same_device`, §3.9).
+- A documented `Raises` must be reachable; a direct `raise` needs a `Raises` block (check 11). Delegating to a shared guard means documenting its `Raises`.
 - A documented validation must be performed.
 - When a comment and the body disagree, decide which is load-bearing first; usually the comment is right.
 - After a rank/shape/dtype rule change, check the paths bypassing the helper (early returns, `@overload` stubs, `Returns` prose).
@@ -434,7 +396,7 @@ A move or rename of a public function carries everything derived from it in the 
 4. Its `benchmark(group=...)` name and every `parity` / `noparity` marker citing it; `uv run python -m tests.parity` must show the same pair count.
 5. Its `docs/SUMMARY.md` and `docs/reference.md` entries (check 28) and every cross-reference (`zensical build --strict`).
 
-Renaming a keyword argument also needs a grep of the old name alone (`**splat` `TypedDict` fields) and of fenced docstring examples (check 12). After any rename re-derive the residual set and run the whole suite.
+Renaming a keyword argument also needs a grep of the old name alone (`**splat` `TypedDict` fields) and of fenced docstring examples (check 12). After any rename run the whole suite.
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
@@ -470,13 +432,11 @@ Thirty-three checks fail the default `pytest` run. Read an allowlist entry's rea
 28. Public module missing from, duplicated in, or stale in `docs/SUMMARY.md` or `docs/reference.md` (§6).
 29. Array docstring entry opening with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` (§6).
 30. `warp.utils.array_cast` under `ordito/` (§3.6).
-31. Public function or method that no `benchmarks/` row names (`od.<module>.<name>`; a method by name), outside `_BENCHMARK_EXEMPT` (§4.2).
+31. Public function or method that no `benchmarks/` row names (`od.<module>.<name>`), outside `_BENCHMARK_EXEMPT`.
 32. `.numpy()` readback under `ordito/` outside `_common.py` (§3.10).
 33. `wp.ScopedCapture` outside `_common.py`, or a `warp.optim.linear` solver call outside `with recordable_stream(...)` (§2.1).
 
-Two rules about the gate itself:
-
-- A new Warp construct (first `@wp.struct`, `wp.ref`, tile intrinsic, or even a plain `@wp.func` extraction) can silently hide buffers from a check that pattern-matches AST nodes; after introducing one, grep `tests/api_conventions.py` for such checks. §2.4's extraction wins over the check.
+- A new Warp construct (first `@wp.struct`, `wp.ref`, tile intrinsic, even a plain `@wp.func` extraction) can silently hide buffers from a check that pattern-matches AST nodes; after introducing one, grep `tests/api_conventions.py` for such checks. §2.4's extraction wins over the check.
 - Write checks with a staleness half: an allowlist entry that matches nothing fails.
 
 ---
@@ -494,31 +454,26 @@ Source order is the rendered docs order.
 
 ## 6. Documentation (Zensical + mkdocstrings)
 
-Docs use Zensical with mkdocstrings, configured in `mkdocs.yml`.
-
 ```bash
 uv run zensical build --strict --clean  # validate; --clean after docstring edits
 uv run zensical serve                   # preview; restart to see docstring changes
 ```
 
-- API pages come from `api-autonav`, one per public module. The nav is `docs/SUMMARY.md`; a new module needs a line there and in the API overview `docs/reference.md` (module table, and the task index when it answers a common task) (check 28). Never use `gen-files`: Zensical ignores unsupported plugins silently.
-- mkdocstrings templates are overridden in `docs/.overrides/mkdocstrings/` (backlinks render as one collapsed line); layout CSS is `docs/stylesheets/extra.css`. Check rendering changes in the built HTML, not only the build's exit status.
+- API pages come from `api-autonav`, one per public module. A new module needs a line in `docs/SUMMARY.md` and in `docs/reference.md` (module table, and the task index when it answers a common task) (check 28). Never use `gen-files`: Zensical ignores unsupported plugins silently.
+- mkdocstrings templates are overridden in `docs/.overrides/mkdocstrings/`; layout CSS is `docs/stylesheets/extra.css`. Check rendering changes in the built HTML, not only the exit status.
 - A build finishing in about 0.1 s with an empty `site/` is inotify exhaustion (exits 0); raise `fs.inotify.max_user_watches`.
 
 ### Docstring content
 
 - The summary line says what the function returns, never the C++ call it wraps (checks 1, 3); attribution goes in `Notes` or `See Also`.
-- An array entry (every `Parameters` / `Returns` / `Yields` / `Attributes` entry, and a `Trimesh` property summary) opens with its shape as a code span, then its meaning: ``` ``(3 * n_faces,)`` flat triangle index buffer. ```
-    - A rank-1 length is a 1-tuple (``` ``(n_vertices + 1,)`` ```); no `Length-`, `Shape`, `Flat`, `Rank-1`, or shape buried mid-sentence (check 29).
-    - Spell sizes in full (`n_faces`); define a free size (`m`, `k`) on first use.
-- Every public function and class ends its docstring with an `Examples` section: one fenced ```` ```python ```` block (never `>>>`) that imports what it uses, builds its own input (`od.creation`, a small literal) and sets no `device=`. It runs in a fresh namespace on each device, and a top-level `print(x)  # value` must print exactly `value` (`tests/doc_examples.py`), so print shapes, counts, booleans and floats rounded to the digits CPU and CUDA agree on. The guide pages under `docs/` follow the same print rule (`tests/test_docs_examples.py`).
+- An array entry (every `Parameters` / `Returns` / `Yields` / `Attributes` entry, and a `Trimesh` property summary) opens with its shape as a code span, then its meaning: ``` ``(3 * n_faces,)`` flat triangle index buffer. ``` A rank-1 length is a 1-tuple; no `Length-`, `Shape`, `Flat`, `Rank-1` (check 29). Spell sizes in full (`n_faces`); define a free size (`m`, `k`) on first use.
+- Every public function and class ends its docstring with an `Examples` section: one fenced ```` ```python ```` block (never `>>>`) that imports what it uses, builds its own input (`od.creation`, a small literal) and sets no `device=`. It runs in a fresh namespace on each device, and a top-level `print(x)  # value` must print exactly `value` (`tests/doc_examples.py`), so print shapes, counts, booleans and floats rounded to the digits CPU and CUDA agree on. Guide pages under `docs/` follow the same print rule.
 - No measured timing (ms, ratios, launch or byte counts) in a public docstring; state the claim in caller terms.
-- No development-history narrative in `ordito/*.py` ("measured X, declined Y", "reverted", "round N", internal section references). Keep the behavioural fact and delete the rest; reasoning belongs in `kernels/`, `benchmarks/`, `tests/` or Part II.
-- `kernels/`, `benchmarks/` and `tests/` may state a ratio or crossover but not a wall-clock figure.
+- No development-history narrative in `ordito/*.py` ("measured X, declined Y", "reverted", internal section references). Keep the behavioural fact; reasoning belongs in `kernels/`, `benchmarks/`, `tests/` or the reference files, which may state a ratio or crossover but not a wall-clock figure.
 
 ### Docstring syntax
 
-Docstrings are NumPy-style. Use mkdocs-autorefs syntax; Sphinx roles (`:func:` etc.) render as literal text.
+NumPy-style, with mkdocs-autorefs syntax; Sphinx roles (`:func:` etc.) render as literal text.
 
 | Target | Syntax | Example |
 |---|---|---|
@@ -529,7 +484,7 @@ Docstrings are NumPy-style. Use mkdocs-autorefs syntax; Sphinx roles (`:func:` e
 
 - Resolve internal refs to the fully-qualified path, even within the same module.
 - Use `!!! note`, only in free prose (description, `Notes`, `Examples`), never inside an item-list section (check 25).
-- After editing docstrings, `grep -rnE ':(func|attr|meth|class|data|mod):\`' ordito/` must return nothing (`kernels/` included).
+- After editing docstrings, `grep -rnE ':(func|attr|meth|class|data|mod):\`' ordito/` must return nothing.
 
 ---
 
@@ -542,46 +497,40 @@ implementation. `trimesh` is the default; §7.6 covers the other nine libraries.
 
 - Test file `tests/test_<module>.py`; import `trimesh.<module> as tm` and `ordito.<module> as od`.
 - Use the `device` fixture from `tests/conftest.py`. A test names `device` only if it touches the
-  device directly; a test that reaches it through a mesh fixture does not. `pytest_generate_tests`
-  parametrizes every test whose fixture closure reaches `device`. `reportUnusedParameter` (§8)
-  enforces this.
-- Tests use pytest alone, never `unittest` (ruff `TID251`). Patch with `monkeypatch`; assert with
-  plain `assert`, `pytest.raises` and `pytest.warns`. A test that counts or intercepts launches or
-  allocations patches both `ordito._launch.*` and the `wp.*` fallback.
-- Use `np.random.default_rng(seed)` with a fixed seed per test.
+  device directly (`reportUnusedParameter` enforces it); one reaching it through a mesh fixture is
+  parametrized anyway.
+- pytest alone, never `unittest` (ruff `TID251`): `monkeypatch`, plain `assert`, `pytest.raises`,
+  `pytest.warns`. A test that counts or intercepts launches or allocations patches both
+  `ordito._launch.*` and the `wp.*` fallback.
+- `np.random.default_rng(seed)` with a fixed seed per test.
 - Upload a NumPy mesh with `conversions.numpy_to_warp(vertices_np, faces_np, device)`, never a
   local helper (`numpy_to_warp_uv` for `wp.vec2`, `warp_to_trimesh` for the inverse). A triangle
-  soup `(n, 3, 3)` becomes an indexed mesh first: reshape to `(-1, 3)` and pass
+  soup `(n, 3, 3)` becomes an indexed mesh first: reshape to `(-1, 3)` with
   `np.arange(n * 3, dtype=np.int32)` as faces.
 - Call `.numpy()` on Warp outputs inline, before the NumPy comparison; bind no intermediate.
 - `np.allclose(..., rtol=1e-5, atol=1e-5)` for floats; `np.array_equal` for bool and int.
-- Variable suffixes name the library: `_np`, `_tm`, `_wp`, `_igl`, `_pp`, `_pml`, `_o3d`, `_pv`, `_ml`,
-  `_pmf`, `_p3d`. Avoid `got` / `exp`.
-- A NumPy vector to a `wp.vec3` argument in a test: `wp.vec3(*array_np.tolist())`. Production code
-  in `ordito/` drops the `.tolist()` (§3.8).
+- Variable suffixes name the library: `_np`, `_tm`, `_wp`, `_igl`, `_pp`, `_pml`, `_o3d`, `_pv`,
+  `_ml`, `_pmf`, `_p3d`, `_m3`. Avoid `got` / `exp`.
+- A NumPy vector to a `wp.vec3` argument in a test: `wp.vec3(*array_np.tolist())`.
 
 ### 7.2 Devices and the two-process runner
 
 `--device={auto,cpu,cuda,both}` selects devices for this process (`auto` is cuda if available).
 
+- While developing: `uv run python -m pytest tests/test_<module>.py -q --device=cuda`.
 - Both-device coverage is a two-process job: `uv run python -m tests.devices` (a CUDA pass, then a
-  CPU pass with `CUDA_VISIBLE_DEVICES=""`), because Warp's CPU work is much slower once CUDA is
-  initialised (§12.1). Never use `--device=both` on a GPU box for CPU coverage.
-- CPU runs are parallel, CUDA runs are not. The CPU passes of `tests.devices` run under
-  `pytest-xdist` (`--cpu-workers`, default 8; CI's `pytest-cpu` uses `-n 4`): a CPU kernel runs on
-  one thread, so workers scale until the slowest tests set the wall clock, and xdist matched the
-  serial run's pass, skip and coverage counts exactly. A CUDA run stays one process, or the
-  workers compete for the device's memory. A test must therefore not depend on another test
-  having run in its process.
-- While developing, run `uv run python -m pytest tests/test_<module>.py -q --device=cuda` only.
-- Use `tests.devices` when a change is device-dependent by construction (`launch_tiled` kernel (§12.2),
-  `_common.prefers_tiled_reduction`, device-gated constant (§13.2)).
+  CPU pass with `CUDA_VISIBLE_DEVICES=""`), because CPU work is ~36x slower once CUDA is
+  initialised. Never use `--device=both` on a GPU box for CPU coverage. Use it when a change is
+  device-dependent by construction (`launch_tiled` kernel, `prefers_tiled_reduction`, a
+  device-gated constant).
+- CPU passes run under `pytest-xdist` (`--cpu-workers`, default 8); a CUDA run stays one process.
+  A test must not depend on another test having run in its process.
 - CPU is the deterministic oracle for byte-for-byte A/B; on CUDA any reduction-order change is
   noise.
 - A test costing more than about 15 s on CPU wears `@pytest.mark.slow_cpu(<seconds>)`.
-- A `launch_tiled` kernel's test pins `"cpu"` explicitly in a parametrize, because the fixture
-  returns `cuda:0` whenever CUDA exists (§12.2).
-- `python -m tests.devices --cpu-blocks` adds a pass running CUDA tile code on the CPU.
+- A `launch_tiled` kernel's test pins `"cpu"` explicitly in a parametrize (the fixture returns
+  `cuda:0` whenever CUDA exists). `python -m tests.devices --cpu-blocks` adds a pass running CUDA
+  tile code on the CPU.
 
 ### 7.3 Mesh fixtures
 
@@ -590,27 +539,25 @@ Reuse `tests/conftest.py` fixtures (each returns `(mesh_tm, mesh_wp)`):
 | Fixture | Use when |
 |---------|----------|
 | `icosahedron`, `icosphere`, `icosphere_coarse` | Easy closed solids; edge-case and sign tests only |
-| `unit_box` | Sharp features: exact 90° creases; crease/seam/dihedral tests |
+| `unit_box` | Exact 90° creases; crease/seam/dihedral tests |
 | `cave_cube` | Hollow / multi-component shell |
 | `hemisphere`, `half_torus` | Easy open surfaces |
 | `boy_surface` | Closed, non-orientable, χ = 1 |
 | `mobius` | Non-orientable with one boundary loop, χ = 0 |
 | `bohemian_dome` | Closed genus 1, self-intersecting |
-| `saddle_graded` | **Default open fixture** (`OPEN_MESHES`): graded disk, needles of aspect ~4 800, one rim; `saddle_graded_large_arrays()` is the larger form for size-dependent tests |
-| `sphere_irregular` | **Default closed fixture** (`CLOSED_MESHES`): degree 3-12, aspect up to ~300, mostly obtuse faces, scrambled order, rotated and off-origin |
+| `saddle_graded` | **Default open fixture** (`OPEN_MESHES`): graded disk, needles of aspect ~4 800, one rim; `saddle_graded_large_arrays()` for size-dependent tests |
+| `sphere_irregular` | **Default closed fixture** (`CLOSED_MESHES`): degree 3-12, aspect up to ~300, mostly obtuse, scrambled order, rotated and off-origin |
 | `sphere_irregular_hollow` | Solid with a cavity, two components |
 | `torus_irregular`, `torus_irregular_holes` | Genus 1 with needles; the second adds three holes (`BOUNDARY_MESHES`) |
 | `sphere_irregular_cap`, `sphere_irregular_band`, `convex_irregular_cap`, `convex_irregular_band` | Cut bodies with planar rims (bumpy / convex) |
 | `sphere_well_shaped`, `sphere_well_shaped_open`, `torus_well_shaped` | Same surfaces with no needles (aspect ~6), for premises the needles break |
 | `sphere_round`, `torus_round` | Exact unit sphere / torus in a known frame (`conftest.round_frame_coordinates`): analytic oracles only |
 
-- Shared sets in `tests/conftest.py`: `CLOSED_MESHES`, `OPEN_MESHES`, `MESHES` (their sum) and
-  `BOUNDARY_MESHES`. Import them; keep a local list only for a genuinely different set, with a
-  comment saying why.
+- Import the shared sets `CLOSED_MESHES`, `OPEN_MESHES`, `MESHES`, `BOUNDARY_MESHES`; keep a local
+  list only for a genuinely different set, with a comment saying why.
 - Keep the hardest fixture per class, not many easy ones. A test about topology names the fixture
-  that has it (several components, another χ, several rims). A test whose premise the hard
-  fixtures break (Delaunay, convex, planar rim, no ears, `float32`-length paths, hard-coded counts)
-  names a well-shaped one, with the reason beside the list.
+  that has it. A test whose premise the hard fixtures break (Delaunay, convex, planar rim,
+  `float32`-length paths, hard-coded counts) names a well-shaped one, with the reason beside it.
 - The scrambled fixtures sit off the origin: probe at `center_mass`; analytic oracles use `sphere_round`.
 - Do not hand-roll `wp.Mesh(...)` unless the case needs a bespoke degenerate mesh. Never construct
   a zero-triangle `wp.Mesh` on CUDA (§12.1); a single-triangle mesh reaches an "empty mesh" guard.
@@ -620,9 +567,9 @@ Reuse `tests/conftest.py` fixtures (each returns `(mesh_tm, mesh_wp)`):
 
 ### 7.4 The parity gate: a benchmarked reference must be a tested reference
 
-`tests/test_parity.py` fails the default `pytest` run when a benchmarked `(group, library)` pair is
-neither tested nor exempted. The `benchmark(group=...)` name is the key; renaming one breaks every
-marker citing it. Both markers are stackable and take string literals only.
+`tests/test_parity.py` fails when a benchmarked `(group, library)` pair is neither tested nor
+exempted. The `benchmark(group=...)` name is the key. Both markers are stackable and take string
+literals only; `uv run python -m tests.parity` prints the matrix.
 
 ```python
 # tests/test_edges.py -- this test proves ordito agrees with trimesh for that group
@@ -632,22 +579,16 @@ marker citing it. Both markers are stackable and take string literals only.
 @pytest.mark.noparity("pymeshlab", oracle="trimesh", reason="...why not comparable, with numbers")
 ```
 
-`uv run python -m tests.parity` prints the full matrix.
-
 - Where a reference computes the same quantity, one test must compare the two outputs; an invariant
-  does not discharge it. Check that the reference really has the quantity (§7.6). Invariant checks
-  may share the same test.
-- Where no reference computes the quantity, an invariant-only test is the honest answer. Its
-  docstring says "Not a library comparison: <why none exists>" and what the invariant excludes.
+  does not discharge it. Check that the reference really has the quantity (§7.6).
+- Where no reference computes it, an invariant-only test is the honest answer. Its docstring says
+  "Not a library comparison: <why none exists>" and what the invariant excludes.
 - Classify every comparison in the docstring, written as `Class A`:
     - **A**: direct `np.allclose` / `np.array_equal`. The default. An answer equal up to how its
-      elements are numbered is Class A too, compared through `ordito.equality`: `meshes_allclose`
-      (vertex numbering, face order and face rotation), `faces_equal` (face order and rotation
-      over a shared numbering), `points_allclose` (point order), `rows_equal` (row order of an
-      integer table; sort each row first for undirected edges) and `partitions_equal` (label
-      names). Numbering is not part of the answer. Upload the reference with the
-      `tests/conversions` helpers; `atol` is a Euclidean distance and must stay under half the
-      reference's closest point pair (`saddle_graded`: 1.4e-5).
+      elements are numbered is Class A too, through `ordito.equality`: `meshes_allclose`,
+      `faces_equal`, `points_allclose`, `rows_equal` (sort each row first for undirected edges),
+      `partitions_equal`. `atol` is a Euclidean distance and must stay under half the reference's
+      closest point pair (`saddle_graded`: 1.4e-5).
     - **B**: equal after a named transform, still at `1e-5` (index map, unit fix, projection,
       `lexsort`, sign or gauge fix).
     - **C**: a derived scalar, set distance or statistic. Must name the bug class it excludes and
@@ -661,23 +602,19 @@ marker citing it. Both markers are stackable and take string literals only.
   `Ordito against ordito`, `Not a parity assert`.
 - Never a parity assert: shape-only or `isfinite`-only; ordito compared with itself; a threshold a
   constant output would pass. A boolean assert is parametrized over inputs giving both answers.
-  Ordito-against-ordito is legitimate for pinning two entry points where only one has an oracle
-  (say which).
+  Ordito-against-ordito is legitimate for pinning two entry points where only one has an oracle.
 - Check the comparison is not vacuous on its fixture: assert the reference's answer is non-empty,
   has its expected count, and is not constant (`np.unique(labels_np).shape[0] > 1`,
-  `np.ptp(reference) > 1e-3`). A docstring saying the vacuous branch is "covered separately" is a
-  claim to grep for.
+  `np.ptp(reference) > 1e-3`).
 - A guard test bites only if you identify which assertion fails under the mutation.
-- Mutation-probe boundary predicates with exact ties, and parametrize over the boundary value of
-  the parameter the contract turns on.
+  Mutation-probe boundary predicates with exact ties.
 
 ### 7.5 Shared helpers: check both modules before writing a private one
 
 - `tests/comparisons.py` holds the comparison helpers (`lexsort_rows`, `assert_unordered_rows_equal`,
   `canonical_labels`, `same_partition`, `fraction_within`, `symmetric_chamfer`, `chamfer_two_sided`,
-  `hausdorff_two_sided`, `sparse_allclose`, and more): list it before writing a private one.
-- `tests/conversions.py` holds the converters for every library; use them to build the reference
-  and to read back.
+  `hausdorff_two_sided`, `sparse_allclose`, and more); `tests/conversions.py` the converters for
+  every library. List them before writing a private one.
 - Compare a sparse operator with `sparse_allclose`, never densified `toarray()` comparisons.
 - `symmetric_chamfer` takes meshes, `chamfer_two_sided` drawn clouds; prefer the mean form over
   Hausdorff for distributional claims.
@@ -691,19 +628,16 @@ marker citing it. Both markers are stackable and take string literals only.
   Aliases are pinned in ruff (`import trimesh as tm`, `import igl`, `import potpourri3d as pp3d`,
   `import pymeshlab as ml`, `import open3d as o3d`, `import pyvista as pv`, `from meshlib import
   mrmeshpy as mm` / `mrmeshnumpy as mn`, `import pymeshfix`, `import pytorch3d.ops as p3d_ops`,
-  `import manifold3d as m3`; result suffix `_m3`).
+  `import manifold3d as m3`).
 - Threading decides how a ratio reads: trimesh, igl, pyvista and pymeshfix are single-threaded;
   meshlib, manifold3d (TBB) and pytorch3d-cpu are multi-threaded; only pytorch3d-cuda runs on the
   GPU.
 - `manifold3d` is the library `ordito.boolean` ports (Apache-2.0, code may derive from it): its
   answers are compared array for array, `to_mesh()` order included. Its wheel can round one
-  `float32` ulp away from its own source (a few `calculate_normals` on needles): when a diff is one
-  ulp, check a source build before suspecting the port. Its CSG is lazy (time a row
-  through `num_vert()`), it reads `float32` meshes, and `a + b` composes rather than intersects
-  meshes whose boxes are apart.
-- Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21), except an option
-  reproducing MeshLib, whose method value is `"meshlib"`; pymeshfix and pymeshlab
-  (GPL) may be named in prose, but no ordito code may derive from their source.
+  `float32` ulp away from its own source; its CSG is lazy (time a row through `num_vert()`).
+- Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21), except the method
+  value `"meshlib"`; pymeshfix and pymeshlab (GPL) may be named in prose, but no ordito code may
+  derive from their source.
 - Before writing a test or benchmark against a library, read its section in
   `reference/reference-libraries.md` (traps that fail silently).
 
@@ -734,7 +668,6 @@ uv sync --all-groups                  # full environment; a bare `uv sync` unins
 - Ruff is the only linter and formatter; do not override it inline. No blanket `# noqa` for a
   selected rule; prefer a scoped `per-file-ignores`. The one standing exception is §1.6's kernel
   accumulator (`# noqa: UP018, RUF046`).
-- Import aliases and docstrings (`D`) are enforced.
 - `reference/` is excluded from lint and typing; never edit vendored code to satisfy a tool.
 - `F811` misses a duplicate whose first binding is used: after a module merge, scan for repeated
   top-level names and confirm the test count is unchanged.
@@ -751,22 +684,18 @@ uv sync --all-groups                  # full environment; a bare `uv sync` unins
   `dtype: type[odt.Block] = wp.float32`. Never put `float32` / `float64` overload arms ahead of a
   generic one. Forwarded-only values are `object`, not `Any`.
 - Rank `Any` is the one deliberate `Any`: a parameter takes the `Any`-ranked `odt.ArrayNd*` family,
-  a return keeps the `Literal`-ranked `odt.Array1d*` / `Array2d*` aliases.
-    - Allocate through `_launch.empty` / `odt.empty_1d`, not bare `wp.empty` (it binds the first
-      overload arm).
-    - A slice is narrowed with `odt.as_dense`; a gather (`src[indices]`) is materialized with
-      `wp.copy` (§3.4).
+  a return keeps the `Literal`-ranked `odt.Array1d*` / `Array2d*` aliases. Allocate through
+  `_launch.empty` / `odt.empty_1d`, not bare `wp.empty`; narrow a slice with `odt.as_dense`.
 - Order of preference: a correct annotation or `odt` helper, then `cast`, then a scoped
   `# pyright: ignore[rule]` with its reason (in `_launch.py`'s hot path an ignore beats a `cast`).
-- `reportPossiblyUnboundVariable` is an error and is never suppressed: initialize to `None` before
-  the branch and `assert x is not None` at the use.
-- `reportUnnecessaryTypeIgnoreComment` and `reportUnusedParameter` are on (the latter covers
-  `tests/` and `benchmarks/`). A protocol-signature parameter is `_`-prefixed; a `parametrize`
-  value used only as a label goes in `pytest.param(..., id=)`.
+- `reportPossiblyUnboundVariable` is never suppressed: initialize to `None` before the branch and
+  `assert x is not None` at the use.
+- `reportUnusedParameter` covers `tests/` and `benchmarks/`: a protocol-signature parameter is
+  `_`-prefixed; a `parametrize` value used only as a label goes in `pytest.param(..., id=)`.
 - An error is almost always a real bug: resolve it, do not widen the disabled-rule list.
-- `tests/` and `benchmarks/` are checked at the same bar. Test-side gaps: `tests.conversions.warp_empty`,
-  `tests/typings/pymeshlab`, `assert odt.has_blocks(...)`. A private helper exercised on purpose takes
-  a scoped `# pyright: ignore[reportPrivateUsage]`.
+- `tests/` and `benchmarks/` are checked at the same bar (`tests.conversions.warp_empty`,
+  `tests/typings/pymeshlab`, `assert odt.has_blocks(...)`; a private helper exercised on purpose
+  takes a scoped `# pyright: ignore[reportPrivateUsage]`).
 
 ### Dependencies
 
@@ -782,32 +711,27 @@ uv sync --all-groups                  # full environment; a bare `uv sync` unins
 
 ### Coverage
 
-- `ordito/kernels/` is omitted from coverage on purpose (kernel bodies are never run as Python).
-  Never write tests to raise a kernel-module figure.
-- The badge is the CPU wrapper layer. Do not raise the floor to chase `device.is_cuda` branches;
-  they belong to §7.2's two-process job.
+- `ordito/kernels/` is omitted from coverage on purpose. Never write tests to raise a
+  kernel-module figure, and do not raise the floor to chase `device.is_cuda` branches.
 - Coverage gates wrapper branches only; it says nothing about vacuous comparisons (§7.4).
 
 ## 9. Performance work: measure before you change
 
-Numbers live in §13 (cost model), §14 (kernel shapes) and §15 (measurement traps); component status
-is in `reference/component-status.md`.
-
 - Something suddenly slow is a Warp rebuild until proven otherwise (§15).
 - A benchmark lands before the optimization; never restructure for speed without one timing the
   current implementation.
+- Before proposing an optimization, grep the call site, constants, benchmark docstring and
+  `reference/measured-facts.md` for a written decline.
 - Attribute a cost with one direct measurement at the benchmark's own operating point and at more
-  than one size (§15). A share that falls as the input grows is a decline.
+  than one size. A share that falls as the input grows is a decline.
 - Check whether the function graph-captures before reading device time (§15).
-- Before proposing an optimization, grep the call site, constants and benchmark docstring for a
-  written decline (§15).
-- Attribute a change only with an interleaved A/B in one session, using a detached worktree
-  (§15). A probe that instruments what it measures carries a do-nothing control arm.
+- Attribute a change only with an interleaved A/B in one session, using a detached worktree. A
+  probe that instruments what it measures carries a do-nothing control arm.
 - CUDA is the target: decide on the CUDA number, measure both devices, and keep the CPU path
-  correct (§14). Split a tuning constant per device when the optima differ (§13.2).
+  correct. Split a tuning constant per device when the optima differ (§13.2).
 - A decline is a result: write it at the site with the number, and resolve every site the finding
   named.
-- Count the launches a numerical-method change adds per iteration (§14).
+- Count the launches a numerical-method change adds per iteration.
 - Host traffic is gated: `-p benchmarks.census` counts every ordito row's launches, allocations,
   memsets, copies, readbacks, scans and sorts, and CI fails when a CPU count rises above
   `benchmarks/census_budget_cpu.json`. A change that moves them re-records both budgets
@@ -829,8 +753,8 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 
 ## 11. Running long commands: never poll with `until`
 
-- Benchmark suites and probes run for minutes. Do not write a wait loop around them: run the
-  command in the background and read its own output file when it re-invokes you.
+- Benchmark suites and probes run for minutes. Run the command in the background and read its own
+  output file when it re-invokes you; do not write a wait loop around it.
 - `until ! pgrep -f <name>; do ...; done` never terminates (`pgrep -f` matches the polling shell's
   own command line), and `pkill -f` kills the shell the same way.
 - If a poll is unavoidable, test a sentinel file the process writes on exit and bound the iteration
@@ -839,7 +763,10 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 
 ---
 
-# PART II — MEASURED FACTS
+# PART II — MEASURED FACTS (digest)
+
+Each line is a verdict; the numbers, dates, sites and declines behind it are in
+`reference/measured-facts.md` under the same section number. Read that section before acting.
 
 ---
 
@@ -847,112 +774,48 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 
 ### 12.1 Memory safety — every failure here is silent
 
-- A `wp.launch` without `device=` corrupts the host heap: it resolves to `cuda:0` while CPU arrays are freed under the running kernel. Always forward `device=` (§2.1).
-- An out-of-bounds kernel write on CPU is glibc heap corruption; range-check at the write. Debug mode (-O0) raises register use and drops FMA, so exact-float comparisons move.
-- A zero-triangle `wp.Mesh` corrupts CUDA allocator state (error 700 on the next allocation; NVIDIA/warp#1765). Never build one on CUDA, tests included.
-- Python-scope gather ignores a non-contiguous index view's stride (§3.4); `wp.copy(..., count=0)` copies the whole source; `wp.copy` into pinned memory is async with no event (use `_common.read_scalar`, safe for scalars only).
-- CPU work is ~36x slower once CUDA is initialised in the process, hence two-process coverage (§7.2).
-- **Streams** (Warp 1.19, 2026-11-23): Warp registers every stream it wraps except the legacy default stream (handle 0), so a capture on it fails with `Warp error: unknown stream`; that is Warp's current stream under `wp.ScopedStream(wp.stream_from_torch())` while torch is on its default stream, and every recording function failed there. Warp creates its own streams blocking (`CU_STREAM_DEFAULT`), so their work orders against the legacy stream both ways with no event, and a graph recorded on one replays on the legacy stream (`tests/test_common.py`, byte-identical). A pool array is freed with `cudaFreeAsync(ptr, NULL)` on the legacy stream whatever the current stream (deferred while any capture is open), which does not wait for a non-blocking (torch side) stream. While a blocking stream records, CUDA refuses legacy-stream work from every thread (`cudaErrorStreamCaptureImplicit`) and invalidates the recording (2026-11-23: torch in another worker thread failed while ordito recorded), so ordito's own recordings take a private `CU_STREAM_NON_BLOCKING` stream from the driver (Warp creates none); recording issues no work, so it needs no event (`tests/test_common.py`). Warp's current stream is one field per device for the whole process (`Device._stream`, `ContextInfo::stream`), not per thread: two threads in Warp at once overwrite each other's `wp.ScopedStream` and launch into each other's open capture (errors 700, 906, a hang or a crash), so ordito is not safe to call from two threads at once; a process-wide lock around every call is (four threads beside a torch thread, 300 pipeline rounds each, byte-identical; `docs/streams.md`).
+- A `wp.launch` without `device=` corrupts the host heap (it resolves to `cuda:0` while CPU arrays are freed under the kernel).
+- An out-of-bounds kernel write on CPU is glibc heap corruption; range-check at the write. Debug mode (-O0) drops FMA, so exact-float comparisons move.
+- A zero-triangle `wp.Mesh` corrupts CUDA allocator state (error 700 on the next allocation). Never build one on CUDA, tests included.
+- Python-scope gather ignores a non-contiguous index view's stride (§3.4); `wp.copy(..., count=0)` copies the whole source; `wp.copy` into pinned memory is async with no event (use `_common.read_scalar`). `.numpy()` is not a sync on a CPU array.
+- CPU work is ~36x slower once CUDA is initialised in the process (§7.2).
+- **Streams:** a capture on the legacy default stream fails (`unknown stream`), and a blocking stream's recording is broken by any thread's legacy-stream work, so ordito records on a private non-blocking stream (`_common.scoped_capture`). Warp's current stream is one field per device for the whole process, not per thread: two threads in Warp at once corrupt each other; a process-wide lock around every call is safe (`docs/streams.md`).
 
 ### 12.2 `wp.launch_tiled` runs one lane per block on the CPU
 
-On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. The experimental `wp.config.enable_cpu_blocks` (NVIDIA/warp#1638) runs every lane but is 1.5-340x slower: a test oracle (`--cpu-blocks`), not a production path.
-
+- On CPU `wp.block_dim()` reads 1. `wp.config.enable_cpu_blocks` runs every lane but is 1.5-340x slower: a test oracle (`--cpu-blocks`), not a production path.
 - Probe a lane-constructed tile (`wp.tile(x)` from per-lane values), not `tile_load`, or you will delete a correctness branch.
-- Stride by `wp.block_dim()`. Partitioned kernels keep a lane-free `_sliced` sibling behind `_common.prefers_tiled_reduction` (§2.2).
-- Warp has no grid-wide barrier, no per-cell `HashGrid` entry point and no builtin node-by-node BVH traversal; node reads take `wp.func_native` over `wp::BVH` (`kernels/proximity.py`, re-probe the layout at each upgrade).
-- `wp.tile_bvh_query_aabb` overruns its `5 * block_dim` shared result buffer exactly when a round meets leaves holding more than 4 primitives, and every Warp BVH builder makes a deep node a leaf whatever its size (depth 32 in the CUDA LBVH; 31 in cuBQL, and in the top-down host builder since Warp 1.19, GH-1991) (lucy's mesh BVH: 0.9 M such leaves, up to 28 faces; the bunnies none). The overrun drops primitives and reads past the buffer *inside* the builtin, which faults (CUDA error 700) once it is large, so no bound check on the returned index can catch it. Walk with it only a query that meets no such leaf; `kernels/proximity.flag_overfull_leaf` flags those leaves in a node bitset, and the rest take a walk that cannot drop (`mesh_to_mesh_distance`: its own `wp.tile_stack` walk; `ball_pivoting`: per-lane slabs of the box through the serial `wp.bvh_query_aabb`). Point clouds hit it too (dragon, happy_buddha, lucy). Still bound-check every candidate (`0 <= c < n`). `max_nodes` is the *capacity*: a CUDA LBVH builds all `2n - 1` nodes and never writes `num_nodes` (`wp_bvh_create_device` copies an uninitialised stack `wp::BVH`, so the field is stale stack contents: usually 0, once a large value that sent the `ball_pivoting` bitset pass past `node_lowers`, CUDA error 700 found by `compute-sanitizer`), a top-down tree (every CPU `wp.Mesh`, or `bvh_constructor="sah"` on CUDA) only a prefix counted in `num_nodes` (657 of 1999 measured), the rest uninitialised. The host builder writes `num_nodes` but not `constructor_type`. `kernels/proximity.bvh_node_count` therefore selects on `constructor_type` on CUDA and reads `num_nodes` on the CPU, clamped to `max_nodes`; never trust either field alone. A node-bitset pass runs wherever blocks have several lanes (`prefers_tiled_reduction`), where the tile walk exists.
-- A multi-launch `capture_while` body replays differently on CPU, and Python-level ping-pong cannot help a captured loop.
+- Warp has no grid-wide barrier, no per-cell `HashGrid` entry point and no builtin node-by-node BVH traversal; node reads take `wp.func_native` over `wp::BVH` (`kernels/proximity.py`; re-probe the layout at each upgrade).
+- `wp.tile_bvh_query_aabb` overruns its shared result buffer on leaves holding more than 4 primitives (every builder makes a depth-limit node a leaf whatever its size), dropping primitives and faulting inside the builtin. Walk with it only a query that meets no such leaf (`kernels/proximity.flag_overfull_leaf`); the rest take a walk that cannot drop. Still bound-check every candidate.
+- BVH `max_nodes` is a capacity and `num_nodes` is stale on a CUDA LBVH; read the count through `kernels/proximity.bvh_node_count`, never either field alone.
+- A multi-launch `capture_while` body replays differently on CPU.
 
 ### 12.3 Numerics, casts and `wp.ref`
 
-- Generic type-vars do not instantiate inside `wp.ref[...]`; use `wp.ref[wp.float32]`. `@wp.func` cannot be overloaded by name and `arr[i], arr[j] = ...` swaps raise, so the shared argmin/argmax helpers are concrete float32 and float64 sites keep loops.
-- `wp.Scalar` does not instantiate for `wp.bool`; write the concrete bool kernel rather than widening to int32 (~2x). Scalar arguments must match the input precision (`a.dtype(tol)`); literals in a generic `@wp.func` need `type(x)(...)`.
-- Sum cross products about a point of the loop, never the origin (`predicates.newell_term`).
-- FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and 0 on CPU. Do not disable it; write degeneracy tests at small scale and never assume CPU/CUDA bit agreement.
-- Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
-- A coverage or containment test that must not depend on the kernel around it is built unfused: `module_options={"fuse_fp": False}` on a `module="unique"` kernel turns off nvcc's `--fmad` and the CPU backend's fusion together. nvcc otherwise contracts the same `@wp.func` by loop shape, so the texture owner pass's one-thread and sliced forms parted on ~1 in 3 000 rim pixels of an edge-on projection and its CPU and CUDA builds on ~1 in 900; unfused, CUDA gives the CPU's former images bit for bit at 1.00-1.05x the pass (2026-11-12, `kernels/texture`; `kernels/heat`'s unfolding kernels likewise).
-- `wp.length` (and any three-term dot) leaves nvcc which square the first fused multiply-add takes, and it chooses by the code around it: capping `corner_normals`' walk loops moved it from `fma(y, y, x * x)` to `fma(x, x, y * y)`, an ulp on 8 % of a sphere's corners, the walk's own sums unchanged (2026-11-13). Where a change must leave a kernel's output byte-identical, pin the rounding in a CUDA-only `wp.func_native` (`__fmaf_rn`, `kernels/triangles.corner_group_length`; the CPU's `wp::length` did not move) and diff the SASS (`cuobjdump -sass`) before blaming the sum.
-- Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
-- `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
-- A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
-- **A kernel-scope cast that changes a constant's type rewrites the constant's variable in place**
-  (Warp 1.19, 2026-11-17): the generated code declares the unrolled loop variable or module
-  constant with the cast's type and assigns it where the cast stands, so a read above the cast
-  (in source order, or in a branch the cast's branch skips) reads it uninitialised. Release builds
-  folded that undefined read to the one value ever assigned, so every result was right and no
-  test saw it; `-O0` (`wp.config.mode = "debug"`) read garbage: `poisson_octree.cell_segments`'s
-  `f = wp.int32(side)` read 34 and indexed past the extraction table, the sparse Cholesky panel
-  bound `first + wp.int32(q2) < last` and the exact group sum's non-finite test read the same
-  way. A five-line kernel reproduces it. Rule: §1.6. Finding one: in the generated source, a
-  `var_N = <literal>;` assignment whose `var_N` the same function reads earlier.
-- Kernel-scope unary minus is `T(0.0) - x` (`warp/native/builtin.h` `neg`), so `-wp.float64(0.0)`
-  is `+0.0`; a negative zero is the literal `wp.float64(-0.0)`, which emits `-0.0` (2026-11-13: a
-  list started at `-wp.float64(0.0)` turned four `-0.0` entries of a sum to `+0.0`).
-- Gate an angle near pi on the angle (`atan2` form, `predicates.vector_angle`), not on its `float32` cosine: the cosine is flat there, so every threshold above ~179.98° rounded to `cos == -1` and the fold gate of `face_defective_mask` / `remove_folded_faces` never flagged an exactly folded-back pair (fixed 2026-10-26; MeshLib, which tests `dot <= cos`, is inclusive at the threshold where ordito is strict).
-- A degeneracy tolerance carries the units of the quantity it bounds: `predicates.point_triangle_offset`'s
-  absolute `1e-12` on `|ab x ac|^2` (a length^4) sent every interior point of a face under ~1e-3
-  across to its first corner (dragon: 1.5x the true distance; fixed 2026-11-10, now relative to
-  the edges).
-- Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
-- Before Warp 1.19 the backward pass of an empty dynamic `range` with `abs(step) > 1` ran one iteration past the range (`range(t, n, 3)` on `t >= n` wrote gradient into `x[t]`, both devices; step 1 was clean; fixed by GH-2046). The floor is 1.19, so `kernels/metrics`' slice sum and sorted gather dropped their early returns (2026-11-17; gradients at 59 empty slices of step 64 and at unread gather entries exact on both devices, release and `-O0`).
-- **Float atomics and CUB's float scan are not run-to-run reproducible on CUDA**; integer ones are exact. One `atomic_add` per block changed `procrustes`, `moments`, `gram_matrix` and `icp` in 30 of 30 calls at 1 M items; `array_scan` (decoupled look-back) changed every 1.3 M-element `float32` scan, and with it every seeded CDF draw. Reproducible forms: `_launch.array_scan` takes a fixed-order tile scan for `float32` on CUDA (`wp.tile_scan_*` takes no `float64`), and `store_block_*` stores a row per block that the block drawing the last ticket folds after a `__threadfence` (`wp.func_native`). A vector or matrix counter is one atomic per component, so a ticket is read off one component (`last_ticket_vector` / `_matrix`): comparing whole values let no block, or two, see the last ticket. `wp.utils.array_sum` (CUB reduce) and `bsr_mv` repeat bit for bit. Per-vertex scatters too: `hessian_energy`, `curved_hessian_energy` and `vertex_defects` differed on every CUDA call (~1e-13 relative on the energies) until they took the §2.2 forms; so did `vertex_face_adjacency`'s row order.
-- **Float `atomic_min` / `atomic_max` are reproducible as they stand** (`reduce.scatter_min` and siblings take no deterministic form): CUDA's CAS loop over `fminf` / `fmaxf` orders `-0.0` below `+0.0`, so the one tie arrival could decide does not depend on it (40 calls of 2^20 random-sign zeros into four groups, `float32` and `float64`: identical bits). NaN is device-dependent: CUDA's `fminf` drops it, the CPU's `a < b ? a : b` keeps a NaN that arrives second.
-- `wp.svd3` on a `float32` 3x3 covariance leaves ~6e-5 relative error on the middle eigenvalue
-  (k-nearest covariances of a bent anisotropic sheet, 2026-11-21) where the covariance itself is
-  good to ~1e-7: `kernels/points.point_frames` decomposes the `float32` covariance as a
-  `wp.mat33d`, which lands within 1e-7 of NumPy's `float64` `eigh` (pytorch3d's `float32` `eigh`
-  7.5e-7). A frame or spectrum compared at `1e-5` takes the `float64` decomposition.
-- Moving `wp.svd3` into another kernel (a dim=1 finalizer fused into a scatter's last block) changes its CUDA result by ulps, and flipped a degenerate 2-point plane normal; CPU stays byte-identical. A last-block ticket on a matrix counter is 9 float atomics per block on one address (~18 µs at 14 k blocks): take the ticket on an `int32`.
-- **Exact orientation exists** (`predicates.orient3d_sign` / `_f32` / `_from`, `orient2d_sign`): exact for `float32` coordinates plus one 28-bit point, FMA-proof, the same sign on both devices. Use it, not a tolerance, wherever a sign decides topology.
-- `int(x)` and `wp.int32(x)` generate identical code, but `float()` fails to parse inside `wp.Float`-generic functions; use `type(x)(...)`. `//` floors since 1.18; `%` truncates (§1.5). At Python scope `wp.int32` arithmetic costs ~10 µs and `//` raises; unwrap with `int()` (check 26).
+- Generic type-vars do not instantiate inside `wp.ref[...]`; `@wp.func` cannot be overloaded by name; `arr[i], arr[j] = ...` swaps raise. `wp.Scalar` does not instantiate for `wp.bool` (write the concrete bool kernel). Scalar arguments must match the input precision (`a.dtype(tol)`); literals in a generic `@wp.func` need `type(x)(...)`.
+- FMA makes CPU and CUDA differ: never assume bit agreement, never substitute an algebraic identity inside a sign test that feeds a branch, and snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`). Do not disable FMA globally; a containment test that must not depend on the kernel around it is built unfused (`module_options={"fuse_fp": False}` on a `module="unique"` kernel), and a byte-identical or reference-matching rounding is pinned in a `wp.func_native` (`__fmaf_rn`, `__fmul_rn`).
+- Exact orientation exists (`predicates.orient3d_sign` / `_f32` / `_from`, `orient2d_sign`): use it, not a tolerance, wherever a sign decides topology.
+- Sum cross products about a point of the loop, never the origin (`predicates.newell_term`). Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector`); Heron needs sorted sides; float32 lengths cannot represent a needle.
+- A degeneracy tolerance carries the units of the quantity it bounds (relative, not an absolute `1e-12` on a length^4). Heat fields scale as 1/scale², so absolute tolerances on them are wrong.
+- Gate an angle near pi on the angle (`predicates.vector_angle`), not on its `float32` cosine.
+- `mesh_query_point_no_sign` is inexact (~2e-5; its face need not be the nearest). NaN breaks `searchsorted(side="right")`.
+- Kernel-scope unary minus is `T(0.0) - x`: a negative zero is the literal `wp.float64(-0.0)`.
+- `wp.svd3` on a `float32` covariance is ~6e-5 off on the middle eigenvalue; decompose as `wp.mat33d`. Moving `wp.svd3` into another kernel changes its CUDA result by ulps.
+- **Float `atomic_add` and CUB's float scan are not run-to-run reproducible on CUDA**; integer ones, float `atomic_min` / `atomic_max`, `wp.utils.array_sum` and `bsr_mv` are. Hence §2.2's forms. NaN in `atomic_min` is device-dependent. A last-block ticket is taken on an `int32`, or on one component of a vector counter.
+- Constant-cast and module-constant accumulator rewrites: §1.6.
+- At Python scope `wp.int32` arithmetic costs ~10 µs and `//` raises; unwrap with `int()` (check 26).
 
 ### 12.4 Compilation, module hashing and import cost
 
-- A generic kernel's lazy overload instantiation rebuilds its whole module, and `wp.map` forks per call signature (§2.5, §3.5). Warp's own generic kernels do too (`array_cast`, `warp.sparse`): use `array.copyto` or `kernels/linalg.register_warp_overload`.
-- `@wp.kernel` builds an `Adjoint` at import, so the lazy `__init__` is load-bearing; another module's top-level `import warp.fem` silently cancels a deferral.
+- A generic kernel's lazy overload rebuilds its whole module; `wp.map` forks per call signature; Warp's own generic kernels do too (`array_cast`, `warp.sparse`): use `array.copyto` or `kernels/linalg.register_warp_overload`.
+- `@wp.kernel` builds an `Adjoint` at import, so the lazy `__init__` is load-bearing; another module's top-level `import warp.fem` cancels a deferral (import it inside the function).
 - Backward passes dominate cold compile (§2.6). Only host readbacks block graph capture.
-- `@wp.func` is a real function that nvcc inlines; verify "free" by comparing `_forward` SASS from the module cache.
-- A kernel-scope `not` on a bool lowers as a select; share sentinel-returning predicates, not bools.
-- `@wp.func` keeps `inspect.currentframe()` in a local, a frame that refers to itself, so every decoration leaves a cycle only the collector frees, and through `f_back` it holds the whole importing stack. A submodule imported from inside a call (the first `od.<module>` a wrapper touches) kept that call's frame and every array bound in it, outputs included, until a full collection (26.9 MiB after a depth-9 octree call; the 1 000-odd decorations of an import outlive young collections). `ordito.__getattr__` imported on a helper thread, whose stack starts at the thread, while the floor was 1.18 (a full `gc.collect()` after each import instead cost 110-150 ms). Warp 1.19 deletes the frame (GH-2068): with the collector off, a direct import inside a call frees that call's locals on 1.19 and not on 1.18, on Python 3.11, 3.13 and 3.14. With the floor at 1.19 (0.3.1) it imports in place; `test_a_lazy_import_keeps_no_frame_of_its_caller` guards the Warp behaviour.
-- `wp.constant(x)` is an identity; a tile `shape=` must be a plain integer; wrap typed constants in `int()` on the host.
-- **NVRTC 12.9 (Warp's `+cu12` build) miscompiles some `@wp.struct` kernel parameters for
-  sm_120** (2026-11-17, reported against 0.3.0 on an RTX PRO 6000 and an RTX 5090): it takes the
-  parameter's `cvta.param` address, converts it with `cvta.to.local` and reads the fields there,
-  an address no thread owns, so the launch faults (CUDA error 700; compute-sanitizer: one invalid
-  `__local__` read address for every thread). Only the two Poisson iso-value term sums hit it,
-  for sm_120 only (the same modules compiled clean for sm_80, 86, 89 and 90; NVRTC 13 compiles
-  all of them correctly), and whether a kernel does turns on its whole module: the iso term
-  rebuilt in another module compiled clean while its `float32` twin did not, so a rewrite of the
-  term is no fix. `optimization_level` 2 emits no such load; the whole Poisson modules at 2 cost
-  the octree solve 1.16-1.22x and the band path 1.07x, so the two term sums alone take it, in
-  modules of their own (`kernels/reduce.NVRTC12_STRUCT_TERM_OPTIONS`; calls at par,
-  byte-identical on both devices). CI and the benchmarks run the `cu13` build and cannot see a
-  `+cu12` miscompile: after touching a struct-parameter kernel, build `python -m ordito.precompile
-  --no-cpu` under a `+cu12` Warp and grep each PTX entry for `cvta.param` followed by
-  `cvta.to.local`. `--arch` builds cubins: force PTX by wrapping `precompile._target` to pass
-  `use_ptx=True` (the `+cu12` wheel is on NVIDIA/warp's GitHub releases, not PyPI; build into a
-  scratch cache, §12.4's MathDx note). The scan flags both iso-term modules at optimization level
-  3 and none at 2, so it sees the bug; 2026-11-21 `boolean.CrossingOperand` (four crossing
-  kernels) and every other module were clean for sm_120, and 2026-11-22 again after
-  `HalfedgeMesh` gained `tri_source` (282 modules and widths, the level-3 iso term the control).
-  The build script needs an `if __name__ == "__main__":` guard (`precompile` spawns workers).
-- **MathDx objects live in a cache no toolkit keys** (Warp 1.19, reported on 1.18): `tile_cholesky`, `tile_lower_solve` and `tile_matmul` link objects from `<kernel_cache_dir>/lto`, named by a hash of the call alone, so a `+cu12` and a `cu13` build of one Warp version sharing `~/.cache/warp` poison each other (`nvJitLink error 6 ... may need newer version`, then `CUDA kernel build failed with error code 4294967295` from whatever kernel first loads the module). A kernel that links MathDx lives in a module of its own and is loaded through `_common.load_mathdx_kernel` before its first launch, which clears the cache and retries once with a warning (2026-11-16; verified with garbage `.lto` files: same answers after the rebuild). Turning MathDx off is not the fix: Warp's own tile solvers cost the sparse Cholesky refactor 1.35-1.85x (icospheres 5-7); the dense hole-fill solve is at par (0.92-1.08x).
-- A launch's `block_dim` is a compile-time parameter of the module launched (`Module.load(device, block_dim)`, with matching `__launch_bounds__`): a kernel launched at a second width builds its whole module again, and one of its kernels may not build at that width (`kernels/neighbors` at 128 failed). A kernel launched at its own width lives in its own module (`module="unique"`; `kernels/validation.closed_signed_volume`, `kernels/neighbors.query_nearest_via_bvh`).
-- Warp 1.19 vectorizes CPU kernels (loop and SLP, GH-1954 / GH-1994), so a cold CPU build costs 1.74x: all 63 `ordito.kernels` modules through `wp.force_load(device="cpu")` into an empty cache took 113 s on 1.18 and 194-201 s on 1.19 (cache 34 -> 39 MB, 2026-11-03). A fresh CPU environment or a CI job without a warm cache pays it. The switch is the `cpu_compiler_flags` module option or `wp.config.cpu_compiler_flags` (default `-march=native`; append `-fno-slp-vectorize`), which also changes the module hash. It is per module, never per kernel. What it buys at run time: §14.
-- Ahead-of-time builds (2026-11-13, `ordito.precompile`): `wp.compile_aot_module(module, arch=...)`
-  compiles with no GPU (NVRTC alone; a GPU-less process prints `CUDA error 100` once at init and
-  nothing stops it) and writes the identifier a GPU process loads, the module hash being the same
-  with and without a device. It builds at the module's default `block_dim` only: set the module
-  option for another width (`Module.load` hashes the width) and restore it. The CPU loads every
-  module at width 1, and its objects are `-march=native`, keyed in the cache by the host's ISA
-  features (`_get_cpu_target_hash`), so another CPU type misses and compiles rather than faulting;
-  `precompile` therefore builds the CPU by default (`--no-cpu` opts out). `kernel_cache_dir` and `WARP_CACHE_PATH`
-  both append Warp's version. Every module ordito lists (159, 220 widths) for `sm_120`, 32 workers,
-  no GPU: 89 s wall, 206 MB; `kernels/reduce` alone takes 67 s and sets the floor. The whole CUDA
-  census on that cache compiled no CUDA module (153 loads, all cached); 5 CPU modules some CUDA rows
-  load compiled, as the cache had no `--cpu` build. Warp's generic modules with no registered
-  overload (`warp.sparse`'s `_bsr_*`, `warp.fem.linalg`) cannot be built and are skipped.
+- A tile `shape=` must be a plain integer; wrap typed constants in `int()` on the host.
+- A launch's `block_dim` is a compile-time parameter of its module: a second width rebuilds the whole module, so a kernel launched at its own width lives in its own module (§2.10).
+- **NVRTC 12.9 (`+cu12` Warp) miscompiles some `@wp.struct` kernel parameters for sm_120** (CUDA error 700). CI runs `cu13` and cannot see it. The two Poisson iso-value term sums take `kernels/reduce.NVRTC12_STRUCT_TERM_OPTIONS`; after touching a struct-parameter kernel, run the PTX scan described in the reference file.
+- **MathDx objects live in a cache no toolkit keys**: a kernel linking `tile_cholesky` / `tile_lower_solve` / `tile_matmul` lives in a module of its own and loads through `_common.load_mathdx_kernel`.
+- A cold CPU build of all kernel modules is ~200 s on 1.19 (vectorization); `cpu_compiler_flags` is per module and changes the hash.
+- `ordito.precompile` builds ahead of time with no GPU (`wp.compile_aot_module`), one module default `block_dim` at a time; details in the reference file.
 
 ### 12.5 `warp.sparse` and `wp.Volume`
 
@@ -964,16 +827,16 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - `cg` at `check_every=0` records a graph per call; it resolves an omitted `atol` to `tol`, so a tiny `||b||` returns zero iterations. Always pass `atol=0.0`.
 - `allocate_by_voxels` and `Nanogrid` work on CPU; an empty point set raises. A one-`atomic_cas` table beats `allocate_by_voxels` 1.3-3.2x.
 - `get_voxels()` order is leaf-major: lexsort before comparing. NanoVDB centres voxels on integers: pass `translation = origin + 0.5 * voxel_size` or cells are off by one.
-- `get_voxel_count()` is a capacity; use `get_active_stats().voxel_count`. `rebuild()` does not pay. Import `warp.fem` inside the function.
+- `get_voxel_count()` is a capacity; use `get_active_stats().voxel_count`. `rebuild()` does not pay.
 
 ### 12.6 Warp builtins: adoption verdicts
 
-- **Adopted:** `mesh_query_point_sign_winding_number` (exact on holes; silently returns parity unless the mesh was built with `support_winding_number=True`; its Barnes-Hut test approximates a BVH node only from two node radii, so on long thin triangles every node is large and a query costs O(faces): an open unit cylinder of 1e-4-wide, full-height strips (`rim_long`, 131 k faces) 5 us a query against 23 ns at 1 k faces, 2026-11-11. `signed_distance_level_set`'s winding path must take this sign within 0.1 of 1/2, ~99 k of 262 k nodes there, so it costs 0.7 s on either path); `bvh_query_sphere` (wins when the radius is large against a BVH, equals `length_sq <= r*r`, still beats a box walk on 1.18 though slower there; not for a radius equal to the grid cell); BVH leaf size 1 for ball queries and size-gated for k-NN; `mesh_get_bvh`; `volume_index_to_world`; `delaunay_edge_flip` as the flip start above 2**19 points; `sparse_marching_cubes` above a lattice-size gate on closed, consistently wound input; `wp.Mesh.points` assignment (a refit) for a moved mesh's tree (`Trimesh.with_vertices(refit=True)`, 2026-11-20: 0.20-0.22x a build on CUDA and 0.04x on the CPU, bunny to lucy; closest-point queries on the refitted tree 0.93-1.11x a fresh one's after bends of up to 5 % of the diagonal, so it stays the caller's choice).
-- **Rejected:** `intersect_tri_tri` (not scale-invariant); `closest_point_edge_edge` (float32, worse); `sample_unit_hemisphere_surface` (variance); `norm_huber` (norm, not weight); `tile_arange`; `volume_voxel_count` (capacity); `dense_chol` family (hidden, 2x loss); `tri_tri_adjacency` for `halfedge_twins` (cannot carry validation, quadratic on hubs; test oracle only); `swept_volume_mesh` (no caller).
+- **Adopted:** `mesh_query_point_sign_winding_number` (needs `support_winding_number=True`, else it silently returns parity; O(faces) a query on long thin triangles); `bvh_query_sphere` (not for a radius equal to the grid cell); BVH leaf size 1 for ball queries; `mesh_get_bvh`; `volume_index_to_world`; `delaunay_edge_flip` above 2**19 points; `sparse_marching_cubes` above a lattice-size gate on closed input; `wp.Mesh.points` assignment as a refit (`Trimesh.with_vertices(refit=True)`).
+- **Rejected:** `intersect_tri_tri` (not scale-invariant); `closest_point_edge_edge` (float32, worse); `sample_unit_hemisphere_surface`; `norm_huber`; `tile_arange`; `volume_voxel_count` (capacity); `dense_chol` family; `tri_tri_adjacency` for `halfedge_twins` (test oracle only); `swept_volume_mesh`.
 
 ### 12.7 Upgrade discipline
 
-The bugs above (zero-triangle mesh, CPU one-lane tiles, `tile_bvh` overrun, `wp.ref` generics, `bsr_mm` superset, stale `nnz`) all persist on 1.19 (re-probed 2026-11-03: the probes head `_WARP_VERSION_ALLOWLIST`'s 1.19 block; `bsr_mm` still stores a cancelled product as an explicit zero and `nnz` still reads 3 for three triplets summing to two entries, both devices); re-probe them and every tuning constant (§9) at each upgrade. Verification defaults to a false pass: `compute-sanitizer` that instrumented nothing prints 0 errors (expect ~10x slowdown), and `capture_while` sites skip the graph path when `wp.is_conditional_graph_supported()` is `False`. Gates: full suite, `basedpyright` 0 errors, `zensical build --strict`, unchanged `tests.parity` pair count.
+The bugs above (zero-triangle mesh, CPU one-lane tiles, `tile_bvh` overrun, `wp.ref` generics, `bsr_mm` superset, stale `nnz`) all persist on 1.19; re-probe them and every tuning constant at each upgrade (the `upgrade-warp` skill). Verification defaults to a false pass: `compute-sanitizer` that instrumented nothing prints 0 errors (expect ~10x slowdown), and `capture_while` sites skip the graph path when `wp.is_conditional_graph_supported()` is `False`. Gates: full suite, `basedpyright` 0 errors, `zensical build --strict`, unchanged `tests.parity` pair count.
 
 ---
 
@@ -981,7 +844,7 @@ The bugs above (zero-triangle mesh, CPU one-lane tiles, `tile_bvh` overrun, `wp.
 
 ### 13.1 Host-side, per call
 
-Measure `n` calls between two syncs and divide; a sync inside the loop drains the mempool (up to 14x wrong). The lever is allocating less; a cache holding memory across calls is rejected (reference/component-status.md).
+Measure `n` calls between two syncs and divide; a sync inside the loop drains the mempool (up to 14x wrong). The lever is allocating less; a cache holding memory across calls is rejected.
 
 | primitive | cost |
 |---|---|
@@ -992,468 +855,112 @@ Measure `n` calls between two syncs and divide; a sync inside the loop drains th
 | cached `wp.map` | ~11 µs above the kernel |
 | readback | ~0.1 ms queued, 14 µs isolated |
 | replayed graph kernel | 1.2 µs |
-| small `.numpy()` readback / `_common.read_values` | ~27 µs (builds a host `wp.array`) / ~9 µs |
-| `.numpy()` / `_common.read_array`, 513 / 100 k `int32` | 21 / 14 µs; 55 / 44 µs (2026-11-09; `read_values` 21 µs at 513, 3.8 ms at 100 k) |
+| small `.numpy()` / `_common.read_values` | ~27 µs / ~9 µs |
 | `wp.array` slice / `_launch.view` | 4.2 / 1.05 µs |
 | small-pattern native fill (`_launch.pattern`) / 2-element upload | 8.2 / 11.7 µs |
 
-Small constant tables passed by value as `wp.types.vector` kernel arguments cost more host time than uploading them. The native fill's edge is for scalars: one `wp.mat44` uploads in 6.9 µs against 21.6 µs through `_launch.full` and 10.5 µs as a `float32` `_launch.pattern` viewed as one (2026-11-11). The creation builders are host-bound: NumPy and Python per-op overhead (1-3 µs each) dominates, not the upload or the launch.
-
-Re-measured on Warp 1.19 (2026-11-03, one process per version, min of 7): `_launch.launch`, `wp.empty`, `wp.zeros`, `wp.copy`, a slice, a row or column view, a gather, `reshape`, `_launch.view` and `wp.array(ptr=...)` all 0.95-1.01x their 1.18 cost; `wp.launch` 1.05x (10.9 -> 11.4 µs).
-
-Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with Warp-typed bounds, `wp.length` and vector arithmetic cost 4-40 µs against under 1 µs in plain Python (13-370x). Unwrap with `int()` / `float()` (check 26); `wp.cross` is the exception. A device reduction costs 0.1-0.3 ms flat; a readback wins below ~200 k `int32` elements (1 M `bool`).
+- Warp-typed values at Python scope are slow (`wp.int32` arithmetic, Warp-typed slice bounds, `wp.length`, vector arithmetic: 4-40 µs against under 1 µs in plain Python). Unwrap with `int()` / `float()` (check 26).
+- A device reduction costs 0.1-0.3 ms flat; a readback wins below ~200 k `int32` elements (1 M `bool`).
+- Small constant tables cost more passed by value as vector arguments than uploaded. The creation builders are host-bound (NumPy / Python per-op overhead).
 
 ### 13.2 Device-side access and tuning constants
 
-- `wp.tile_sum(wp.tile(x))[0]` is a block-wide reduction and a barrier (~0.13 µs at 32 lanes, ~0.35 µs at 64-128). A cooperative one-block rewrite wins only when a level's work exceeds ~0.6 µs of barriers (§14).
-- **A CG round's cost is its block count, not its mat-vec**: each block of `cg_matvec_dots` ends in a `float64` three-dot reduction, which at one tile a block made the fused launch 2.4x the bare mat-vec (245 k rows, 960 blocks). The CSR solves span blocks over powers of two of tiles to at most `CG_CSR_TARGET_BLOCKS = 512` over all columns (best at every size from 82 k to 1.3 M rows, one and three columns; rounds 0.5-0.75x where it bites); the `float32` Poisson grids keep `CG_TARGET_BLOCKS = 2048` (512 lost 1.03-1.07x there). CPU flat. Re-probe both at an upgrade or on another SM count. A settled heat diffusion's round count is reach-bound (the source's graph eccentricity plus the settle window): the Crouzeix-Raviart system of `heat_signed_distance(method="potpourri3d")` takes 480 rounds to the vertex system's 256 on `sphere_med` (adjacent edge midpoints are half an edge apart), and factoring it costs about twice the iteration, so neither Jacobi tuning nor a direct solve closes its remaining 1.9x.
-- A single-address atomic serializes the launch. Use lane partition, `wp.tile_sum` and one guarded commit per block, launched at `kernel_reduce.blocks_1d(n)`; the block count is the tuning variable. Do not convert a conditional atomic.
-- An append-only list whose order decides nothing takes `kernels/array.append_slot` (one `atomicAdd` per warp), and a max-bid onto few addresses first skips a bid below the current value: together they took `convex_hull`'s first pass over a 14 M cloud 4.38 -> 0.62 ms.
-- Spreading those (2026-11-03, CUDA new/old): `append_slot` at 25 single-counter appends was neutral to a win (`voxel_down_sample` 0.92-0.98, `intersects_location` 0.93-0.99, remesh commit counters 0.95-1.05); a read before `atomic_min` (`array.atomic_min_unless_below`) won nothing at four sites whose slots do not contend (0.98-1.00; declines at the sites), so it pays only where many threads hit one slot. A counted bitset (`store_counted_*` / `or_counted_bit`) in place of `set_bit` plus `bit_ranks` is neutral on device time and saves a launch and an allocation a site; a one-hot `(3, n)` `int32` table turned into three ranked bit rows took `uv_seam_edges` 0.68-0.81x on icospheres of 8-9 subdivisions.
-- **`float64` runs at 1/64 of the `float32` rate on this device**, so a launch of a few warps chaining `float64` tests is latency-bound: put a `float32` filter with a rigorous bound ahead (`predicates.orient3d_filtered_f32`, `orient3d_sign_from`; `convex_hull`'s flip round 2.5x). A wide `float64` integrand is throughput-bound instead: count its `float64` operations and take constant divisions out of the per-item loop onto the block's fold (`reduce.store_folded_sum`; `moments` 0.35-0.46x on dragon and lucy, 2026-11-09). A long row walked by one block is bound the same way when its entries form `float64` transcendentals: form them a table across the device first (2026-11-13, the connection Laplacian's transport `(cos, sin)`: `fan_hub` rows 2.6 -> 0.84 ms, dragon 0.76x, byte-identical).
-- Pack same-dtype quantities into one vector tile (`preserve_type=True`) for one barrier. Float sums that must reproduce use a fixed-order two-stage sum.
-- **A fused term sum's fold width follows its term's latency** (2026-11-07): `term_sum_1d` folds
-  `TILES_PER_BLOCK_1D` (16) tiles a block, so a lane walks 16 terms in turn, and a term that is a
-  chain of dependent loads (a sorted run's normals, a CSR row's ring) set the launch at 28-37 us
-  from 15 k to 983 k terms. Such a `TermSum` is built narrower (`tiles_per_block`, read by
-  `reduce.sum_of_terms` through `TermSum.blocks`): 4 took `normal_consistency_loss` 0.76-0.79x on
-  `sphere_small` and `laplacian_smoothing_loss` 0.87-0.94x at every size, CPU at par; 1 lost
-  1.16x on `dragon`. A narrowed total is its own width's tree, no longer `reduce.sum`'s bits.
-  A lane-strided fold over CSR *rows* has the same latency: `kernels/reduce.spanned_blocks_1d`
-  spans the fewest power-of-two tiles a block that leave at most 2 048 blocks (2026-11-08,
-  `heat.upper_edge_length_sum_and_count`: 0.20x device time to `bunny`, 0.50x on `dragon`, `lucy`
-  at its bandwidth floor at the standard width, where a row a lane cost 1.31x for the last
-  block's fold of 219 k partials; CPU flat, keeps `blocks_1d`). Wall-neutral on the heat calls,
-  whose host issue hides the launch. Spread to `jacobi_dominance_bound`,
-  `operator_max_row_abs_sum` and `scaled_rows_and_bound`: kernels 0.14-0.34x to `bunny`, calls
-  0.98-0.99x.
-- A tile kernel whose reduced extent is under one tile loses ~49x; `tile_chunk` reports what remains, so clamp with `reduce.block_chunk`.
-- Tuning constants are per-device: CUDA wants long strided slices, CPU short (`ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values, split the constant if the optima differ, and re-probe after an upgrade (§9).
-- **Reproducibility prices (§12.3):** the last-block commit adds 2-5 µs of device time to a launch (fence, ticket, the last block's fold, latency-bound: fold its rows with interleaved accumulators), against 3-8 µs of host for a separate fold launch. The fixed-order scan is two launches and an allocation above one 2048-element chunk (+10-15 µs, 3x CUB's device time at 5 M) and cheaper than CUB below. On a 15-100 µs call either crosses 10 %, which is why the setting can be switched off (`ordito.config`, §2.2); on solves and loops it is noise.
+- `wp.tile_sum(wp.tile(x))[0]` is a block-wide barrier (~0.13 µs at 32 lanes, ~0.35 µs at 64-128).
+- A single-address atomic serializes the launch: lane partition, `wp.tile_sum`, one guarded commit per block at `kernel_reduce.blocks_1d(n)`. Do not convert a conditional atomic.
+- A CG round's cost is its block count, not its mat-vec (`CG_CSR_TARGET_BLOCKS = 512`, `CG_TARGET_BLOCKS = 2048` for the `float32` Poisson grids); re-probe at an upgrade.
+- An append-only list whose order decides nothing takes `kernels/array.append_slot`; a read before `atomic_min` (`array.atomic_min_unless_below`) pays only where many threads hit one slot.
+- **`float64` runs at 1/64 of the `float32` rate**: put a `float32` filter with a rigorous bound ahead of a latency-bound chain (`predicates.orient3d_filtered_f32`); take constant divisions out of a wide integrand's loop (`reduce.store_folded_sum`); table a long row's `float64` transcendentals across the device first.
+- A fused term sum's fold width follows its term's latency: a dependent-load term takes a narrower `TermSum` (`tiles_per_block`), a fold over CSR rows `kernels/reduce.spanned_blocks_1d`.
+- A tile kernel whose reduced extent is under one tile loses ~49x; clamp with `reduce.block_chunk`.
+- Pack same-dtype quantities into one vector tile (`preserve_type=True`) for one barrier.
+- Tuning constants are per-device (CUDA long strided slices, CPU short: `ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values.
+- Reproducibility costs 2-15 µs a launch or scan: over 10 % of a 15-100 µs call, which is why the setting can be switched off.
 
 ---
 
 ## 14. Kernel-shape verdicts
 
-- **Block-per-item** wins when the outer dimension alone starves the device and loses when a slice dimension already fills it (§2.3); such kernels use register blocking instead (below). Models: `obscurance`, `shape_diameter`, `farthest_point_sample` as one persistent block. Any-hit tracing suits binary occlusion; a point-major layout wins only on very large clouds. A cuBQL mesh pays only when the caller builds once and traces many rays (`Trimesh.mesh_for_rays` decides). `max_tangent_sphere` answers inside a tolerance window; an "exact" variant is not the true answer on a mesh. A one-walk least tangent radius (nested spheres shrunk in place against each face) was built and refuted 2026-11-12: 35-45 % of radii moved, up to 80 %, and it cost 1.04-2.4x (`kernels/visibility.shrink_tangent_sphere`).
-- **A lone serial hash-grid walk splits across a warp in its own order** (2026-11-13,
-  `kernels/neighbors.warp_grid_chunk` / `warp_grid_point`): a walk whose every step is a dependent
-  load (a cell's bounds, its points, their flags) over ~125 cells takes 32 cells' bounds and then
-  32 candidates at once, a scan of the cell sizes placing each candidate, and ballots keep an
-  order-dependent rule (a cap on stored entries, a first hit): 0.15-0.2x a walk, `ball_pivoting`'s
-  seeding 0.43-0.55x on the bunnies. It pays where few walks run (a launch's slowest block holds
-  one); many short walks of ~27 cells side by side a lane each already overlap, and the warp
-  taking them one after another lost 1.4-1.5x.
-- **Cooperative BVH walks:** the tiled walk beats the hash grid only while concurrent queries are few (a few thousand for a ball of the cell width); the serial BVH does not. Only `ball_pivoting`'s pivot search qualified, so do not re-run the tree-wide sweep. A thread-per-query BVH launch is usually load-imbalanced, not under-pruned: histogram per-thread candidates first. Walk time varies up to 5x with loop spelling, so time a new or fused walk on the device.
-- **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`), unless each launch of a round can return first on a device idle flag: the flip loop's idle round costs ~6 µs below 60 k rows (27 µs at 1.3 M), so it replays 4 a read below `2**18` rows (`_FLIP_BATCH_ROWS`). A `wp.capture_if` round instead costs ~9 µs more an active round, more than the read it saves. A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference. A `capture_while` iteration's conditional test costs ~3 µs (2026-11-10: 7.65 / 6.04 / 4.73 µs a round of four small launches at 1 / 2 / 8 rounds a body). Several rounds a body pay only where a round past the fixpoint is already near-idle: the packed long-ring ear loop takes two (0.95-0.99x, `polyline._LONG_RING_ROUNDS_PER_BODY`); screened Poisson's CG rounds past convergence run the mat-vec and V-cycle whole, and two a body lost 1.02-1.14x.
-- **Tile solves** win for K >= 16-32 with few systems and a large matrix; ordito's dense solves (K = 5, 6) lose, so "rewrite them as tiles" is refuted.
-- **Readbacks:** a device reduction wins on CUDA for mesh-sized arrays and loses on CPU; decide on CUDA, measure both. Keep the readback for bool masks and small non-scaling buffers (the real axis is often the loop count). In device loops a per-pass readback is cheaper than an extra pass, so trading passes for fewer syncs loses; `cg(check_every=0)` is not a lever in the harness. A validation flag is read as early as its producer allows: read before the launches that follow it, the host waits on the producer alone and the rest stays asynchronous, where a check moved into the last kernel and read at the end lost 1.03-1.35x (`connected_component_labels_from_edges`, 2026-11-08).
-- **Per-device algorithm choice** only when the parallel form does asymptotically more work (pointer-doubled `polyline_downsample`, CUDA only above a size gate). `prefers_tiled_reduction` is a correctness branch, not a performance one.
-- **A CPU round loop runs as one launch** (2026-10-30 sweep): the CPU runs a launch's threads one after another, so a loop of launches (one per DP level, flip round, CG round, V-cycle node, ear-clip round, panel level) buys no parallelism there. Each round's body becomes a `@wp.func` taking its first lane, the CUDA kernels call it, and a CPU-only kernel runs every round lane by lane in launch order in one thread: bit-identical, 0.56-0.95x CPU wall (CG, Chebyshev, Cholesky panels, fill and stitch DP, ear clipping, fan flood, Poisson V-cycle, convex hull). CPU census launches 104 736 -> 38 813, readbacks 7 179 -> 3 125. Declined where the serial form lost: the Cholesky triangular solve as one launch a level (1.1-1.5x); `halfedge_mates` pairing by vertex-face rows on the CPU (5.7-8.3x the sort; CUDA takes it below `2**18` halfedges).
-- **Long rows in a row-a-thread solver step** (2026-11-05): a thread summing a hub row of 41 k
-  entries (`fan_hub`) held every Chebyshev step and CG mat-vec at ~7 ms, 85 % of a 95 s
-  `heat_geodesic`; the rounds were only 27x `sphere_med`'s. Eight interleaved accumulators in one
-  thread took it 87 -> 57 s only (one thread's load issue bounds it). Rows of
-  `kernels/linalg.CSR_LONG_ROW_ENTRIES` or more are now skipped by the thread-a-row kernels and
-  summed a block a row (`linalg._LongRows`), 88 -> 0.8 s at the same 1 005 rounds, answers within
-  summation order (7e-15 on the heat distance; the fairing passes to 1e-13 of SciPy's solve). The
-  host learns whether any row is long from one count read per listing (construction, `refresh`),
-  against launching the long-row kernels every step with no read: geomean 1.01 against 1.09-1.12
-  over 13 meshes (5 k to 870 k faces) and 81 solver benchmark rows, worst 1.13x against 1.31x
-  (ARAP, Tutte, harmonic: small solves are mostly steps). Only the CG state's matrix and its
-  Jacobi-Chebyshev polynomial take it; the squared-Laplacian polynomial, the multigrid V-cycle
-  and the one-block solve still walk a long row in a thread. **A block a row is one SM's
-  bandwidth:** 820 KB a 41 k-entry row held each long-row launch at 49-55 us (the step beside it
-  5.5 us), and four interleaved accumulators a lane only reached 37 us. A block a piece of
-  `CSR_LONG_ROW_PIECE` (1 024) entries, its partial stored and the row folded in piece order by
-  the block drawing the row's last ticket, runs at 9-11 us at every piece of 512-2 048 and 128 or
-  256 lanes: `fan_hub` `heat_geodesic` 746 -> 201 ms, `min_quad_with_fixed` 261 -> 84 ms, a
-  fairing pass 61 -> 49 ms; no-long-row meshes and the census unchanged (the partials and tickets
-  are allocated by the first listing that finds a piece). The squared-Laplacian polynomial lists
-  its two factors the same way once the state's own matrix has a long row (a long Laplacian row
-  implies one in the squared system), so nothing is listed on a mesh with none: a disk fan of hub
-  valence 1 200, `harmonic(k=2)`, steps 123 -> 4 us; with the biharmonic product's 1.44 M-triplet
-  hub row spread over threads (124 ms a thread; `kernels/energies.sandwich_triplets`) the call
-  985 -> 68 ms, byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
-  The pieces' last block folds with every lane (one lane's fold waited on each partial): 9.5 ->
-  8.8 us a launch, the floor being the fence-and-ticket chain of a small launch, 1.7x the 5.2 us
-  step beside it. **A row-a-thread kernel takes a long row by deferring it to its block:** launch
-  tiled at 256 rows a block (a row a lane, a thread-a-row launch's occupancy; the CPU's one lane
-  walks them), a lane skipping a `csr_row_long` row, then one `block_sum` of the skipped count,
-  and only a block that holds one walks it with every lane, summing in a fixed tree and placing
-  compacted entries by an exclusive tile scan or a search of the sorted output. No list, launch,
-  allocation or readback: ordinary meshes 0.99-1.02x (fairing's 0.86 ms pass on `sphere_med`
-  1.02-1.06x). Taken by the heat and fairing system rows, the edge-length mean, the pooled
-  refresh, the backward error, `cg_initial`, the Jacobi diagonal and bound, and the free-free
-  extraction: `fan_hub` `heat_geodesic` 193 -> 117-121 ms, `min_quad_with_fixed` 82 -> 41 ms, a
-  fairing pass 44 -> 4.2 ms (`reference/component-status.md`, "Hub rows outside the solver steps").
-  The multigrid V-cycle takes long rows at every level by pieces and its setup by deferral, and a
-  long row stays out of the prolongator's smoothing: `fan_hub`'s explicit multigrid solve went
-  from 1 000 unconverged rounds to 18, 266 -> 31 ms ("Multigrid on a hub").
-  A sparse Cholesky ordering leaves long rows out of the nested dissection for a root eliminated
-  last ("Cholesky ordering with dense rows").
-  **A latency-bound thread-a-row pass with no readback to carry a flag takes its long rows as a
-  warp** (2026-11-09, `kernels/smoothing.warp_long_operator_row`): one ballot names the warp's
-  long rows, short rows stay their thread's (bit-identical, the CPU's ballot empty) and the warp
-  walks each long one. The explicit smoothing passes: `fan_hub` 7.0 -> 0.85 ms a pass (calls
-  0.20-0.34x), ordinary meshes at par on small meshes and 1.01-1.03x on `dragon`, whose passes
-  are device-bound (the ballot); the block deferral cost them 1.25x device time a pass (a barrier
-  in a 5 us launch) for 0.15 ms on the hub. Four interleaved sums
-  a lane lost 1.34x on the hub. The mesh operator builders take the same warp form (2026-11-10,
-  `kernels/laplacian`, through `reduce.warp_walk` / `warp_walk_total`, a `float64` shuffle
-  broadcast of the lanes' tree sum): `fan_hub` builds 0.10-0.29x (`face_weighted_laplacian` 33 ->
-  3.2 ms, `cotmatrix` 23 -> 4.5 ms, `connection_laplacian` 88 -> 16 ms), ordinary meshes
-  byte-identical at par, CPU byte-identical. A heavy row body called through a `@wp.func` instead
-  of written in the kernel cost 1.25-1.4x device time at the same register count
-  (`connection_laplacian_rows`), so that one keeps its short row inline.
-- **A one-block pass waits on its slowest warp, which a long row's lane sets only past a gate**
-  (2026-11-13, `kernels/algorithms/conjugate_gradient.ONE_BLOCK_WARP_ROWS_FROM`): a pass is ~5 000
-  cycles of latency a lane, and a 78-entry factor row held its warp to ~9 800 on a hub patch. The
-  warp walks rows of 24 or more only in a block holding one of 48 (one block reduction a launch,
-  a `float32` shuffle sum): the solve 0.80x, calls 0.92x, below the gate bit-identical and at
-  par. A 35-entry row was off the critical path and walking it cost 1.01-1.06x; ungated, the
-  ballot cost 1.07x where no row is long. Rows that crowd a warp (an `M^T M` hub's 2-ring) stay
-  a lane each: the warp walking them in turn lost 1.22x.
-- **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
-- **The factored triangular solve does not run in one block on CUDA** (2026-11-20,
-  `kernels/cholesky.solve_levels_serial`'s notes): the top of a nested dissection is no chain of
-  narrow levels (every level, the root's dense front included, 5 000-15 000 entries on the patch
-  meshes), so one block runs at one SM's `float64` rate: 5-7x the level launches on 2.5 k-20 k
-  rows, 50x at 82 k. Nor as one launch of resident blocks behind a device-wide spin barrier:
-  1.02-1.30x at every grid of 8-170 blocks, since a replayed graph's dependent-launch gap (~0.6 us)
-  is no larger than the barrier (~0.7-0.9 us); the launch gaps are ~18 of ~98 us a solve on
-  `saddle_small`, the rest each phase's latency. The CPU runs both sweeps as one serial launch
-  (solves 0.72-0.91x, calls 0.77-0.96x, bit-identical).
-- **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
-  next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
-  `sphere_med` / `bunny`: a replayed node costs ~1 us, the four-vector gather ~2 us; notes in
-  `kernels/algorithms/conjugate_gradient.py`); a single-block BFS drain, a one-block hole-fill DP
-  and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for
-  multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
-- **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
-- **Blocked wavefront:** a 2-D DP with local directional dependencies and small per-step work wins as one block per tile and one launch per tile-diagonal, with `wp.tile_sum` as the barrier. It loses where levels are already wide (the fill DP). Test it above 32 lanes and pin it byte for byte to the simple schedule.
-- **Serial-order sweeps as a dataflow wavefront:** an in-place sweep in index order (Gauss-Seidel, `filter_laplacian(method="pyvista")`) runs on CUDA as one launch a wave over all vertices: a vertex with `c` sweeps done runs the next once its lower-index ring neighbours have `c + 1` and its higher-index ones exactly `c`. Two neighbours are never both ready, so positions update in place race-free with only the counts ping-ponged, and the result equals the serial loop bit for bit. The wave count is the numbering's critical path: 13-16 a sweep scrambled; a scan numbering's longest increasing neighbour path plus about 17 a sweep (bunny 255 / 977 waves at 1 / 10 sweeps, dragon 1 132 / 1 301). 10 sweeps, new/VTK: icosphere(6) 1.4 / 54 ms, bunny 8.3 / 46, dragon 21 / 751; one GPU thread would be seconds. Waves go in batches of `16 x sweeps` (at least 128) a readback, so a small mesh pays the batch (sphere_small 1.35 vs VTK 1.56 ms, 160 launches for ~60 waves); graph-capturing the batch lost (2026-10-31: recording each call, then replaying past the first read, 1.00-1.01x on scrambled meshes, which one batch ends, and 1.04-1.49x on bunny / dragon, whose waves are device-bound at ~10 µs), and so does a smaller first batch (16 a sweep + 8: 0.40-0.60x on scrambled meshes at 1-3 sweeps but 1.06-1.18x on scan meshes, which then pay a second read). **The schedule depends on the stencil and the sweep count alone**, so the volume-constrained path (one sweep a call, `iterations` calls) records the first sweep's exact wave count (`gauss_seidel_wave_counted`: the counts' trailing slot counts waves, the vertex taking the last finished slot stores it) and issues exactly that many waves with no readback afterwards: 10 sweeps 0.26-0.28x on scrambled icospheres (8 -> 2.1 ms), 0.93-0.95x on bunny / dragon, bit-identical. The bookkeeping lives in its own kernel because inside the plain wave it cost 5-9 % device time on dragon even unused, and a single sweep does not record (the counted waves cost it 1.07-1.14x). The CPU device runs the serial loop (waves do `waves x n` work).
-- **Register-blocking outer items:** giving each thread W outer items from registers wins for `(item, slice)` reductions bound by streaming the cloud once per item. Choose W per launch so the grid keeps about `1 << 17` threads; a fixed W loses on small inputs. The
-  slice count starves the other way when the outer items are few (a refinement round's 512 frames,
-  a handful of winding-number queries or escaped rays): `RegisterBlockedTable.slice_count` adds
-  slices on CUDA toward a per-kernel thread target, none shorter than a floor (2026-11-06; the CPU
-  keeps the plain slice). `oriented_bounding_box` takes `1 << 17` threads and 64 points (0.72x on
-  `sphere_small`); the tiled winding number and the support arg-max take `1 << 15` and 32
-  (`winding_number` with 1-16 queries 0.31-0.72x, flat from 100; the arg-max kernel 0.67-0.7x, a
-  share `max_tangent_sphere` does not show). A target past a kernel's optimum re-slices a grid
-  that was already full: `1 << 17` cost the arg-max 1.2-2x over 437 k points at eight rays and
-  the winding number 1.5x on bunny at 64 queries.
-- **A `float64` rank-k update register-blocks only on wide launches, in narrow blocks**
-  (2026-11-09, `kernels/cholesky.update_panel_tiles`): a 4 x 4 tile a thread (four times the
-  multiply-adds a load) over the lower triangle's tiles alone took the multifrontal update
-  0.40-0.66x on wide launches. `float64` issue is per SM, so sixteen sums a thread pile a narrow
-  launch's work onto few SMs: 32-lane blocks cut that floor from 3.6-3.9x to 1.8-2.0x a thread an
-  entry's time and won at the wide end too (in a module of its own, §12.4). Choose per launch from
-  both widths, fitted on every launch timed both ways, never on whole calls in one process (an
-  in-process threshold sweep read 0.92x where the interleaved A/B read par), and never beside
-  another GPU job (one such run "showed" block width did not matter). A 2 x 2 form as a third
-  choice bought about 1 % of the factor.
-- **Gather-form fusion** (recomputing a neighbour's per-face value from positions instead of reading a table) wins below ~100 k faces and on grid-ordered meshes but loses 1.7-2.1x on scrambled ~1 M-face meshes (`cotmatrix`, `filter_normals`). Price it on a scrambled large mesh.
-- **Independent per-item iterations collapse into one in-thread loop:** a per-round launch plus convergence readback over items that converge independently (`max_tangent_sphere`) became one kernel, 1.1-1.2x device time and no per-round sync. Keep that loop out of a kernel holding another long walk (1.1-1.6x, registers).
-- **A walk with costly candidates leaves its traversal loop with one candidate a lane**
-  (2026-11-13, `kernels/proximity.nearest_offset_within`): a warp reconverges at the loop's exit
-  and evaluates its lanes' `float64` candidates together, as Warp's `bvh_query_next` iterator does.
-  Evaluated inside the traversal step, every candidate ran under a partial mask: the same walk
-  1.6-2.1x. Inside that shape, testing both children at the parent (their loads issued together,
-  a miss never popped) took Warp's sphere walk to 0.82-0.87x, and shrinking the ball to each
-  nearer candidate to 0.25-0.76x where the starting ball is loose, bit for bit in Warp's visit
-  order. A block-shared stack in place of a local vector one, a child carried in registers and
-  the nearer child first did not pay.
-- **Occupancy for pointer-chasing tree walks:** a thread-per-query BVH descent that chases nodes through L1 runs faster with fewer warps resident. The `k = 1` point-tree descent (40 registers) at 1024-thread blocks was 0.75-0.87x its 256-wide launch from about two blocks per SM, and 1.04-1.67x below one (too few blocks), so its width is gated on the query count (`kernels/neighbors.DESCENT_WIDE_BLOCK_DIM`). Fewer registers do not make a walk faster by themselves: at 256 the same descent lost 1.1-1.2x to Warp's 53-register mesh query on the same tree, and a line-for-line port of that query lost the same. Check a new walk at two widths before reading its per-node code.
-- **A latency-bound row loads branch-free:** a load behind a divergent branch waits for the one
-  before it, so a one-thread dependent chain (a Gauss-Seidel row's 27 window values and screening
-  records) issues every load at a clamped address and selects the value after (`wp.where`):
-  0.65-0.86x wave device time (`kernels/algorithms/poisson_octree.octree_row`). Price a
-  latency-bound launch against a do-nothing kernel at the same dims first: the octree waves cost
-  5-9 us against a 0.6 us floor, yet the call was launch-bound (no-op waves 0.96x), so the
-  shorter row paid only with the waves replayed from a device counter. A thread walking a
-  neighbour row (2026-11-11, `kernels/sample.neighbour_chunk`: four entries at clamped
-  addresses a step) took the Poisson-disk elimination's maxima pass 0.29-0.94x and its deletions
-  0.50-0.73x from 10 k to 1 M rows of ~19; eight a step no faster. A walk that stops at its first
-  hit keeps the entry-a-step form on the CPU (chunked 1.18x there). Shared as
-  `kernels/array.row_chunk_slots` / `row_chunk_entries` and taken by `linalg.csr_row_dot` (every
-  CG round and Chebyshev step: `solve_spd` 0.91x on dragon, `min_quad_with_fixed` 0.90-0.97x on
-  bunny and dragon), the umbrella stencil and the Gauss-Seidel wave's readiness test (dragon
-  0.89-0.90x); small meshes at par, the CPU an entry a step (chunked 1.01-1.06x there). It loses
-  where the chunk adds unconditional gathers to a wide bandwidth-bound launch (the multigrid MIS
-  walk: 0.80x bunny, 1.07x dragon's fine level, calls par; declined at `mis_ball_max`).
-  On a mesh operator's ~6-entry rows it pays only past L2 (2026-11-11,
-  `kernels/laplacian.operator_row`, every explicit and implicit smoothing pass, from `2**18`
-  rows): lucy 0.91-0.96x, dragon 0.95-0.98x; ungated, `sphere_small` / `sphere_med` passes
-  1.04-1.19x device time.
-  The relax-keeping-volume rings paid ungated (dragon 0.77x, `ring_push_forces` 0.62x device), and
-  on the CPU a folded `device_is_cpu` branch in a one-thread serial kernel still cost 1.03-1.13x:
-  bind the CPU's plain walk per kernel (a `wp.Function` argument), not behind that branch.
-- **An order statistic is a radix select, not a sort, on CUDA** (2026-11-11,
-  `kernels/sample.floor_digit`): digit passes of 11, 11 and 10 bits of the ordered keys, each a
-  histogram (`scatter.peer_counted_add`: the coarse first digit crowds a few bins) whose last
-  block finds the digit, 3 x 5.4 us against the ~50 us radix sort of a 10 k pool (four onesweep
-  passes); at par from 1 M keys. Two 16-bit passes lose: the last block reading 65 536 bins is one
-  SM's bandwidth (~33 us coalesced). The CPU's radix sort beats the passes (1.05-1.08x a call).
-  Generic in `kernels/reduce.RADIX_SELECT_PASS` (six dtypes) for `reduce.quantile` / `median`,
-  gated by size: 32-bit keys from 8 192 to 2^18 (0.79-0.93x; the sort wins at 4 096, CUB's
-  one-tile case, and from 2 M, where the top digits' hot bins serialize), `int64` 4 096 to 2^18,
-  `float64` from 4 096 at every size (0.52-0.83x).
-- **A crowded count histogram pools a warp's peers** (`reduce.peer_counted_add`, 2026-11-11):
-  component sizes and cluster counts, where consecutive items share a label, 0.05-0.12x
-  (`repair`'s label flattening and count 374 -> 21 us on dragon, `points`' component sizes 185 ->
-  8 us, `cholesky`'s 15 -> 1.8 us on bunny; now `connected_components.ecl_flatten`'s counts and
-  `scatter.count_occurrences`), cluster members 0.5x; CPU at par.
-- **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
-- **A per-point `float64` neighbourhood chain runs a warp a point, a neighbour a lane** (2026-11-22,
-  `kernels/points.local_triangulation_stars_warp`): a thread a point held its row in zero-filled
-  local rows and ran every slot's `float64` projection, `atan2` and drop test in turn; lanes hold
-  a slot each in registers, rank by counting smaller keys, and replay an in-order drop loop
-  exactly (the first drop past a cursor by ballot, decisions cached by their neighbours). It won
-  at every size, 0.30x on 2 562 points to 0.47x on 14 M, because every lane's `float64` work is
-  useful; the per-point serial part (an `svd3`) must stay a thread a point in a pass of its own,
-  since masked lanes still issue it (1.84x on 2 562 points).
-- **An exact maximum over a box query prunes by a bound every candidate attains** (2026-11-22,
-  `kernels/polyline.ec_tree_ear_cost`): Manifold's ear cost is the largest intrusion of the
-  vertices in the ear's box, and on a plane cut's nearly cocircular cap the boxes held ~480 live
-  vertices an ear (no box index finds fewer). Every vertex adds at least `-eps - scale d^2`, and
-  one certainly beyond the open side adds exactly that, so a kd-tree walked nearest first skips
-  any node beyond the side and farther than the nearest contributor, and evaluates the rest
-  through the same `ec_intrusion`: ~4 evaluations an ear, the cost bit for bit. A slab of at
-  most 128 vertices is still scanned (one probe decides), since the walk's descent costs more on
-  small ears. Look for a bound every candidate meets before calling such a query inherent.
-- **A one-thread serial walk of dependent loads on CUDA data runs on the CPU device** (2026-11-21,
-  `boolean`: the topology collapses and swaps, the coplanar flood past its rounds, the ear clipping
-  and halfedge pairing of a polygon of 256 or more sides): one GPU thread waits a load's latency
-  each step. Collapses 279 -> 10 ms on an 82 k-face sphere, a plane cut's one-polygon cap 433 +
-  136 -> 13 + 6 ms; `remesh.simplify` there 0.81 -> 0.023 s, `split_by_plane` 61x -> 1.0x Manifold.
-  Move only used prefixes: whole capacity-sized halfedge arrays cost a `difference` 90 of 105 ms.
-  Many short independent walks stay on the device (the flood's rounds, the per-face passes).
-- **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
-- **A counted-then-written walk with costly candidates decides each candidate once, a thread a
-  candidate** (2026-11-21, `kernels/boolean.decide_edge_candidates`,
-  `kernels/ray.decide_segment_candidates`): where every candidate a walk meets costs a chain of
-  exact `float64` predicates, a thread a query deciding them in turn, once to count and again to
-  write, waits on its longest chain (a 5 k-face Boolean's crossings: 241 us a launch for 3 168
-  candidates, the walk alone 24 us). The walks only count and write the candidates, one launch
-  decides them, and the compaction keeps candidate order: union 0.81-0.89x, `segment_hits`
-  0.22-0.48x; staging (below) does not apply, the decision being the cost, not the walk.
-- **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
-  walk's points and again to write them (tracers, descents, the flip traces) repeats the whole
-  walk. The counting pass stages the points in a pool of 16-point chunks linked a walk at a time
-  (`kernels/array.stage_point`), the writing pass copies them (`copy_staged`) and walks again only
-  a walk the pool ran out on: the writing kernel 2.1 -> 0.09 ms at 4 096 descents, `descend_field`
-  0.57-0.66x. Size the pool for the total, not each walk's bound (the walks share it), and keep it
-  in plain arrays: a `@wp.struct` of four arrays cost a host-bound call its device saving. Few
-  walks also take a warp each (`_launch.walk_lanes`; 0.63x at 4 096 descents), which pays where
-  walks sharing a warp diverge, and not for a few long walks already alone in theirs (§2.3 names
-  the helpers). Spread 2026-11-08: `repair`'s tunnel root search 0.21-0.29x kernel, `boundary`'s
-  pinch split 0.6-0.7x; declined where the walk is no share of the call (homology's generator
-  loops about 1 %, cholesky's structure paths under 0.3 %, holes' traceback one loop). A descent
-  also reads each face's gradient and float64 slope from a per-face pass on CUDA instead of
-  taking the length every step (counting walk 2.12 -> 1.36 ms at 4 096 paths), and its normal
-  (1.33 -> 0.96 ms), forming the gradient itself so no `float64` gradient table is stored.
-- **A relaxation to a fixpoint takes block rounds only over spatial patches** (2026-11-08): a
-  block re-relaxing its own nodes a few rounds a pass (`wp.tile_sum` the barrier) carries a value
-  across the block only where the block is a patch. Over mesh indices it lost (the icosphere
-  numbers its midpoints by edge: 1.3-2.9x); over a Hilbert order (`_common.hilbert_point_order`)
-  the potpourri3d shortest-edge tree took 0.34-0.65x from `sphere_med` to `dragon` at 8 rounds
-  (4 best small, 16 on `dragon`), byte-identical, since any schedule reaches the same least sums.
-- **A thread a row writing its segment in turn** (2026-11-07): a warp's stores sit a segment
-  apart, which costs nothing while the output fits in L2 and is the whole kernel past it:
-  `k_harmonic`'s sandwich (49 triplets a row) took 0.068 ms on `sphere_med` and 1.49 ms on
-  `sphere_large` (4x the rows, 22x the time). A thread a slot, its row searched in the scanned
-  segment bounds (`kernels/array.outer_product_slot`), 0.16 ms; a pair-major slot layout
-  (`(6 p + q) n_faces + f`) took the curved Hessian's 36-key face pass 1.48 -> 0.34 ms on
-  `dragon`. The CPU keeps the row walk, its threads running in turn: a search a slot cost it
-  1.45-1.56x, a slot's `//` and `%` 1.03-1.05x.
-- **A row gather in a triplet sort's order loses to the regrouped sum** (2026-11-07, §2.2):
-  `hessian_energy`'s thread a row adding ~250 searched contributions became the stacked Hessian's
-  3x3 block per one-ring entry and a thread an entry merging two rings (0.29-0.56x);
-  `curved_hessian_energy`'s became each face's 6x6 block written into the sorted keys' spent lower
-  half and an entry summing its run (0.26-0.46x, no extra memory, no long-row special case).
-  Look for the factorization the contributions share before tuning a row gather.
-- **A long linked walk in one thread ranks by rulers in a block** (2026-11-08,
-  `kernels/halfedge.rank_long_rings`): a hub's ring walked by one thread is a chain of dependent
-  loads as long as the ring (`fan_hub` 150x a uniform mesh). Rulers chosen by a hash of the node
-  (testable with no table), one segment walk a ruler, pointer jumping over the rulers and a second
-  walk writing give the serial order at 0.05x. More rulers pay only with an O(1) next-ruler
-  lookup (an open-addressing index in free slots); the walk stays in its own kernel so the plain
-  walk keeps its registers, and the ranking launches off a count the call reads back anyway.
-- **A ring kernel takes long rings from the list `vertex_one_rings` read back** (2026-11-10,
-  `tangent_space.vertex_tangent_frames`): the CUDA walk's long-ring list stays with the rings
-  (`_common.note_long_rings`, weakly keyed by their offsets), so a frame kernel whose inlined block
-  path cost ordinary meshes 1.11-1.23x instead takes a `wp.static` skip variant plus a block-a-ring
-  kernel (`vertex_tangent_frames_long`, 512 lanes, own module) only when the list is nonempty:
-  `fan_hub` 64 -> 0.57 ms, hub `basis_x` error 6.6e-4 -> 5e-7; ordinary meshes run the unchanged
-  kernel (byte-identical, 0.97-1.00x). Rings from a call that read nothing back keep the
-  one-thread walk.
-- **A one-block round loop costs its candidates, not its ring** (2026-11-10, `ear_clip_tail`): a
-  block re-grading every active corner each round spends its time on lane-serial dependent loads
-  (~50 us a round); candidate lists only a clip's neighbours update, and all queued walks run in
-  one shared pass instead of a barrier each, took the ear tail to ~14 us a round (65 536-point
-  star 0.21x, unit circles 0.17-0.40x, byte-identical).
-- **A CPU skip in front of a few atomics commits a zero instead** (2026-11-09): the CPU runs a
-  launch's threads in turn, so a patternless branch is a mispredict a thread.
-  `average_from_edges_onto_vertices` skipped half its halfedges at random (the negatively
-  oriented copies); a `device_is_cpu` arm that selects a zero value and count and commits anyway
-  took its CPU kernel 0.51x on dragon, bit-identical (an added `+0.0` changes no sum; select, never
-  multiply by a 0/1 weight, which turns an `inf` into `nan`). It pays only when the skip is
-  frequent and patternless and the skipped body is a handful of atomics. A scan of every kernel
-  with a skip before a scatter found no other such site: the rest skip rarely (guards), in a
-  pattern (`scatter_scale_attribute`'s alternating run starts) or before work far dearer than a
-  mispredict (`octree_density_splat`'s 27-term splat), where a zero commit adds the work back.
-- **Tree searches take scattered queries in Hilbert order** (2026-11-09, `_common.search_order`,
-  read through `kernels/array.ordered_item`: thread `t` answers query `order[t]` and writes its
-  row, so answers are unchanged): the `k = 1` point descent, `closest_point_on_mesh` and
-  `metrics`' pair forms. A warp of scattered queries walks a different subtree in every lane.
-  CUDA calls new/old: scrambled clouds of 437 k-4 M points 0.34-0.86x, and from 1 M points a
-  scan's own order too (0.63-0.88x: the tree outgrows L2); a coherent order between 262 k and 1 M
-  pays only the sampled test (one block, 2 048 samples, a readback: 1.03-1.05x). Nothing pays
-  below 2^18 (a scrambled 164 k cloud 1.00x, coherent 1.08-1.19x). CPU scrambled 0.48-0.78x,
-  coherent at par. Far-off coherent queries would also gain (lucy prefix 0.49x on the kernel) but
-  the test cannot see query depth. `query_nearest`'s cell walks, ball searches and deferred
-  finishes take it too (2026-11-10, `_common.bounds_and_search_order`: the test's count rides on
-  the cloud box's readback, so the choice adds a launch and no read), from 2^16 queries when the
-  test finds a scrambled order and always from 2^18 on CUDA: scrambled 0.67-0.78x at 64 k,
-  0.17-0.57x from 128 k to 655 k, 0.08-0.24x on lucy; a scan's own order 0.73-0.90x from 2^18;
-  coherent 64-256 k 1.00-1.04x (the test); CPU scrambled 0.74-0.95x, coherent at par; answers
-  bit-identical. Both ICP loops' fused correspondence searches take one order a call, since a
-  rigid map keeps a patch a patch every round (2026-11-11, `registration._icp_order`, ten rounds,
-  answers bit-identical): scrambled 2^18 sources onto a cloud 0.36-0.55x, 2^20 sources 0.21-0.56x
-  onto a cloud and 0.30-0.64x onto a mesh, lucy's scan prefix 0.66-0.91x; a mesh target loses at
-  the sampled test's sizes (0.95-1.71x from 2^16 to 2^18 on dragon and lucy) and takes the order
-  from the always-gate only, and the CPU orders no cloud target small enough to sit in cache
-  (2 562 points 1.07-1.13x, 40 962 0.91-0.94x).
-- **Rays take a Hilbert order of their origins only when they leave the surface** (2026-11-11,
-  CUDA, sort included, answers identical): from 2**18 rays cast along jittered normals, 0.73-0.87x
-  (0.46-0.59x at 2**20) on `sphere_med` to `lucy`; rays fired from a shell around the mesh lose at
-  every size (1.04-1.18x at 2**20; the ordered cast at par, the 0.11-0.2 ms sort the loss), and
-  below 2**18 every shape loses (1.15-1.65x). CPU likewise: shell rays 1.12-1.29x, normals
-  0.57-0.96x. Declined in `ray`, whose callers' ray shape is unknown (`kernels/ray.first_hit`).
-  Taken where the queries sit on the surface by construction, through `_common.search_order`'s
-  own gates (`visibility.thickness(method="ray")` and the tangent spheres' seed and shrink,
-  2026-11-11, answers identical): where the gate orders, CUDA ray 0.54-0.80x, inward spheres
-  0.59-0.98x, reach spheres 0.95-0.99x on dragon and lucy; CPU dragon 2**18 0.76x / 0.79x; below
-  it 0.98-1.03x. The bundle kernels (a block a point) were not tried.
-- **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x. The owner pass deals a face's raster window to `S` lanes on CUDA (2026-11-11,
-  `kernels/texture.rasterize_owner_sliced`), `S` about two estimated window widths,
-  `2 * resolution / sqrt(n_faces)`, as a power of two up to 64: few faces on a large image starve
-  a thread a face (`sphere_small` at 2048: 5 120 threads of ~3 500 pixels). Owner pass 528 -> 35 us
-  there, bunny 485 -> 109 us at 4096, dragon 0.66x at 4096; whole calls 0.21x / 0.61x at 2048.
-  The one-thread form stays its own kernel (the sliced walk inside it cost it 1.1-1.2x), and a
-  read before the `atomic_min` lost 1.1-1.8x (the bare atomic is not waited on). The rasterizer
-  kernels build unfused (§12.3), so the two owner passes and both devices give the same images.
-- **A sort that only groups rows under a small key is a ring compare** (2026-11-11,
-  `repair._exact_value_classes`): rows sharing a primary key (a vertex's corners) take atomic
-  slots in a CSR ring (`kernels/repair.count_primary_slots`, `place_ring_rows`), and each row finds
-  its class by comparing values within its ring: lowest equal row, then the count of distinct
-  smaller values. Slot order decides nothing, so the numbering is the sorted runs' bit for bit,
-  reproducible with the setting off. `split_vertices_by_corner_values` (two radix sorts of the
-  corners) CUDA 0.29x on `lucy` (34.4 -> 10.0 ms, peak 3.6 -> 1.4 GiB), 0.33x `dragon`, 0.51-0.57x
-  small; CPU 0.56-0.80x. A ring past `VALUE_RING_LONG` (64) rows is quadratic in a thread, so a
-  hub sends the call to the sort: CUDA learns it with the class total (`fan_hub` 1.37x, +0.11 ms),
-  the CPU reads it after the count launch (par). `resolve_duplicated_faces` rings each face at its
-  smallest corner and compares the other two (`kernels/repair.face_ring_key`); the cancelling
-  rule's first face decides its group and a second pass ranks kept groups within the ring for the
-  sorted order. CUDA, every method: 0.75-0.82x `sphere_small`, 0.64-0.74x `sphere_med`, 0.48-0.61x
-  `dragon`, 0.62-0.65x `lucy`, byte-identical (a non-orientable group re-runs the sort, which
-  raises). The CPU keeps its sort: the ring walks cost it 1.1-1.5x (first occurrence) and 2.2-2.9x
-  (cancelling), its radix sort of a 48-bit key being cheap there.
-- **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read. Warp scans a `K`-vector as `K` CUB scans through a strided iterator (2026-11-09: a 5-vector 46-59 µs at 16 k-871 k entries against 9 µs for `int32`, 5.8 ms at 28 M against 0.15), so `_launch.array_scan` sends `int32` vectors of 3 or more components to a tile scan (`kernels/array.int_vector_scan_kernels`) below `2**19` entries and from 56 MiB, where it wins (0.3-0.76x; between, the array sits in L2 and Warp's passes win, 0.9-1.9x); two components keep Warp's scan, cheaper at every size. The clip's `ClipRanks` scan made it 0.75-0.81x on the bunnies and lucy. A component-strided tile scan (each component's row through `tile_load` of a strided view) lost to the lane runs at every size, and a write-back through the shared tile behind a bare `__syncthreads` hung.
-- **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
-- **Readback cadence in idempotent loops:** rounds past a fixpoint are no-ops (but not free on the device: see CUDA graph capture), so read the stop count every few rounds: the MIS undecided count after round 7 and then every 2 (multigrid setup readbacks halved), flip rounds `min(4, (budget - flips_since_build) // (n_faces / 2) + 1)` per read behind the idle gate (`delaunay_triangulation` 39 to 21). A deterministic composite skips a stage while the mesh is still that idempotent stage's own last output (`make_solid`).
-- **A count of distinct edges is an edge set homed at the lower vertex, not a sort** (2026-11-09,
-  `grouping.edge_key_slot`): a zeroed `uint64` open-addressing table, each key homed among its
-  lower vertex's slots (faces in index order stay in cache), then its higher vertex's (a hub's
-  spokes land beside their rim vertices: `fan_hub` 1.06 -> 0.87x), then a hashed home, counting
-  first arrivals in one launch. `euler_characteristic` 0.25-0.46x the radix sort, `unique_edge_count`
-  0.22-0.40x, `is_edge_manifold` 0.21-0.70x (its share counts ride in two top bits of the stored
-  key: a third arrival is the violation, no count table, no slot scan); lucy peaks 1.9 / 3.7 GB ->
-  0.86 GB. A Fibonacci home ties the sort once the table leaves L2 (lucy), so with no vertex count
-  a large mesh reads one back first (`_common.edge_key_vertex_bound`, 2**19 faces CUDA, 2**14 CPU).
-  Lanes take few faces (`spanned_blocks_1d`): three dependent probe chains a face cost 75 us at the
-  standard fold width on 5 k faces. A probe budget of one table length, partly spent in the local
-  runs, dropped an edge on a nearly full tiny table: the last run must have the whole table.
-- **Bellman-Ford over a CSR with duplicate entries** gives the same distances but pays per stored entry: 0.5x at 328 k faces (`geodesic_path` completion graph from vertex-face rows).
-- **Fixed-order group sums (§2.2) have three measured forms.** A stable sort by group plus one thread per run serializes on huge groups: 37x the atomic splat on a coarse Poisson level, 40x on coarse `cluster_decimate` cells. Split long runs instead: fixed-size chunks summed in two passes (`screened_poisson`'s splat), or runs above a length cap handed to a block-strided sum (`cluster_decimate`, cap 128). Where a group sum feeds only a threshold or sign, an exact `int64` fixed-point sum (one pass for each group's largest exponent, one integer-atomic pass) needs no sort and stays fully parallel; it beat the single-address float32 atomics it replaced (`make_volume(multibody=True)` 0.50x wall at 1.3 M faces).
-- **The shared exact group sum (`scatter_add` + `_launch.group_sums`) against each per-site form, CUDA, setting on (new/old):** it wins on few hot groups (one group: 0.03-0.05x the float atomic; repair's component sums 0.11-0.26x large) and loses on many groups (1.8-2.6x the off-mode atomic at 10 M terms). It loses to the exact `float32` into `float64` atomics (1.5-4.3x; a second pass or word cannot beat one pass), to `arap`'s amortized sorted run walk on scrambled large meshes (1.6-2.0x; 0.74-0.95x ordered), to the Poisson chunked splat at res 256 (1.3-1.4x; 0.56x small) and to the cluster heavy-run sum at 2 M vertices (1.2-1.8x; 0.52x at 100 k). Those sites keep their forms; each carries the decline. What paid inside it: integer scaling of the mantissa (2x over a `float64` multiply), skipping a zero word (one atomic per `float32` term), warp-uniform pre-aggregation (30-40x on one hot slot), per-group fields (1.9x on vec4 lattices); `__match_any_sync` aggregation lost 1.5x there (a per-vertex float scatter takes it: next item). The off-mode branch takes the same warp-uniform pre-sum (`kernels/reduce.warp_lanes_sum`, in `float64`, plain atomic otherwise and always on CPU, so CPU bits are unchanged), off new/old: one group of 10 M terms 0.04x, `remove_small_components` / `make_volume(multibody=True)` 0.22-0.27x on 1 and 64 components at 5-21 M faces, `segment_sum` over 1 000 segments 0.02x; at par (0.96-1.02x) with every face its own component, on 1 M random groups and at 20 k items. A `float32` lane sum for `float32` values measured 0.94-1.00x, not worth a second native. On the CPU device the off path cost 1.15-1.6x a plain atomic per term, and not for the dead pre-sum test (1.02x): the inlined on-mode terms made a kernel whose work is the scatter too large for the CPU compiler to inline into its per-thread loop (a call per thread, varying with the module), and every extra per-term load costs 1.1-1.2x in that latency-bound loop. `scatter_sum` / `segment_sum` now take `kernels/scatter.sole_scatter_add*`, whose on-mode terms run out of line on the CPU only (`kernels/reduce.device_is_cpu` folds, so CUDA inlines them), and every off commit skips the negative-index wrap (`kernels/scatter.atomic_add_at`, the load the mode test adds): 1.03-1.05x a plain atomic, `scatter_sum` off 0.75-0.83x its old CPU time at 10 M terms, CUDA 0.98-1.02x off and on, CPU on and repair's sums at par, bits unchanged. Not for a kernel with work of its own, which is never inlined into that loop: there six out-of-line calls a face cost the on mode 1.26-1.40x (spilled registers). `robust_laplacian`'s rounding rows are now one body over both modes (`kernels/laplacian.intrinsic_rounding_rows`), its mode test hoisted to once a face and its on terms one out-of-line call a face on the CPU (per-term inlined terms ran the CPU off mode 1.07-1.08x the separate off kernel it replaced; per-term calls the on mode 1.26-1.40x): new/old off CPU 0.87x, CUDA host 0.82x at 5 k faces and device 0.89-1.00x; on CPU 0.95-0.98x, CUDA 1.00x. The consumer-fused finish (`read_group_sum`) cut repair's finish-plus-flip device time 0.124 to 0.053 ms at 5.2 M faces; a `@wp.struct` argument now packs in `_launch._Block` (7.8 to 6.5 µs a launch, against 6.0 with no struct).
-- **The off-mode group sum pools peers only on hot keys** (2026-11-06, device time
-  peers/uniform, `kernels/scatter.arrival_order_lanes`): pooling every set of a warp's lanes that
-  share a group (`__match_any_sync`) pays where they share an address hot across the launch (8
-  random groups of 10 M terms 0.20x, every other term into one group 0.08-0.12x, `fan_hub`
-  corners 0.23x and rounding rows 0.15x, dragon's component and region areas 0.86-0.87x) and costs
-  where they share a cold one (sorted runs of 4 terms 2.1x, `segment_sum` 1.09-1.39x, dragon's
-  corners into vertices 1.38x, its rounding rows 1.11x, the Poisson octree splats 1.10-1.74x);
-  random keys over many groups at par. Mesh size does not predict it: 1 M and 10 M terms agree,
-  dragon and lucy part by face order. Repair's and selection's label sums take peers, every other
-  site keeps the uniform test, and `scatter_sum` takes peers from `SCATTER_POOL_PEERS_TERMS` (2 048)
-  terms a group on average, the crossover on interleaved runs (worst 1.03x there, 1.27x at 1 024).
-- **Per-vertex float scatters pool a warp's peers** (`kernels/scatter.peer_summed_add` /
-  `peer_summed_add_vec3`, over `kernels/reduce.warp_peer_lanes`): the lanes sharing a vertex
-  (`__match_any_sync`) sum in `float64` shuffles and one commits; a lane with no peer and the CPU
-  device take the plain atomic (CPU bits unchanged). A fan's hub sits in every other face, which
-  the warp-uniform test misses, and cost `vertex_normals` 9x the uniform mesh. Device time new/old:
-  vector scatter 0.09x on `fan_hub`, 0.79-0.85x on dragon to lucy (consecutive faces pair up in a
-  slot), at par small; `vertex_normals` end to end 0.10-0.12x on the hub, 0.82-0.89x large. The
-  `float32` scalar scatter loses 1.2x on dragon and happy_buddha (+4 µs, hidden by host time) for
-  0.10x on the hub and 0.87x on lucy; a minimum pool of four and `float32` shuffles both lost.
-  Carried to the per-corner scatters (2026-11-05, device time new/old): it pays only where the
-  kernel's work is the scatter (`scatter.peer_summed_add_corner_triple`: face areas and thirds,
-  the cotangent area sums, corner angles; 0.09-0.10x hub, 0.83-0.85x lucy, 0.91-0.95x dragon,
-  `float32` targets 1.11-1.23x there). In a kernel with work of its own the match's registers
-  cost more than the atomics it saves on scan meshes (dragon 1.03-1.29x: heat divergences and
-  face terms, the cover's, the Hessian face terms, the `vec3` unit-gradient scatter), and edge
-  slots lose everywhere (1.03-1.26x): two consecutive faces rarely share an edge inside a warp.
-  A corner scatter reads its three corners off the flat `faces` buffer, never by a loop over an
-  `(n, k)` index view (`for j in range(indices.shape[1])`): the dynamic trip count, not the view,
-  cost the CPU 1.45-2.1x at every size (2026-11-06; a view read entry by entry ran as fast as the
-  flat form), with bit-identical sums and CUDA at par. Taken by `scatter_sum_exact`,
-  `scatter_sum_scalar`, `scatter_sum_vec` and `scatter_weighted_sum_vec`. The flat form also took
-  `discrete_gaussian_curvature`'s angle sums off plain `float64` atomics onto the pooled scatter:
-  0.10x on `fan_hub`, 0.86-0.90x on dragon to lucy.
+Each bullet names a shape that was built and priced. Grep `reference/measured-facts.md` §14 for
+the helper or site named before building anything similar.
+
+**Occupancy and launch shape**
+
+- **Block-per-item** wins only when the outer dimension alone starves the device (§2.3; `obscurance`, `shape_diameter`, `farthest_point_sample`). A one-walk least tangent radius was refuted.
+- **Register-blocking outer items** wins for `(item, slice)` reductions; choose W per launch so the grid keeps about `1 << 17` threads (`RegisterBlockedTable.slice_count`); a target past a kernel's optimum loses.
+- A `float64` rank-k update register-blocks only on wide launches, in narrow (32-lane) blocks (`kernels/cholesky.update_panel_tiles`).
+- **Pointer-chasing tree walks** run faster with fewer warps resident, gated on query count (`kernels/neighbors.DESCENT_WIDE_BLOCK_DIM`); check a new walk at two widths, and time it on the device (5x by loop spelling).
+- **Cooperative BVH walks** pay only with few concurrent queries (`ball_pivoting`'s pivot search); do not re-run the tree-wide sweep.
+- A lone serial hash-grid walk splits across a warp (`kernels/neighbors.warp_grid_chunk`) only where few walks run; many short walks side by side lose.
+- A walk with costly candidates leaves its traversal loop with one candidate a lane (`kernels/proximity.nearest_offset_within`).
+- A counted-then-written walk with costly candidates decides each candidate once, a thread a candidate (`kernels/boolean.decide_edge_candidates`); where the walk is the cost it stages instead (§2.3), declined where the walk is no share of the call.
+- A per-point `float64` neighbourhood chain runs a warp a point, a neighbour a lane, its serial part (`svd3`) in a pass of its own.
+- A one-thread serial walk of dependent loads on CUDA data runs on the CPU device (`boolean`'s collapses, long polygons); move only used prefixes.
+- Independent per-item iterations collapse into one in-thread loop (`max_tangent_sphere`), kept out of a kernel holding another long walk.
+- **Tile solves** win for K >= 16-32 only; the dense K = 5, 6 solves stay.
+- **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one; a serial walk storing gathered values instead of indices; a per-face edge marker instead of a per-edge one.
+
+**Host loops, capture and readbacks**
+
+- **Graph capture** wins when a launch sequence repeats identically (break-even ~2 replayed rounds), loses on once-through and short loops. The body may not allocate. Replays past a fixpoint cost full device time: replay one round a read unless each launch returns first on an idle flag. A captured path needs a plain-loop CPU sibling.
+- **A CPU round loop runs as one launch**: each round's body is a `@wp.func`, and a CPU-only kernel runs every round in one thread. Declined for the Cholesky triangular solve per level and `halfedge_mates` pairing.
+- **Readbacks:** a device reduction wins on CUDA for mesh-sized arrays and loses on CPU; keep the readback for bool masks and small buffers. A per-pass readback is cheaper than an extra pass. Read a validation flag as early as its producer allows. In idempotent loops read the stop count every few rounds.
+- **Per-device algorithm choice** only when the parallel form does asymptotically more work.
+- **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index. Price the fused region; a fusion that changes a slot or box index needs a debug-mode run. Fold-on-read loses on dependent chases.
+- **Gather-form fusion** wins below ~100 k faces and loses 1.7-2.1x on scrambled ~1 M-face meshes: price it on a scrambled large mesh.
+- Two block reductions of different widths share one launch at `dim = max(blocks)`.
+
+**Hub rows and long rings** (`fan_hub` is the fixture)
+
+- A row-a-thread solver step takes long rows (`kernels/linalg.CSR_LONG_ROW_ENTRIES`) by pieces (`linalg._LongRows`, `CSR_LONG_ROW_PIECE`), by deferring them to its block (`csr_row_long`, no list or readback), or, where there is no readback to carry a flag, as a warp (`kernels/smoothing.warp_long_operator_row`, `reduce.warp_walk`). A heavy row body stays inline in the kernel, not behind a `@wp.func`.
+- A one-block pass lets the warp walk long rows only past a gate (`conjugate_gradient.ONE_BLOCK_WARP_ROWS_FROM`).
+- A long linked walk ranks by rulers in a block (`kernels/halfedge.rank_long_rings`); a ring kernel takes long rings from the list `vertex_one_rings` read back (`_common.note_long_rings`).
+- A sort that only groups rows under a small key is a ring compare (`repair._exact_value_classes`); a hub sends the call back to the sort, and the CPU keeps its sort for duplicated faces.
+
+**Latency-bound kernels**
+
+- A latency-bound row loads branch-free at clamped addresses (`kernels/array.row_chunk_slots` / `row_chunk_entries`); it loses on wide bandwidth-bound launches and on ~6-entry operator rows below `2**18` rows; the CPU keeps the entry-a-step walk, bound per kernel. Price against a do-nothing kernel first.
+- A thread a row writing its segment in turn collapses past L2: a thread a slot (`kernels/array.outer_product_slot`) on CUDA, the row walk on CPU.
+- A row gather in a triplet sort's order loses to the regrouped sum (`energies.*_values`).
+- A one-block round loop costs its candidates, not its ring (`ear_clip_tail`).
+- A relaxation to a fixpoint takes block rounds only over spatial patches (`_common.hilbert_point_order`).
+- An exact maximum over a box query prunes by a bound every candidate attains (`kernels/polyline.ec_tree_ear_cost`).
+- **Tree searches take scattered queries in Hilbert order** (`_common.search_order`, `kernels/array.ordered_item`) from 2^18 queries (2^16 when the sampled test finds them scrambled); answers unchanged. Rays take it only when their origins sit on the surface; declined in `ray`.
+- A CPU skip in front of a few atomics commits a selected zero instead (select, never multiply by a 0/1 weight).
+
+**Solvers and sweeps**
+
+- A single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses. A small synthetic system can mislead.
+- The factored triangular solve does not run in one block on CUDA, nor behind a device-wide spin barrier; the CPU runs it as one serial launch.
+- **Blocked wavefront** wins for a 2-D DP with local dependencies and small per-step work; it loses where levels are already wide (the fill DP).
+- **Serial-order sweeps as a dataflow wavefront** (Gauss-Seidel, `filter_laplacian(method="pyvista")`): one launch a wave, bit-identical to the serial loop; batched waves per readback; capturing the batch lost; the volume-constrained path counts its waves once. The CPU runs the serial loop.
+- **Refuted, do not re-propose:** one launch a Jacobi CG round; a single-block BFS drain; a one-block hole-fill DP; merged-level blocked interval DPs; voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches; `cg(check_every=0)` as a lever.
+
+**Sorting, counting, scatters**
+
+- An order statistic is a radix select on CUDA (`kernels/reduce.RADIX_SELECT_PASS`), size-gated; the CPU sorts.
+- A count of distinct edges is an edge set homed at the lower vertex (`grouping.edge_key_slot`), not a sort.
+- A crowded count histogram pools a warp's peers (`reduce.peer_counted_add`).
+- **Per-class compaction:** scan a one-hot `wp.vec{K}i` (or a `vec2i` of `(flag, count)`); `_launch.array_scan` routes `int32` vectors of 3+ components to a tile scan where it wins.
+- **Fixed-order group sums:** never a stable sort plus one thread per run on huge groups; chunk long runs or use the exact fixed-point sum. The shared exact group sum wins on few hot groups and loses on many; the sites that keep their own form (exact `float32` into `float64` atomics, `arap`'s sorted run walk, the Poisson chunked splat, the cluster heavy-run sum) carry the decline.
+- Off-mode pooling: peers only on keys hot across the launch (§2.2). Per-vertex float scatters pool a warp's peers (`kernels/scatter.peer_summed_add*`) only where the kernel's work is the scatter; edge slots lose.
+- A corner scatter reads its three corners off the flat `faces` buffer, never by a loop over an `(n, k)` view with a dynamic trip count (CPU 1.45-2.1x).
+- A kernel whose work is the scatter keeps its on-mode terms out of line on the CPU (`kernels/scatter.sole_scatter_add*`); not for a kernel with work of its own.
+- Bellman-Ford over a CSR with duplicate entries pays per stored entry.
+- **Rasterization:** one `atomic_min` owner pass per face (sliced over lanes on CUDA), then one thread per pixel; the kernels build unfused.
+- **CPU on Warp 1.19:** SLP vectorization took CPU rows to a 0.88 geomean; a module-wide flag to undo its few losses (MLS curvature) was declined.
 
 ## 15. Benchmark and measurement traps
 
-- **A sudden slowdown is a Warp rebuild until proven otherwise:** look for `Module hash changed, recompiling` at `LOG_DEBUG` and an idle GPU (§2.5, §3.5). Next suspect host-side per-element Python; fix it on the device, not with a smaller mesh.
-- **Attribute against one number:** time the candidate directly (subtraction projections are optimistic by 3-10x), at more than one size (the trend's sign decides) and at the benchmark's own parameter and fixture. Compute the candidate's share before reading a ratio near 1.0, and pin the iteration count before timing an iterative solver.
-- **Harness hazards:** cap every group's mesh size first (one pathological row costs the whole JSON). Harness and hand-probe numbers are not comparable; decide on the harness number. A row can depend on mempool state left by its setup. A median at `rounds=3` can hide a one-off cost, so compare it with the minimum. Run `benchmarks/test_meshes.py` after touching the mesh registry.
-- **Plan items:** grep the target function, constant comment and benchmark docstring for a recorded decline first; stage-profile before optimizing a stage.
-- **A/B:** use a detached worktree, never `git stash` or `sed` sweeps. The editable finder outranks `PYTHONPATH`, so drop it and assert the submodule `__file__`. Check the box is quiet first (otherwise measure counts, not clocks); a failing `nvidia-smi` does not mean CUDA is unusable.
-- **Timing hygiene:** interleave A and B in one loop and report the minimum beside the median; baselines drift 10-30 %, so re-run both arms back to back. Batch launches and sync once. Use one pytest process per module. Re-run a failing configuration in a fresh process before blaming the product. A CUDA error 700 inside a census or benchmark run while another job holds most of the device's memory is pressure until it reproduces on an idle GPU (2026-11-09: `signed_distance_level_set[lucy]` faulted twice with 26 of 32 GB taken, never with the device idle, alone or in the same sequence).
-- **A row that moves only inside a whole-module sweep depends on what ran before it in the process.** In the Warp 1.19 A/B, small host-bound rows read 1.13-1.35x (CUDA: `array.split`, `concatenate`, `pack_1d_arrays`, `edges_face`, `bridge_edges`, `edges_to_csr`) and up to 3.9x on CPU (`face_gradients`, `index_bound`, `points_in_obb_mask`), repeatably across two passes. Run alone, or as a `-k` selection, the same rows matched 1.18 or beat it (CPU 0.72-0.88x; `split` direct 247 vs 253 µs). Before attributing a sweep regression, rerun the row alone and time the primitives under it directly. Two passes agreeing does not separate the two causes.
-- **CPU code placement is a confound of its own.** Warp maps a CPU module's `.text`
-  page-aligned, so a kernel's offset in the object is its address modulo 4 096, and any edit to
-  its module can move it. `offset_packed_faces`, identical C++ and machine code, ran 1.10-1.17x
-  with its entry at 32 rather than 48 mod 64 once a kernel was added beside it (2026-11-06). A
-  CPU row that moves on an edit to its module but not its own code is placement until proven
-  otherwise: compare the entry addresses (`get_kernel_hooks(...).forward`) before attributing it.
-  Declined: `-mllvm=-align-all-functions=6` for every module, which fixes that row but moved
-  nothing across 1 291 CPU rows (geomean 1.004 / 0.998 over two side-by-side passes, pass-to-pass
-  correlation -0.09). It would also have to be a per-module option, since module flags replace
-  `wp.config.cpu_compiler_flags`, and `wp.map` modules take none. An unknown `-mllvm` option
-  fails every CPU build.
-- **A CPU row can swing with the heap's history.** glibc's dynamic mmap threshold and heap trimming
-  decide whether a call's large outputs land on resident pages. `transform_mesh`'s CPU mirror in
-  two passes read 2.05 ms on `dragon` run alone and 4.2 ms right after a rigid call in the same
-  process (~2 000 minor faults a call against none), while the fused form beside it took the same
-  faults in one sequence at no visible cost (2026-11-12). Count `resource.getrusage(...).ru_minflt`
-  per call in both arms before attributing a CPU row that moves with what ran before it, and read
-  each regime alone: `MALLOC_MMAP_THRESHOLD_=131072` faults every call in, a threshold of 1 GiB
-  with `MALLOC_TRIM_THRESHOLD_` at its maximum keeps every page resident.
-- **Generated kernel variants need their own `@wp.func` names.** Probe modules that each defined a
-  `@wp.func` of one name all compiled against the last one defined (2026-11-13: every walk
-  threshold timed alike, until the emitted `.cu` showed one constant); suffix every function per
-  variant and grep the generated source for the constant. Keep a do-nothing control from the same
-  generator too: an untaken warp-loop arm made the original loop 0.91-0.96x in its module, a
-  code-generation effect that duplicating the loop did not reproduce and that whole calls did not
-  show.
-- **Pin the B arm to a worktree, not the live tree.** Another session committing and editing in the live tree during a sweep changed that arm's code mid-run (the 1.19 A/B: its heat and mesh rows, and a cold compile that hit a half-written kernel). Check `git log` and file mtimes against the run's timestamps before trusting a live-tree arm.
-- **`wp.timing_begin` sees no graph-replayed kernels**, so every CG solve reads host-bound. Re-run with capture disabled and carry the device total back. It misses `capture_while` passes too, and `TIMING_KERNEL` omits memcpys: price a fusion that replaces a `wp.copy` with `TIMING_ALL`.
-- **Every group has a census row:** scan-mesh rows (`bunny` to `lucy`) run only at `--size medium`, so every scan sweep also runs its ordito rows on `sphere_small` (`CENSUS_MESH`, `benchmarks/conftest.py`), the rows the gate counts; a test with nothing to do on a closed smooth sphere names another small feature mesh with `@pytest.mark.censusmesh(name)` (`saddle_small` for rims, `tangle_torus_small` for creases). A census row that skips leaves its group outside the gate. The census keeps only the smallest mesh of each size axis a test sweeps (`benchmarks/census.py`, `_SIZE_AXES`): of 120 size-axis tests, 91 counted the same at every size and 20 more only ran more rounds (CG iterations, Cholesky panels); the other branches on size are kept with `@pytest.mark.censuskeep` (k-NN deferral, chunked geodesic ball, multi-block polyline reduction, longest-edge split selection). Feature-axis meshes are different inputs and all stay, except a row `@pytest.mark.censusskip` names whose counts equal a cheaper row's by construction (`thickness_interior`'s `max_sphere` on `sphere_med`: in-kernel iterations, 75x `shells_8`'s time for its exact counts). `screened_poisson` keeps depth 7 only. `sample_surface_poisson_disk`'s rounds replay as one graph on CUDA and run in thread order on the CPU, so its row is gated like any other. The stitch rows assert their band size, since a band of two parallel half-strips once stitched nothing.
-- **The uncapped sweep predicts only from failures.** A row whose cell timed out or ran out of memory on a smaller scan mesh is recorded as predicted and not run; a crash predicts nothing (shape, not size). Extrapolating a median by face count is declined: replayed over the 2026-10-23 sweep it skipped measured rows (pyvista grazing `mesh_collision_pairs` on lucy predicted 99 min linearly, took 56 s; its cost follows contacts). Reference rows on the CPU take no warm-up call; device rows do (`conftest.BenchLibrary.run`).
-- **Census** host calls by monkeypatching Warp (`Function.__call__`, `wp.array.numpy`, `wp.zeros`, `wp.empty`), not by grepping. Read the slope across two iteration counts, and watch for capture hiding loops.
-- **A census count must not depend on what ran before the row.** Two sources made the gate flaky, both now neutralized in `benchmarks/census.py`: Warp pools a `BsrMatrix`'s pinned `nnz` transfer buffer and returns it from a `weakref.finalize`, so cyclic-GC timing decided whether a call allocated (`multigrid_preconditioner` 149-154 allocations between runs; the counted call now runs after `gc.collect()` with the collector off); and `linalg._cached_solver` records a pooled state on the second operator of a shape and replays from the third, so one warm call left the counted call recording or replaying by session history (`heat_geodesic[sphere_med-full]` 18 or 79 launches; two warm calls now). A third crossed rows: `linalg._SHAPES_SEEN` remembers operator shapes process-wide, so a row whose shape an earlier file had solved took a pooled state and paid one `refresh` launch a call (seven `linalg` / `diffuse_tangent_field` rows, recorded with `test_heat.py`'s history baked in); the census now empties the pool before each row. A new process-wide cache that changes what a call issues needs the same check: run the row alone and inside its file, and compare. The census runs under xdist (`-n 4 --dist loadfile` in CI, 2.7x on four cores): the gate passing under a different file-to-process assignment is that check for the whole suite, and the serial and xdist runs agreed on every count of all 1 172 rows.
+- **A sudden slowdown is a Warp rebuild until proven otherwise:** look for `Module hash changed, recompiling` at `LOG_DEBUG` and an idle GPU (§2.5, §3.5). Next suspect host-side per-element Python.
+- **Attribute against one number:** time the candidate directly (subtraction projections are optimistic by 3-10x), at more than one size and at the benchmark's own parameter and fixture. Compute the candidate's share before reading a ratio near 1.0; pin the iteration count before timing an iterative solver.
+- **A/B:** a detached worktree for the B arm, never `git stash`, `sed` sweeps or the live tree (another session may edit it). The editable finder outranks `PYTHONPATH`: drop it and assert the submodule `__file__`. Interleave A and B in one loop, report the minimum beside the median, batch launches and sync once.
+- **The GPU is shared:** check `nvidia-smi` before and after every timing; if busy, measure counts, not clocks. A CUDA error 700 under memory pressure from another job is pressure until it reproduces on an idle GPU.
+- **Harness hazards:** cap every group's mesh size first. Harness and hand-probe numbers are not comparable; decide on the harness number. A median at `rounds=3` can hide a one-off cost. Run `benchmarks/test_meshes.py` after touching the mesh registry.
+- **A row that moves only inside a whole-module sweep depends on what ran before it**: rerun it alone before attributing it.
+- **CPU confounds:** a kernel's code placement (its address modulo 64 moves with any edit to its module) and the heap's history (count `ru_minflt` per call in both arms).
+- **Generated kernel variants need their own `@wp.func` names** (they otherwise all compile against the last one defined), and a do-nothing control from the same generator.
+- **`wp.timing_begin` sees no graph-replayed kernels** (re-run with capture disabled) and `TIMING_KERNEL` omits memcpys (`TIMING_ALL` to price a fusion replacing a `wp.copy`).
+- **Census:** counts come from monkeypatching Warp, not grepping. Every group has a census row on `sphere_small` (`CENSUS_MESH`) or the mesh `@pytest.mark.censusmesh(name)` names; `censuskeep` / `censusskip` adjust the size axis; a row that skips leaves its group outside the gate. A count must not depend on what ran before the row: a new process-wide cache that changes what a call issues is checked by running the row alone and inside its file.
 
 ---
 

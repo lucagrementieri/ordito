@@ -135,8 +135,8 @@ For each "changes semantics" item:
 3. **Price it if it adds work**: count SASS per kernel entry from Warp's cache (§12.6's recipe; note
    whether the new version caches PTX or cubin). A few integer instructions per site is normally
    noise; a hot loop is not.
-4. **Update the rule** in CLAUDE.md Part I if the change invalidates one, and the Part II fact with
-   the numbers.
+4. **Update the rule** in CLAUDE.md Part I if the change invalidates one, and the fact with its
+   numbers in `reference/measured-facts.md` (CLAUDE.md Part II keeps the one-line verdict).
 
 ## 5. Port fixes ordito bypasses
 
@@ -190,7 +190,8 @@ Correct the wrong comments, even if they were already wrong on OLD.
 - **Update CLAUDE.md**:
   - the "Installed:" stamp in the preamble;
   - the §12.10 workaround table (a row per re-verified workaround, a row per new hazard);
-  - each Part II section a finding belongs to, next to the numbers it revises.
+  - the one-line verdict in each Part II section a finding changes; the numbers go in the same
+    section of `reference/measured-facts.md`, next to the ones they revise.
 
   Then run check 24: `pytest tests/test_api_conventions.py -k claude`.
 
@@ -280,7 +281,7 @@ Remove the baseline worktree after the last A/B.
   scope: which files it may edit, and that it must not commit or edit CLAUDE.md.
 - **Probes are disposable.** Write each in the scratchpad for the question at hand, under both
   versions; do not grow a library of them. What persists is the number, written at the site it
-  decides and in CLAUDE.md Part II.
+  decides and in `reference/measured-facts.md`.
 - **Report outcomes faithfully.** Say which code landed after which gate ran. Correct an earlier
   headline when a better measurement contradicts it.
 
