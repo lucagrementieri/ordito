@@ -125,7 +125,8 @@ Two registries, in [`meshes.py`](meshes.py), for two different questions.
 
 ### Scan meshes — the pure-`N` axis
 
-Real scan meshes, read once with `meshio` (the same loader `ordito.io` uses): the Stanford
+Real scan meshes, read once with `meshio` (the harness's own reader; `ordito.io` reads through
+trimesh): the Stanford
 3D Scanning Repository's reconstructions, unmodified, mirrored as the assets of the
 [`meshes-v1`](https://github.com/lucagrementieri/ordito/releases/tag/meshes-v1) release. Each is
 pinned by a SHA-256 in `meshes.py`, so every machine benchmarks the same bytes. A run downloads the
@@ -1392,6 +1393,6 @@ Each of the four carries a `benchmarked=False` parity claim with its measured re
   `cull_internal=False` so trimesh's `multibox` and VTK's glyph filter are like-for-like unwelded
   rows. The comparable pair was measured anyway and is not interesting: 2.238 ms against
   `to_boxes(cull_internal=True)`'s 1.850 on 63 568 voxels.
-- **`load_mesh`**: `ordito.io` has no benchmark group at all and deliberately so — it is a meshio
-  round trip, so a row would time meshio's PLY parser against pytorch3d's, neither of which is
+- **`load_mesh`**: `ordito.io` has no benchmark group at all and deliberately so — it is a trimesh
+  round trip, so a row would time trimesh's PLY parser against pytorch3d's, neither of which is
   ordito code.

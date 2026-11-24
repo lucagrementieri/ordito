@@ -84,8 +84,8 @@ and falls back to CPU otherwise, with the same code.
     ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.19. A CUDA-capable GPU is recommended but not required.
-Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
-`pip install "ordito[io]"`.
+Mesh file I/O, with colours, UVs and textures, via [trimesh](https://github.com/mikedh/trimesh)
+is an optional extra: `pip install "ordito[io]"`.
 
 Kernels compile on first use; to ship them precompiled in a container image or a CI cache, run
 `python -m ordito.precompile` (see [Precompiling for deployment](getting-started.md#precompiling-for-deployment)).

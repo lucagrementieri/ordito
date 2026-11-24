@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
+import warnings
 import weakref
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -36,6 +38,9 @@ _TRACED_MESH_RAYS_PER_FACE = 160
 _ZERO_MAT33 = wp.mat33()
 # The attribute table of a `Trimesh` given none, shared: it is read-only.
 _NO_ATTRIBUTES: Mapping[str, odt.ArrayNd] = MappingProxyType({})
+# The attribute names a `Trimesh` reads for itself (`vertex_colors`, `face_colors`, `uv`), and the
+# one dtype each must have: float RGBA colours, which blend through an edit, and float UVs.
+_RESERVED_ATTRIBUTE_DTYPES: Mapping[str, type] = MappingProxyType({"color": wp.vec4, "uv": wp.vec2})
 
 # Cached quantities that depend only on `faces` (topology), not on vertex positions. A
 # functional update that keeps the same faces and the same vertex count (`with_vertices`)
@@ -369,6 +374,16 @@ class Trimesh:
     [`with_edit`][ordito.mesh.Trimesh.with_edit] carries them through any free function called with
     ``return_provenance=True``.
 
+    Two attribute names are the mesh's **visuals**, as in trimesh: ``"color"``, a ``wp.vec4`` RGBA
+    colour in ``[0, 1]`` per vertex or per face, read as
+    [`vertex_colors`][ordito.mesh.Trimesh.vertex_colors] and
+    [`face_colors`][ordito.mesh.Trimesh.face_colors], and ``"uv"``, a ``wp.vec2`` texture
+    coordinate per vertex, read as [`uv`][ordito.mesh.Trimesh.uv]. A textured mesh also holds a
+    [`Material`][ordito.texture.Material], its texture image, as
+    [`material`][ordito.mesh.Trimesh.material]. Being attributes, colours blend and UVs interpolate
+    through every edit. UVs are per vertex, so a UV seam is a row of vertices split in two:
+    [`ordito.repair.split_vertices_by_corner_values`][] makes one from per-corner texcoords.
+
     Scalar-valued properties (`area`, `centroid`, `bounds`, `enclosing_diagonal`,
     `mean_edge_length`, `euler_characteristic`, and every `is_*` predicate) synchronize from device
     to host on first access; the synchronized Python value is then cached like any other.
@@ -396,7 +411,10 @@ class Trimesh:
         ``vec4`` / ``vec2d`` / ``vec3d`` / ``vec2i`` / ``vec3i`` or four-byte colour vector. Held,
         not copied (a non-contiguous view is made contiguous).
     face_attributes
-        Named ``(n_faces,)`` arrays, one entry per face, of the same dtypes.
+        Named ``(n_faces,)`` arrays, one entry per face, of the same dtypes. In both tables
+        ``"color"`` must be ``wp.vec4`` and ``"uv"`` ``wp.vec2``.
+    material
+        The texture the ``"uv"`` vertex attribute reads, or ``None``.
     initial_cache
         Optional pre-populated cache entries, keyed by property name. Used by
         [`from_warp_mesh`][ordito.mesh.Trimesh.from_warp_mesh] to seed `warp_mesh` without
@@ -408,14 +426,15 @@ class Trimesh:
     ------
     TypeError
         If ``vertices`` is not a rank-1 ``wp.vec3`` array, ``faces`` is not rank-1 or
-        rank-2 ``wp.int32`` after flattening, or an attribute is not a ``wp.array`` of a dtype
-        listed above under a string name.
+        rank-2 ``wp.int32`` after flattening, an attribute is not a ``wp.array`` of a dtype
+        listed above under a string name, a ``"color"`` or ``"uv"`` attribute has another dtype
+        than its own, or ``material`` is not a [`Material`][ordito.texture.Material].
     ValueError
         If a rank-2 ``faces`` array does not have shape ``(n_faces, 3)``, the flattened
         face buffer's size is not a multiple of 3, or an attribute does not have one entry per
         vertex or face.
     RuntimeError
-        If an attribute is not on the device of ``vertices``.
+        If an attribute or the material's image is not on the device of ``vertices``.
 
     See Also
     --------
@@ -462,6 +481,7 @@ class Trimesh:
         "_cache",
         "_face_attributes",
         "_faces",
+        "_material",
         "_vertex_attributes",
         "_vertices",
     )
@@ -473,6 +493,7 @@ class Trimesh:
         *,
         vertex_attributes: Mapping[str, odt.ArrayNd] | None = None,
         face_attributes: Mapping[str, odt.ArrayNd] | None = None,
+        material: od.texture.Material | None = None,
         initial_cache: dict[str, object] | None = None,
     ) -> None:
         """Construct a `Trimesh` from a vertex buffer and a face index buffer."""
@@ -494,6 +515,14 @@ class Trimesh:
         self._face_attributes = _attribute_table(
             face_attributes, self.n_faces, "face", self._vertices
         )
+        if material is not None:
+            if not isinstance(material, od.texture.Material):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(
+                    f"material must be an ordito Material, got {type(material).__name__}"
+                )
+            if material.image is not None:
+                require_same_device(vertices=self._vertices, material=material.image)
+        self._material = material
 
     @classmethod
     def from_warp_mesh(cls, mesh: wp.Mesh) -> Trimesh:
@@ -594,6 +623,108 @@ class Trimesh:
         ```
         """
         return self._face_attributes
+
+    @property
+    def vertex_colors(self) -> wp.array[wp.vec4] | None:
+        """
+        ``(n_vertices,)`` RGBA vertex colours in ``[0, 1]``, or ``None`` when the mesh has none.
+
+        The ``"color"`` vertex attribute. Unlike trimesh, a mesh with no colours reads ``None``
+        rather than a default grey, and face colours are not averaged onto the vertices on read:
+        [`ordito.interpolation.average_onto_vertices`][] does that.
+
+        See Also
+        --------
+        [`face_colors`][ordito.mesh.Trimesh.face_colors]
+        [`to_color`][ordito.mesh.Trimesh.to_color]
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        red = wp.full(8, wp.vec4(1.0, 0.0, 0.0, 1.0), dtype=wp.vec4, device=vertices.device)
+        mesh = od.Trimesh(vertices, faces, vertex_attributes={"color": red})
+        print(mesh.vertex_colors is red, od.Trimesh(vertices, faces).vertex_colors)  # True None
+        ```
+        """
+        return cast("wp.array[wp.vec4] | None", self._vertex_attributes.get("color"))
+
+    @property
+    def face_colors(self) -> wp.array[wp.vec4] | None:
+        """
+        ``(n_faces,)`` RGBA face colours in ``[0, 1]``, or ``None`` when the mesh has none.
+
+        The ``"color"`` face attribute; [`ordito.interpolation.average_onto_faces`][] gives the
+        mean of the vertex colours instead.
+
+        See Also
+        --------
+        [`vertex_colors`][ordito.mesh.Trimesh.vertex_colors]
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        blue = wp.full(12, wp.vec4(0.0, 0.0, 1.0, 1.0), dtype=wp.vec4, device=vertices.device)
+        mesh = od.Trimesh(vertices, faces, face_attributes={"color": blue})
+        print(mesh.face_colors.shape)  # (12,)
+        ```
+        """
+        return cast("wp.array[wp.vec4] | None", self._face_attributes.get("color"))
+
+    @property
+    def uv(self) -> wp.array[wp.vec2] | None:
+        """
+        ``(n_vertices,)`` texture coordinates, or ``None`` when the mesh has none.
+
+        The ``"uv"`` vertex attribute, read by [`material`][ordito.mesh.Trimesh.material].
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+        mesh = od.Trimesh(vertices, faces, vertex_attributes={"uv": uv})
+        print(mesh.uv.shape)  # (8,)
+        ```
+        """
+        return cast("wp.array[wp.vec2] | None", self._vertex_attributes.get("uv"))
+
+    @property
+    def material(self) -> od.texture.Material | None:
+        """
+        The texture [`uv`][ordito.mesh.Trimesh.uv] reads, or ``None`` when the mesh has none.
+
+        Set with [`with_material`][ordito.mesh.Trimesh.with_material]; carried by every method
+        returning a new mesh.
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        material = od.texture.Material(base_color=wp.vec4(0.8, 0.2, 0.2, 1.0))
+        mesh = od.Trimesh(vertices, faces, material=material)
+        print(mesh.material is material, mesh.submesh(mesh.faces[:3]).material is material)
+        # True True
+        ```
+        """
+        return self._material
 
     @_CachedProperty
     def warp_mesh(self) -> wp.Mesh:
@@ -2761,7 +2892,12 @@ class Trimesh:
         print(front.n_vertices, front.n_faces, len(front.boundary_loops))  # 8 2 1
         ```
         """
-        return Trimesh(self._vertices, new_faces, vertex_attributes=self._vertex_attributes)
+        return Trimesh(
+            self._vertices,
+            new_faces,
+            vertex_attributes=self._vertex_attributes,
+            material=self._material,
+        )
 
     def with_attributes(
         self,
@@ -2825,8 +2961,110 @@ class Trimesh:
             self._faces,
             vertex_attributes=_updated_attributes(self._vertex_attributes, vertex_attributes),
             face_attributes=_updated_attributes(self._face_attributes, face_attributes),
+            material=self._material,
             initial_cache=survived,
         )
+
+    def with_material(self, material: od.texture.Material | None) -> Trimesh:
+        """
+        Return a new `Trimesh` with ``material`` as its texture, sharing the whole cache.
+
+        Parameters
+        ----------
+        material
+            The new material, or ``None`` to remove it.
+
+        Returns
+        -------
+        Trimesh
+            New instance on the same buffers, attributes and cache.
+
+        Raises
+        ------
+        TypeError
+            If ``material`` is not a [`Material`][ordito.texture.Material].
+        RuntimeError
+            If the material's image is not on the mesh's device.
+
+        See Also
+        --------
+        [`material`][ordito.mesh.Trimesh.material]
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        painted = mesh.with_material(od.texture.Material(base_color=wp.vec4(1.0, 0.5, 0.0, 1.0)))
+        print(mesh.material, painted.material.name)  # None material
+        ```
+        """
+        # As in `with_attributes`: the solvers refer back to this mesh and stay with it.
+        survived = {key: value for key, value in self._cache.items() if not key.startswith("_")}
+        return Trimesh(
+            self._vertices,
+            self._faces,
+            vertex_attributes=self._vertex_attributes,
+            face_attributes=self._face_attributes,
+            material=material,
+            initial_cache=survived,
+        )
+
+    def to_color(self) -> Trimesh:
+        """
+        Return a `Trimesh` whose vertex colours are its material read at its UVs.
+
+        Returns
+        -------
+        Trimesh
+            New instance on the same buffers and cache, its ``"color"`` vertex attribute set to
+            [`ordito.texture.material_colors`][] of [`material`][ordito.mesh.Trimesh.material] at
+            [`uv`][ordito.mesh.Trimesh.uv]; the UVs and the material are kept.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has no material or no UVs.
+
+        See Also
+        --------
+        [`ordito.texture.material_colors`][]
+        ``trimesh.visual.TextureVisuals.to_color``
+            The same conversion in trimesh, which samples its nearest texel (no Sphinx inventory
+            entry to link).
+
+        Examples
+        --------
+        A texture whose left half is red and right half blue, read along the bottom row of a grid:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.grid(count=(3, 3), center=False)
+        texels = np.zeros((4, 4, 4), dtype=np.float32)
+        texels[:, :2] = [1.0, 0.0, 0.0, 1.0]
+        texels[:, 2:] = [0.0, 0.0, 1.0, 1.0]
+        mesh = od.Trimesh(
+            vertices,
+            faces,
+            vertex_attributes={"uv": wp.array(vertices.numpy()[:, :2] * 0.6 + 0.2, dtype=wp.vec2)},
+            material=od.texture.Material(image=wp.array(texels, dtype=wp.float32)),
+        )
+        colors = mesh.to_color().vertex_colors.numpy()
+        print(colors[::3, 0].tolist(), colors[::3, 2].tolist())  # [1.0, 0.5, 0.0] [0.0, 0.5, 1.0]
+        ```
+        """
+        uv = self.uv
+        if self._material is None or uv is None:
+            raise ValueError("to_color needs a mesh with both a material and UVs")
+        colors = od.texture.material_colors(self._material, uv)
+        return self.with_attributes(vertex_attributes={"color": colors})
 
     def with_edit(
         self,
@@ -2916,6 +3154,7 @@ class Trimesh:
                 name: provenance.face_values(values)
                 for name, values in self._face_attributes.items()
             },
+            material=self._material,
         )
 
     def submesh(self, faces: wp.array[wp.int32] | wp.array[wp.bool]) -> Trimesh:
@@ -2973,7 +3212,7 @@ class Trimesh:
                 parts = od.selection.submesh_from_face_indices(
                     self._vertices, self._faces, cast("wp.array[wp.int32]", faces)
                 )
-            return Trimesh(*parts)
+            return Trimesh(*parts, material=self._material)
         if faces.dtype is wp.bool:
             edit = od.selection.submesh_from_face_mask(
                 self._vertices,
@@ -3030,7 +3269,7 @@ class Trimesh:
         labels = self.face_connected_component_labels
         if not self._vertex_attributes and not self._face_attributes:
             return [
-                Trimesh(vertices, faces)
+                Trimesh(vertices, faces, material=self._material)
                 for vertices, faces in od.combine.split(
                     self._vertices, self._faces, copy=copy, labels=labels
                 )
@@ -3049,8 +3288,8 @@ class Trimesh:
         Returns
         -------
         Trimesh
-            New instance sharing nothing with this one: `vertices`, `faces` and every attribute
-            are copied.
+            New instance sharing nothing with this one: `vertices`, `faces`, every attribute and
+            the material's image are copied.
 
         Notes
         -----
@@ -3084,6 +3323,7 @@ class Trimesh:
             face_attributes={
                 name: _launch.clone(values) for name, values in self._face_attributes.items()
             },
+            material=_copied_material(self._material),
         )
 
     def __add__(self, other: Trimesh) -> Trimesh:
@@ -3101,7 +3341,14 @@ class Trimesh:
             Combined mesh with an empty cache. Vertices are **not** merged, so a shared surface
             stays two coincident sheets -- [`ordito.repair.remove_duplicated_vertices`][] is the
             weld. An attribute both meshes carry is concatenated; one only a single mesh carries is
-            dropped, having no values on the other's elements.
+            dropped, having no values on the other's elements. The material is kept when both meshes
+            hold the same one.
+
+        Warns
+        -----
+        UserWarning
+            When the meshes hold different materials (or only one holds one): the result holds
+            none, since one material cannot texture both, and keeps the UVs.
 
         Raises
         ------
@@ -3130,6 +3377,14 @@ class Trimesh:
         vertices, faces = od.combine.concatenate(
             [(self._vertices, self._faces), (other.vertices, other.faces)]
         )
+        material = self._material
+        if other.material is not material:
+            material = None
+            warnings.warn(
+                "the meshes hold different materials, so their sum holds none (its UVs are kept)",
+                UserWarning,
+                stacklevel=2,
+            )
         return Trimesh(
             vertices,
             faces,
@@ -3139,6 +3394,7 @@ class Trimesh:
             face_attributes=_joined_attributes(
                 self._face_attributes, other.face_attributes, "face"
             ),
+            material=material,
         )
 
     def __repr__(self) -> str:
@@ -3149,7 +3405,8 @@ class Trimesh:
         -------
         str
             A first line ``Trimesh(<n> vertices, <m> faces, <device>)``, then one indented line per
-            vertex and face attribute with its dtype, then the names of the cached values.
+            vertex and face attribute with its dtype, then one for the material, if any, with its
+            image size, then the names of the cached values.
 
         Examples
         --------
@@ -3175,6 +3432,10 @@ class Trimesh:
                 f"    {element} attribute {name!r}: {_dtype_name(values.dtype)}"
                 for name, values in table.items()
             )
+        if self._material is not None:
+            image = self._material.image
+            texture = "no image" if image is None else f"{image.shape[1]}x{image.shape[0]} image"
+            lines.append(f"    material {self._material.name!r}: {texture}")
         cached = sorted(key for key in self._cache if not key.startswith("_"))
         if cached:
             lines.append(f"    cached: {', '.join(cached)}")
@@ -3189,6 +3450,7 @@ class Trimesh:
             faces,
             vertex_attributes=self._vertex_attributes,
             face_attributes=self._face_attributes,
+            material=self._material,
             initial_cache=cache,
         )
 
@@ -3293,9 +3555,22 @@ def _attribute_table(
                 f"{element} attribute {name!r} must have shape ({count},), got "
                 f"{tuple(values.shape)}"
             )
+        reserved = _RESERVED_ATTRIBUTE_DTYPES.get(name)
+        if reserved is not None and values.dtype is not reserved:
+            raise TypeError(
+                f"{element} attribute {name!r} must be {_dtype_name(reserved)}, got "
+                f"{_dtype_name(values.dtype)}"
+            )
         require_same_device(vertices=vertices, **{f"{element} attribute {name!r}": values})
         table[name] = values.contiguous()
     return MappingProxyType(table)
+
+
+def _copied_material(material: od.texture.Material | None) -> od.texture.Material | None:
+    """``material`` on a copy of its image (``Trimesh.copy``); ``None`` stays ``None``."""
+    if material is None or material.image is None:
+        return material
+    return dataclasses.replace(material, image=_launch.clone(material.image))
 
 
 def _updated_attributes(

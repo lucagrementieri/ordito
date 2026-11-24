@@ -62,7 +62,10 @@ Issues = "https://github.com/lucagrementieri/ordito/issues"
 Repository = "https://github.com/lucagrementieri/ordito"
 
 [project.optional-dependencies]
-io = ["meshio>=5.0"]
+# trimesh 4.9 is the oldest release ``tests/test_io.py`` passes on (tested at the last patch of each
+# minor): 4.8.3 writes every texture as ``material_0`` rather than under its material's name, 4.4.9
+# also reads a file of points as a ``PointCloud``, and 4.3.2 also breaks on NumPy 2.
+io = ["pillow>=10.0", "trimesh>=4.9"]
 
 [dependency-groups]
 # ``cairosvg`` rasterizes the vendored library logos for the benchmark charts, once

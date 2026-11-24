@@ -4262,6 +4262,12 @@
    "scan": 2
   }
  },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-to_color]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-with_attributes]": {
   "counts": {}
  },
@@ -4270,6 +4276,9 @@
    "launch": 3,
    "alloc": 3
   }
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-with_material]": {
+  "counts": {}
  },
  "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cpu-cold]": {
   "counts": {
@@ -7995,6 +8004,12 @@
    "readback": 1,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_texture.py::test_material_colors[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_texture.py::test_rasterize_attribute[sphere_small-ordito-cpu-2048]": {

@@ -1,32 +1,40 @@
-"""Mesh file loading via the optional ``meshio`` dependency."""
+"""Mesh file reading and writing, with colours, UVs and textures, through ``trimesh``."""
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Required, TypedDict
 
 import numpy as np
 import warp as wp
 
+import ordito.typing as odt
 from ordito import _launch
+from ordito._common import read_array
 from ordito.mesh import Trimesh
+from ordito.texture import Material
 
 if TYPE_CHECKING:
-    # meshio ships neither a ``py.typed`` marker nor stubs, and there is no ``types-meshio``
-    # on PyPI. It is an optional dependency reached through ``_import_meshio`` alone, so the
-    # untyped surface is confined to this module.
-    import meshio  # pyright: ignore[reportMissingTypeStubs]
+    # ``trimesh`` is an optional dependency reached through ``_import_trimesh`` alone; its material
+    # is named here for the annotations only.
+    from trimesh.visual.material import PBRMaterial
 
-# Per-vertex / per-face attribute column names as written by common mesh formats.
-_NORMAL_COLUMNS = ("nx", "ny", "nz")
-_UV_COLUMN_SETS = (("u", "v"), ("s", "t"), ("texture_u", "texture_v"))
-_COLOR_COLUMNS = ("red", "green", "blue")
-_COLOR_COLUMNS_RGBA = ("red", "green", "blue", "alpha")
+# The visuals each file format holds when trimesh writes it, by suffix: ``"texture"`` is a
+# material's image and factor, ``"uv"`` texture coordinates alone. Measured by writing and reading
+# back each format: PLY stores the UVs but writes no image; OBJ and glTF turn face colours into
+# vertex colours; OFF and STL keep nothing beyond the geometry.
+_FORMAT_VISUALS: dict[str, frozenset[str]] = {
+    ".obj": frozenset({"vertex", "uv", "texture"}),
+    ".ply": frozenset({"vertex", "face", "uv"}),
+    ".glb": frozenset({"vertex", "uv", "texture"}),
+    ".gltf": frozenset({"vertex", "uv", "texture"}),
+}
 
 
 class MeshData(TypedDict, total=False):
     """
-    The attributes [`load_mesh_data`][ordito.io.load_mesh_data] read from a file, by name.
+    The arrays [`load_mesh_data`][ordito.io.load_mesh_data] read from a file, by name.
 
     A plain ``dict`` at runtime. ``vertices`` is always present; every other key only when the
     file carries that attribute.
@@ -39,15 +47,12 @@ class MeshData(TypedDict, total=False):
     import pathlib
     import tempfile
 
-    import meshio
-    import numpy as np
-
     import ordito as od
 
-    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    mesh = od.Trimesh(*od.creation.box())
     with tempfile.TemporaryDirectory() as folder:
-        path = pathlib.Path(folder) / "triangle.ply"
-        meshio.write(path, meshio.Mesh(points, [("triangle", np.array([[0, 1, 2]]))]))
+        path = pathlib.Path(folder) / "box.ply"
+        od.io.save_mesh(mesh, path)
         data = od.io.load_mesh_data(path)
     print(sorted(data))  # ['faces', 'vertices']
     ```
@@ -55,26 +60,262 @@ class MeshData(TypedDict, total=False):
 
     vertices: Required[wp.array[wp.vec3]]
     faces: wp.array[wp.int32]
-    vertex_normals: wp.array[wp.vec3]
     uv: wp.array[wp.vec2]
-    corner_uv: wp.array[wp.vec2]
-    colors: wp.array[wp.vec3] | wp.array[wp.vec4]
-    face_normals: wp.array[wp.vec3]
+    colors: wp.array[wp.vec4]
+    face_colors: wp.array[wp.vec4]
 
 
-def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshData:
+def load_trimesh(path: str | Path, *, device: wp.DeviceLike = None) -> Trimesh:
     """
-    Load every mesh attribute ``meshio`` can read from a file into Warp arrays.
-
-    Reads ``path`` once with ``meshio`` and returns a dictionary whose keys are present
-    only when the corresponding data exists in the file. ``vertices`` is always present;
-    everything else is optional.
+    Load a mesh file into a [`Trimesh`][ordito.mesh.Trimesh], with its colours, UVs and texture.
 
     Parameters
     ----------
     path
-        Path to a mesh file in any format supported by ``meshio`` (PLY, STL, OBJ, OFF,
-        VTK, glTF, ...).
+        Path to a mesh file in any format ``trimesh`` reads (OBJ with its MTL and images, PLY,
+        glTF / GLB, STL, OFF, ...; VTK, Gmsh and the other volume formats when ``meshio`` is
+        installed too).
+    device
+        Warp device for the returned mesh. Defaults to the current Warp device.
+
+    Returns
+    -------
+    Trimesh
+        The file's triangles, polygons triangulated, with these visuals when the file has them:
+        vertex colours or face colours as the ``"color"`` vertex or face attribute, texture
+        coordinates as the ``"uv"`` vertex attribute, and the texture as its
+        [`material`][ordito.mesh.Trimesh.material]. Colours are RGBA in ``[0, 1]``.
+
+    Raises
+    ------
+    ImportError
+        If ``trimesh`` is not installed.
+    ValueError
+        If a face references a vertex index the file's own vertex count does not cover.
+    IndexError
+        If an OBJ file's face does: trimesh's OBJ reader refuses it first.
+
+    See Also
+    --------
+    [`save_mesh`][ordito.io.save_mesh]
+        The inverse.
+    [`load_mesh_data`][ordito.io.load_mesh_data]
+        The same arrays as a dictionary.
+    [`trimesh.load`][]
+
+    Notes
+    -----
+    UVs are per vertex, as in trimesh: a file whose vertex takes several texcoords (a UV seam)
+    reads as one vertex for each, so the vertices need not be numbered as in the file. A file with
+    several materials, or several meshes, is joined into one mesh, its textures packed into one
+    image. A material is read as its base colour: an MTL ``map_Kd`` image or ``Kd`` colour, or a
+    glTF base colour texture and factor (the ``Kd`` beside a ``map_Kd`` is left out, as trimesh
+    does when it reads colours off a texture). Normals in the file are not read: trimesh computes
+    its own, and so does [`vertex_normals`][ordito.mesh.Trimesh.vertex_normals].
+
+    Examples
+    --------
+    A coloured box saved and read back:
+
+    ```python
+    import pathlib
+    import tempfile
+
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    red = wp.full(8, wp.vec4(1.0, 0.0, 0.0, 1.0), dtype=wp.vec4, device=vertices.device)
+    mesh = od.Trimesh(vertices, faces, vertex_attributes={"color": red})
+    with tempfile.TemporaryDirectory() as folder:
+        path = pathlib.Path(folder) / "box.ply"
+        od.io.save_mesh(mesh, path)
+        loaded = od.io.load_trimesh(path)
+    print(loaded.n_vertices, loaded.n_faces, loaded.vertex_colors.numpy()[0].tolist())
+    # 8 12 [1.0, 0.0, 0.0, 1.0]
+    ```
+    """
+    read = _read(path, "load_trimesh", device)
+    return Trimesh(
+        read.vertices,
+        read.faces,
+        vertex_attributes=read.vertex_attributes,
+        face_attributes=read.face_attributes,
+        material=read.material,
+    )
+
+
+def save_mesh(mesh: Trimesh, path: str | Path) -> None:
+    """
+    Write a [`Trimesh`][ordito.mesh.Trimesh] to a file, with the visuals its format can hold.
+
+    The format follows the suffix of ``path``. Vertex colours, face colours, UVs and the material
+    are written where the format holds them: OBJ writes UVs, vertex colours and the material
+    (an MTL file and a PNG image beside it, named after ``path`` and the material); PLY writes
+    UVs, vertex colours and face colours; glTF / GLB writes UVs, vertex colours and the material
+    inside the file. A visual the format cannot hold is left out with a warning.
+
+    Parameters
+    ----------
+    mesh
+        Mesh to write.
+    path
+        Destination file. Its suffix picks the format: any format ``trimesh`` writes.
+
+    Raises
+    ------
+    ImportError
+        If ``trimesh`` (or, to write an image, ``Pillow``) is not installed.
+
+    Warns
+    -----
+    UserWarning
+        When a visual of ``mesh`` is not written: one the format cannot hold, the colours of a
+        mesh whose texture is written (a file holds one or the other), the face colours of a mesh
+        whose vertex colours are written, or a material with no UVs to read it.
+
+    See Also
+    --------
+    [`load_trimesh`][ordito.io.load_trimesh]
+        The inverse.
+    [`trimesh.Trimesh.export`][]
+
+    Notes
+    -----
+    Colours are written as bytes, rounded from ``[0, 1]``; OBJ drops their alpha. A material's
+    image is written as 8-bit RGBA. OBJ stores the material's factor as ``Kd``, which
+    [`load_trimesh`][ordito.io.load_trimesh] reads only when there is no image.
+
+    Examples
+    --------
+    A textured square written to OBJ, its MTL and image beside it:
+
+    ```python
+    import pathlib
+    import tempfile
+
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(2, 2), center=False)
+    texels = np.random.default_rng(0).random((4, 4, 4), dtype=np.float32)
+    mesh = od.Trimesh(
+        vertices,
+        faces,
+        vertex_attributes={"uv": wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)},
+        material=od.texture.Material(image=wp.array(texels, dtype=wp.float32), name="skin"),
+    )
+    with tempfile.TemporaryDirectory() as folder:
+        od.io.save_mesh(mesh, pathlib.Path(folder) / "square.obj")
+        print(sorted(path.name for path in pathlib.Path(folder).iterdir()))
+    # ['skin.png', 'square.mtl', 'square.obj']
+    ```
+    """
+    tm = _import_trimesh()
+    path = Path(path)
+    suffix = path.suffix.lower()
+    holds = _FORMAT_VISUALS.get(suffix, frozenset())
+    # Readbacks: trimesh writes from host arrays, so the whole mesh comes back once.
+    vertices_np = read_array(mesh.vertices)
+    faces_np = read_array(mesh.faces).reshape(-1, 3)
+    visual = _export_visual(mesh, holds, suffix)
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, visual=visual, process=False)
+    options: dict[str, Any] = {"mtl_name": f"{path.stem}.mtl"} if suffix == ".obj" else {}
+    mesh_tm.export(path, **options)
+
+
+def _export_visual(mesh: Trimesh, holds: frozenset[str], suffix: str) -> object:
+    """
+    Build the trimesh visual of what ``mesh`` writes to a format holding ``holds``, warning on loss.
+
+    One visual a file: a texture (UVs and the material) when the mesh has UVs the format holds,
+    else colours, vertex colours before face colours.
+    """
+    from trimesh.visual import ColorVisuals, TextureVisuals
+
+    uv, material = mesh.uv, mesh.material
+    vertex_colors, face_colors = mesh.vertex_colors, mesh.face_colors
+    lost: list[str] = []
+    visual: object = None
+    if uv is not None and "uv" in holds:
+        texture = None
+        if material is not None:
+            if "texture" in holds:
+                texture = _material_to_trimesh(material)
+            else:
+                lost.append("the material")
+        # Readback: trimesh writes from host arrays.
+        visual = TextureVisuals(uv=read_array(uv), material=texture)
+        if vertex_colors is not None or face_colors is not None:
+            lost.append("the colours, beside a texture")
+    else:
+        if uv is not None:
+            lost.append("the UVs")
+        if material is not None:
+            lost.append("the material" if uv is not None else "the material, which has no UVs")
+        colors: dict[str, np.ndarray] = {}
+        if vertex_colors is not None:
+            if "vertex" in holds:
+                colors["vertex_colors"] = _color_bytes(vertex_colors)
+            else:
+                lost.append("the vertex colours")
+        if face_colors is not None:
+            if "face" in holds and not colors:
+                colors["face_colors"] = _color_bytes(face_colors)
+            else:
+                lost.append(
+                    "the face colours, beside vertex colours"
+                    if "face" in holds and colors
+                    else "the face colours"
+                )
+        if colors:
+            visual = ColorVisuals(**colors)
+    if lost:
+        warnings.warn(
+            f"not written to the {suffix or 'suffix-less'} file: {'; '.join(lost)}",
+            UserWarning,
+            stacklevel=3,
+        )
+    return visual
+
+
+def _material_to_trimesh(material: Material) -> PBRMaterial:
+    """Return ``material`` as trimesh's base-colour material, its image as 8-bit RGBA."""
+    from PIL import Image
+    from trimesh.visual.material import PBRMaterial
+
+    image = None
+    if material.image is not None:
+        # Readback: the image is written from the host.
+        image = Image.fromarray(_byte_values(read_array(material.image)), mode="RGBA")
+    factor = _byte_values(np.array([float(c) for c in material.base_color]))
+    return PBRMaterial(name=material.name, baseColorTexture=image, baseColorFactor=factor)
+
+
+def _color_bytes(colors: wp.array[wp.vec4]) -> np.ndarray:
+    """Read float RGBA colours back as bytes. Readback: trimesh writes from host arrays."""
+    return _byte_values(read_array(colors))
+
+
+def _byte_values(values: np.ndarray) -> np.ndarray:
+    """Round values in ``[0, 1]`` to bytes, clamping those outside."""
+    return np.round(np.clip(values, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshData:
+    """
+    Load a mesh file's vertices, faces, colours and UVs into Warp arrays.
+
+    Reads what [`load_trimesh`][ordito.io.load_trimesh] reads, as a dictionary whose keys are
+    present only when the file carries that attribute; ``vertices`` is always present.
+
+    Parameters
+    ----------
+    path
+        Path to a mesh file in any format ``trimesh`` reads.
     device
         Warp device for the returned arrays. Defaults to the current Warp device.
 
@@ -83,505 +324,75 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     MeshData
         Mapping with these possible keys:
 
-        - ``vertices`` : ``wp.array[wp.vec3]`` of ``float32`` vertex positions (always present).
-        - ``faces`` : ``(3 * n_faces,)`` flat ``wp.array[wp.int32]`` (triangle cells only).
-        - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.
-        - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).
-        - ``corner_uv`` : ``(3 * n_faces,)`` ``wp.array[wp.vec2]``, one texcoord per face corner,
-          from an OBJ file's ``vt`` indices or a PLY file's ``texcoord`` face list -- the form of
-          a UV atlas, whose seams give one vertex several texcoords.
-          [`split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values]
-          turns it into per-vertex ``uv``.
-        - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``
-          (and optional ``alpha``); integer channels are normalized to ``[0, 1]``.
-        - ``face_normals`` : ``wp.array[wp.vec3]`` — only when the file stored per-face normals.
+        - ``vertices`` : ``(n_vertices,)`` ``wp.vec3`` positions (always present).
+        - ``faces`` : ``(3 * n_faces,)`` ``wp.int32`` triangle indices, polygons triangulated.
+        - ``uv`` : ``(n_vertices,)`` ``wp.vec2`` texture coordinates, a vertex for each texcoord
+          of a seam.
+        - ``colors`` : ``(n_vertices,)`` ``wp.vec4`` RGBA vertex colours in ``[0, 1]``.
+        - ``face_colors`` : ``(n_faces,)`` ``wp.vec4`` RGBA face colours in ``[0, 1]``.
 
     Raises
     ------
+    ImportError
+        If ``trimesh`` is not installed.
     ValueError
-        If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with
-        per-corner texcoords is malformed or names a vertex it does not define.
+        If a face references a vertex index the file's own vertex count does not cover.
+    IndexError
+        If an OBJ file's face does: trimesh's OBJ reader refuses it first.
 
     See Also
     --------
+    [`load_trimesh`][ordito.io.load_trimesh]
     [`load_mesh`][ordito.io.load_mesh]
-
-    Notes
-    -----
-    Only triangle cells are consumed; non-triangle cell blocks are ignored. ``meshio`` reads
-    attributes verbatim and never computes them, so ``face_normals`` appears only when the
-    file itself contained per-face normals.
-
-    An OBJ file is read here rather than by ``meshio``, which refuses one whose ``vt`` count
-    differs from its ``v`` count -- every UV-mapped OBJ with a seam. Its positions, triangles and
-    ``corner_uv`` are returned; polygons with more than three corners are ignored as above. A PLY
-    file whose faces carry a ``texcoord`` (or ``texcoords``) list, which ``meshio`` cannot decode,
-    is read here too, ASCII or binary, with every attribute above.
 
     Examples
     --------
-    A box written to PLY with per-vertex normals reads back with them:
+    A box written with UVs reads back with them:
 
     ```python
     import pathlib
     import tempfile
 
-    import meshio
+    import warp as wp
 
     import ordito as od
 
     vertices, faces = od.creation.box()
-    normals = od.normals.vertex_normals(vertices, faces).numpy()
-    mesh = meshio.Mesh(
-        vertices.numpy(),
-        [("triangle", faces.numpy().reshape(-1, 3))],
-        point_data={"nx": normals[:, 0], "ny": normals[:, 1], "nz": normals[:, 2]},
-    )
+    uv = wp.array(vertices.numpy()[:, :2] + 0.5, dtype=wp.vec2)
+    mesh = od.Trimesh(vertices, faces, vertex_attributes={"uv": uv})
     with tempfile.TemporaryDirectory() as folder:
         path = pathlib.Path(folder) / "box.ply"
-        meshio.write(path, mesh)
+        od.io.save_mesh(mesh, path)
         data = od.io.load_mesh_data(path)
-    print(sorted(data))  # ['faces', 'vertex_normals', 'vertices']
-    print(data["faces"].shape, data["vertex_normals"].shape)  # (36,) (8,)
+    print(sorted(data))  # ['faces', 'uv', 'vertices']
+    print(data["faces"].shape, data["uv"].shape)  # (36,) (8,)
     ```
     """
-    if Path(path).suffix.lower() == ".obj":
-        return _load_obj_data(path, device)
-    if _is_ply_with_corner_texcoords(path):
-        ply = _read_ply(path)
-        if ply.faces.size > 0:
-            _require_valid_faces_host(ply.faces, len(ply.points), "load_mesh_data")
-        return _mesh_data(
-            ply.points, ply.faces, ply.point_data, ply.face_normals, ply.corner_uv, device
-        )
-    meshio = _import_meshio()
-    mesh = meshio.read(path)
-    return _mesh_data(
-        mesh.points,
-        mesh.cells_dict.get("triangle"),
-        mesh.point_data,
-        _face_normals_from_cell_data(mesh),
-        None,
-        device,
-    )
-
-
-def _mesh_data(
-    points: np.ndarray,
-    faces_np: np.ndarray | None,
-    point_data: dict[str, np.ndarray],
-    face_normals: np.ndarray | None,
-    corner_uv: np.ndarray | None,
-    device: wp.DeviceLike,
-) -> MeshData:
-    """Return ``load_mesh_data``'s dictionary from a decoded file's host arrays."""
-    points = np.ascontiguousarray(points, dtype=np.float32)
-    result: MeshData = {"vertices": _launch.array(points, dtype=wp.vec3, device=device)}
-
-    if faces_np is not None and len(faces_np) > 0:
-        faces_flat = np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32)
-        result["faces"] = _launch.array(faces_flat, dtype=wp.int32, device=device)
-        if corner_uv is not None:
-            result["corner_uv"] = _launch.array(
-                np.ascontiguousarray(corner_uv, dtype=np.float32), dtype=wp.vec2, device=device
-            )
-
-    normals = _stack_columns(point_data, _NORMAL_COLUMNS)
-    if normals is not None:
-        result["vertex_normals"] = _launch.array(
-            np.ascontiguousarray(normals, dtype=np.float32), dtype=wp.vec3, device=device
-        )
-
-    for names in _UV_COLUMN_SETS:
-        uv = _stack_columns(point_data, names)
-        if uv is not None:
-            result["uv"] = _launch.array(
-                np.ascontiguousarray(uv, dtype=np.float32), dtype=wp.vec2, device=device
-            )
-            break
-
-    colors_raw = _stack_columns(point_data, _COLOR_COLUMNS_RGBA)
-    has_alpha = colors_raw is not None
-    if colors_raw is None:
-        colors_raw = _stack_columns(point_data, _COLOR_COLUMNS)
-    if colors_raw is not None:
-        colors = colors_raw.astype(np.float32)
-        if np.issubdtype(colors_raw.dtype, np.integer):
-            colors /= 255.0
-        colors = np.ascontiguousarray(colors, dtype=np.float32)
-        result["colors"] = (
-            _launch.array(colors, dtype=wp.vec4, device=device)
-            if has_alpha
-            else _launch.array(colors, dtype=wp.vec3, device=device)
-        )
-
-    if face_normals is not None:
-        result["face_normals"] = _launch.array(
-            np.ascontiguousarray(face_normals, dtype=np.float32), dtype=wp.vec3, device=device
-        )
-
+    read = _read(path, "load_mesh_data", device)
+    result: MeshData = {"vertices": read.vertices}
+    if read.faces.size > 0:
+        result["faces"] = read.faces
+    if (uv := read.vertex_attributes.get("uv")) is not None:
+        result["uv"] = uv
+    if (colors := read.vertex_attributes.get("color")) is not None:
+        result["colors"] = colors
+    if (face_colors := read.face_attributes.get("color")) is not None:
+        result["face_colors"] = face_colors
     return result
-
-
-def _load_obj_data(path: str | Path, device: wp.DeviceLike) -> MeshData:
-    """Return ``load_mesh_data`` of an OBJ file: positions, triangles and per-corner texcoords."""
-    points, faces, corner_uv = _read_obj(path)
-    result: MeshData = {"vertices": _launch.array(points, dtype=wp.vec3, device=device)}
-    if faces.size > 0:
-        _require_valid_faces_host(faces, len(points), "load_mesh_data")
-        result["faces"] = _launch.array(faces.astype(np.int32), dtype=wp.int32, device=device)
-        if corner_uv is not None:
-            result["corner_uv"] = _launch.array(corner_uv, dtype=wp.vec2, device=device)
-    return result
-
-
-def _read_obj(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """
-    Parse an OBJ file's ``v``, ``vt`` and triangular ``f`` lines on the host.
-
-    Returns ``(points, faces, corner_uv)``: ``(n, 3)`` ``float32`` positions, ``(3 * n_faces,)``
-    ``int64`` zero-based corners (unvalidated) and ``(3 * n_faces, 2)`` ``float32`` texcoords, or
-    ``None`` unless every corner names one. Negative (relative) indices count back from the
-    elements read so far, as the format defines.
-    """
-    positions: list[list[float]] = []
-    texcoords: list[list[float]] = []
-    corners: list[int] = []
-    corner_texcoords: list[int] = []
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            tokens = line.split()
-            if not tokens:
-                continue
-            if tokens[0] == "v":
-                positions.append([float(x) for x in tokens[1:4]])
-            elif tokens[0] == "vt":
-                texcoords.append([float(x) for x in tokens[1:3]])
-            elif tokens[0] == "f" and len(tokens) == 4:
-                for token in tokens[1:]:
-                    fields = token.split("/")
-                    index = int(fields[0])
-                    corners.append(index - 1 if index > 0 else len(positions) + index)
-                    if len(fields) > 1 and fields[1]:
-                        t = int(fields[1])
-                        corner_texcoords.append(t - 1 if t > 0 else len(texcoords) + t)
-                    else:
-                        corner_texcoords.append(-1)
-    points = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
-    faces = np.asarray(corners, dtype=np.int64)
-    corner_index = np.asarray(corner_texcoords, dtype=np.int64)
-    corner_uv = None
-    if texcoords and corners and (corner_index >= 0).all():
-        table = np.asarray(texcoords, dtype=np.float32).reshape(-1, 2)
-        if int(corner_index.max()) >= len(table):
-            raise ValueError(f"OBJ file {path!r} names a texcoord past its {len(table)} vt lines")
-        corner_uv = np.ascontiguousarray(table[corner_index])
-    return points, faces, corner_uv
-
-
-class _PlyProperty(NamedTuple):
-    """One PLY property: its name, NumPy value type, and NumPy count type (``None``: a scalar)."""
-
-    name: str
-    dtype: str
-    count_dtype: str | None
-
-
-class _PlyElement(NamedTuple):
-    """One PLY element: its name, row count and properties in file order."""
-
-    name: str
-    n_rows: int
-    properties: list[_PlyProperty]
-
-
-class _PlyMesh(NamedTuple):
-    """A PLY file's triangles and attributes, as ``_mesh_data`` takes them."""
-
-    points: np.ndarray
-    faces: np.ndarray
-    point_data: dict[str, np.ndarray]
-    face_normals: np.ndarray | None
-    corner_uv: np.ndarray | None
-
-
-# PLY scalar types by every name the format allows, as NumPy type codes (byte order added per file).
-_PLY_TYPES = {
-    "char": "i1",
-    "int8": "i1",
-    "uchar": "u1",
-    "uint8": "u1",
-    "short": "i2",
-    "int16": "i2",
-    "ushort": "u2",
-    "uint16": "u2",
-    "int": "i4",
-    "int32": "i4",
-    "uint": "u4",
-    "uint32": "u4",
-    "float": "f4",
-    "float32": "f4",
-    "double": "f8",
-    "float64": "f8",
-}
-# The face list properties that hold one texcoord pair per corner.
-_PLY_TEXCOORD_LISTS = ("texcoord", "texcoords")
-
-
-def _is_ply_with_corner_texcoords(path: str | Path) -> bool:
-    """Whether ``path`` is a PLY file whose faces carry a per-corner texcoord list."""
-    if Path(path).suffix.lower() != ".ply":
-        return False
-    try:
-        _, elements, _ = _read_ply_header(path)
-    except (ValueError, OSError):
-        return False  # a header this reader does not understand is left to ``meshio``
-    return any(
-        prop.name in _PLY_TEXCOORD_LISTS and prop.count_dtype is not None
-        for element in elements
-        if element.name == "face"
-        for prop in element.properties
-    )
-
-
-def _read_ply_header(path: str | Path) -> tuple[str, list[_PlyElement], int]:
-    """Return a PLY file's ``(format, elements, body offset)``, reading its header alone."""
-    elements: list[_PlyElement] = []
-    file_format = ""
-    with open(path, "rb") as handle:
-        if handle.readline().strip() != b"ply":
-            raise ValueError(f"PLY file {path!r} does not start with 'ply'")
-        for line in handle:
-            tokens = line.decode("ascii", errors="replace").split()
-            if not tokens or tokens[0] in ("comment", "obj_info"):
-                continue
-            if tokens[0] == "end_header":
-                return file_format, elements, handle.tell()
-            if tokens[0] == "format" and len(tokens) == 3:
-                file_format = tokens[1]
-            elif tokens[0] == "element" and len(tokens) == 3:
-                elements.append(_PlyElement(tokens[1], int(tokens[2]), []))
-            elif tokens[0] == "property" and elements and len(tokens) in (3, 5):
-                if len(tokens) == 5 and tokens[1] == "list":
-                    prop = _PlyProperty(tokens[4], _ply_type(tokens[3]), _ply_type(tokens[2]))
-                else:
-                    prop = _PlyProperty(tokens[-1], _ply_type(tokens[1]), None)
-                elements[-1].properties.append(prop)
-            else:
-                raise ValueError(f"PLY file {path!r} has a malformed header line {line!r}")
-    raise ValueError(f"PLY file {path!r} has no end_header")
-
-
-def _ply_type(name: str) -> str:
-    """Return a PLY scalar type's NumPy type code."""
-    if name not in _PLY_TYPES:
-        raise ValueError(f"unknown PLY type {name!r}")
-    return _PLY_TYPES[name]
-
-
-def _read_ply(path: str | Path) -> _PlyMesh:
-    """
-    Read a PLY file on the host: positions, triangles, vertex columns, face normals, texcoords.
-
-    ASCII and binary of either byte order. Only faces of three corners are kept, as for OBJ, and
-    ``corner_uv`` is ``None`` unless every kept face carries three texcoord pairs. The face
-    indices are returned unvalidated.
-    """
-    file_format, elements, offset = _read_ply_header(path)
-    with open(path, "rb") as handle:
-        handle.seek(offset)
-        body = handle.read()
-    if file_format == "ascii":
-        columns = _ply_ascii_columns(path, body, elements)
-    elif file_format in ("binary_little_endian", "binary_big_endian"):
-        order = "<" if file_format == "binary_little_endian" else ">"
-        columns = _ply_binary_columns(path, body, elements, order)
-    else:
-        raise ValueError(f"PLY file {path!r} has an unknown format {file_format!r}")
-
-    vertex = columns.get("vertex", {})
-    if not all(name in vertex for name in "xyz"):
-        raise ValueError(f"PLY file {path!r} has no vertex x, y and z")
-    points = np.column_stack([vertex[name] for name in "xyz"]).astype(np.float32)
-    point_data = {
-        name: values
-        for name, values in vertex.items()
-        if name not in "xyz" and isinstance(values, np.ndarray)
-    }
-    face = columns.get("face", {})
-    corners: list[np.ndarray] = face.get("vertex_indices", face.get("vertex_index", []))
-    triangle = np.array([row.size == 3 for row in corners], dtype=bool)
-    faces = np.zeros(0, dtype=np.int64)
-    if triangle.any():
-        faces = np.concatenate([row for row, kept in zip(corners, triangle, strict=True) if kept])
-        faces = faces.astype(np.int64)
-    face_normals = None
-    if all(name in face for name in ("nx", "ny", "nz")):
-        face_normals = np.column_stack([face[name][triangle] for name in ("nx", "ny", "nz")])
-    corner_uv = None
-    texcoords = next((face[name] for name in _PLY_TEXCOORD_LISTS if name in face), None)
-    if texcoords is not None and triangle.any():
-        kept_texcoords = [row for row, kept in zip(texcoords, triangle, strict=True) if kept]
-        if all(row.size == 6 for row in kept_texcoords):
-            corner_uv = np.concatenate(kept_texcoords).astype(np.float32).reshape(-1, 2)
-    return _PlyMesh(points, faces, point_data, face_normals, corner_uv)
-
-
-def _ply_ascii_columns(
-    path: str | Path, body: bytes, elements: list[_PlyElement]
-) -> dict[str, dict[str, Any]]:
-    """
-    Decode an ASCII PLY body into ``{element: {property: values}}``.
-
-    A scalar property is a ``(count,)`` array, a list property a list of one array a row.
-    """
-    lines = [line for line in body.decode("ascii", errors="replace").splitlines() if line.strip()]
-    columns: dict[str, dict[str, Any]] = {}
-    start = 0
-    for element in elements:
-        rows = lines[start : start + element.n_rows]
-        start += element.n_rows
-        if len(rows) != element.n_rows:
-            raise ValueError(f"PLY file {path!r} ends inside element {element.name!r}")
-        values: dict[str, list[Any]] = {prop.name: [] for prop in element.properties}
-        for row in rows:
-            tokens = row.split()
-            column = 0
-            for prop in element.properties:
-                if prop.count_dtype is None:
-                    values[prop.name].append(float(tokens[column]))
-                    column += 1
-                    continue
-                width = int(tokens[column])
-                items = np.asarray(tokens[column + 1 : column + 1 + width], dtype=np.float64)
-                values[prop.name].append(items.astype(prop.dtype))
-                column += 1 + width
-            if column != len(tokens):
-                raise ValueError(f"PLY file {path!r} has a malformed {element.name!r} row")
-        columns[element.name] = {
-            prop.name: values[prop.name]
-            if prop.count_dtype is not None
-            else np.asarray(values[prop.name]).astype(prop.dtype)
-            for prop in element.properties
-        }
-    return columns
-
-
-def _ply_binary_columns(
-    path: str | Path, body: bytes, elements: list[_PlyElement], order: str
-) -> dict[str, dict[str, Any]]:
-    """
-    Decode a binary PLY body into ``{element: {property: values}}``, as ``_ply_ascii_columns``.
-
-    An element whose lists all keep their first row's length is read as one structured array;
-    any other is walked row by row.
-    """
-    columns: dict[str, dict[str, Any]] = {}
-    position = 0
-    for element in elements:
-        fields: list[Any] = []
-        cursor = position
-        for k, prop in enumerate(element.properties):
-            item = np.dtype(order + prop.dtype)
-            if prop.count_dtype is None:
-                fields.append((f"v{k}", item))
-                cursor += item.itemsize
-                continue
-            count_type = np.dtype(order + prop.count_dtype)
-            width = 0
-            if element.n_rows > 0 and cursor + count_type.itemsize <= len(body):
-                width = int(np.frombuffer(body, count_type, 1, cursor)[0])
-            fields.extend([(f"c{k}", count_type), (f"v{k}", item, (width,))])
-            cursor += count_type.itemsize + width * item.itemsize
-        row_type = np.dtype(fields)
-        table = None
-        if position + element.n_rows * row_type.itemsize <= len(body):
-            table = np.frombuffer(body, row_type, element.n_rows, position)
-            uniform = all(
-                (table[f"c{k}"] == table[f"c{k}"][:1]).all()
-                for k, prop in enumerate(element.properties)
-                if prop.count_dtype is not None
-            )
-            table = table if uniform else None
-        if table is not None:
-            columns[element.name] = {
-                prop.name: table[f"v{k}"].copy()
-                if prop.count_dtype is None
-                else list(table[f"v{k}"].copy())
-                for k, prop in enumerate(element.properties)
-            }
-            position += element.n_rows * row_type.itemsize
-            continue
-        values: dict[str, list[Any]] = {prop.name: [] for prop in element.properties}
-        for _ in range(element.n_rows):
-            for prop in element.properties:
-                item = np.dtype(order + prop.dtype)
-                width = 1
-                if prop.count_dtype is not None:
-                    count_type = np.dtype(order + prop.count_dtype)
-                    if position + count_type.itemsize > len(body):
-                        raise ValueError(f"PLY file {path!r} ends inside {element.name!r}")
-                    width = int(np.frombuffer(body, count_type, 1, position)[0])
-                    position += count_type.itemsize
-                if position + width * item.itemsize > len(body):
-                    raise ValueError(f"PLY file {path!r} ends inside {element.name!r}")
-                read = np.frombuffer(body, item, width, position)
-                values[prop.name].append(read if prop.count_dtype is not None else read[0])
-                position += width * item.itemsize
-        columns[element.name] = {
-            prop.name: values[prop.name]
-            if prop.count_dtype is not None
-            else np.asarray(values[prop.name])
-            for prop in element.properties
-        }
-    return columns
-
-
-def _stack_columns(data: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
-    """Stack scalar ``point_data``/``cell_data`` columns into ``(n, len(names))`` or ``None``."""
-    if not all(name in data for name in names):
-        return None
-    return np.column_stack([np.asarray(data[name]) for name in names])
-
-
-def _face_normals_from_cell_data(mesh: meshio.Mesh) -> np.ndarray | None:
-    """Read ``nx, ny, nz`` cell data aligned with the triangle faces, if present."""
-    # ``cell_data_dict[name]["triangle"]`` concatenates every triangle block in the same
-    # order ``cells_dict["triangle"]`` does, so the rows line up with ``faces`` even when a
-    # file splits its triangles across several blocks (gmsh / VTK physical groups). Reading
-    # ``cell_data[name][block_index]`` instead returns only the first block's normals.
-    cell_data_dict = mesh.cell_data_dict
-    columns = []
-    for name in _NORMAL_COLUMNS:
-        per_type = cell_data_dict.get(name)
-        if per_type is None or "triangle" not in per_type:
-            return None
-        columns.append(np.asarray(per_type["triangle"]))
-    return np.column_stack(columns)
-
-
-def _import_meshio():
-    try:
-        import meshio  # pyright: ignore[reportMissingTypeStubs]
-    except ImportError as exc:
-        raise ImportError(
-            "ordito.io requires meshio. Install it with `pip install ordito[io]`."
-        ) from exc
-    return meshio
 
 
 def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     """
     Load a triangle mesh file into a ``warp.Mesh``.
 
-    Reads only the vertices and triangle faces (the subset
+    Reads only the vertices and triangles (the subset
     [`load_mesh_data`][ordito.io.load_mesh_data] returns) and wraps them in a ``warp.Mesh`` that
     owns its buffers.
 
     Parameters
     ----------
     path
-        Path to a mesh file in any format supported by ``meshio``.
+        Path to a mesh file in any format ``trimesh`` reads.
     device
         Warp device for the returned mesh. Defaults to the current Warp device.
 
@@ -592,10 +403,14 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
 
     Raises
     ------
+    ImportError
+        If ``trimesh`` is not installed.
     ValueError
-        If the file contains no triangle faces (e.g. a point cloud or a triangle-strip
-        PLY that ``meshio`` cannot decode), if a face references a vertex index the file's own
-        vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.
+        If the file contains no triangle faces (a point cloud, say) or a face references a vertex
+        index the file's own vertex count does not cover.
+    IndexError
+        If an OBJ file's face references a vertex it does not define: trimesh's OBJ reader refuses
+        it first.
 
     See Also
     --------
@@ -609,51 +424,130 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     import pathlib
     import tempfile
 
-    import meshio
-
     import ordito as od
 
-    vertices, faces = od.creation.icosphere(subdivisions=1)
-    mesh = meshio.Mesh(vertices.numpy(), [("triangle", faces.numpy().reshape(-1, 3))])
+    mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))
     with tempfile.TemporaryDirectory() as folder:
         path = pathlib.Path(folder) / "sphere.obj"
-        meshio.write(path, mesh)
+        od.io.save_mesh(mesh, path)
         loaded = od.io.load_mesh(path)
     print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)
     ```
     """
-    if Path(path).suffix.lower() == ".obj":
-        points, faces_np, _ = _read_obj(path)
-        if faces_np.size == 0:
-            raise ValueError(f"Mesh file {path!r} has no triangle faces; cannot build a wp.Mesh.")
-        _require_valid_faces_host(faces_np, len(points), "load_mesh")
-        return wp.Mesh(
-            points=_launch.array(points, dtype=wp.vec3, device=device),
-            indices=_launch.array(faces_np.astype(np.int32), dtype=wp.int32, device=device),
-        )
-    if _is_ply_with_corner_texcoords(path):
-        ply = _read_ply(path)
-        points_np, faces_np = ply.points, ply.faces
-    else:
-        meshio = _import_meshio()
-        mesh = meshio.read(path)
-        points_np, faces_np = mesh.points, mesh.cells_dict.get("triangle")
-    if faces_np is None or len(faces_np) == 0:
-        raise ValueError(f"Mesh file {path!r} has no triangle faces; cannot build a wp.Mesh.")
-    # A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer
-    # doesn't cover; this is the trust boundary where that first enters ordito. The check reads
-    # the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or
-    # above ``2**31`` into range.
-    _require_valid_faces_host(faces_np, len(points_np), "load_mesh")
-    vertices_wp = _launch.array(
+    read = _read(path, "load_mesh", device)
+    if read.faces.size == 0:
+        raise ValueError(f"Mesh file {str(path)!r} has no triangle faces; cannot build a wp.Mesh.")
+    # Both buffers were allocated by the read and nothing else holds them, so the mesh can own
+    # them directly.
+    return wp.Mesh(points=read.vertices, indices=read.faces)
+
+
+class _Read(NamedTuple):
+    """A mesh file as ordito holds it: buffers, attribute tables and material."""
+
+    vertices: wp.array[wp.vec3]
+    faces: wp.array[wp.int32]
+    vertex_attributes: dict[str, odt.ArrayNd]
+    face_attributes: dict[str, odt.ArrayNd]
+    material: Material | None
+
+
+def _read(path: str | Path, name: str, device: wp.DeviceLike) -> _Read:
+    """Read ``path`` with trimesh into device buffers, its visuals as attributes and a material."""
+    tm = _import_trimesh()
+    loaded = tm.load(path, process=False, force="mesh")
+    points_np = np.asarray(loaded.vertices)
+    faces_np = np.asarray(loaded.faces).reshape(-1, 3)
+    # A malformed file can hand back a face index the vertex buffer does not cover; this is the
+    # trust boundary where that first enters ordito. The check reads trimesh's own integers before
+    # the ``int32`` narrowing, which would wrap an index at or above ``2**31`` into range.
+    _require_valid_faces_host(faces_np, len(points_np), name)
+    vertices = _launch.array(
         np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec3, device=device
     )
-    faces_wp = _launch.array(
+    faces = _launch.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    # Both buffers were allocated on the lines above and nothing else holds them, so the mesh
-    # can own them directly.
-    return wp.Mesh(points=vertices_wp, indices=faces_wp)
+    vertex_attributes: dict[str, odt.ArrayNd] = {}
+    face_attributes: dict[str, odt.ArrayNd] = {}
+    material = None
+    visual = loaded.visual
+    kind = None if visual is None else visual.kind
+    if visual is not None and kind == "vertex":
+        vertex_attributes["color"] = _float_colors(visual.vertex_colors, device)
+    elif visual is not None and kind == "face":
+        face_attributes["color"] = _float_colors(visual.face_colors, device)
+    elif visual is not None and kind == "texture":
+        uv_np = getattr(visual, "uv", None)
+        if uv_np is not None:
+            vertex_attributes["uv"] = _launch.array(
+                np.ascontiguousarray(uv_np, dtype=np.float32), dtype=wp.vec2, device=device
+            )
+        material = _material_from_trimesh(getattr(visual, "material", None), device)
+    return _Read(vertices, faces, vertex_attributes, face_attributes, material)
+
+
+def _float_colors(colors: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.vec4]:
+    """Upload trimesh's ``uint8`` RGBA colours as ``wp.vec4`` in ``[0, 1]``."""
+    rgba = np.ascontiguousarray(np.asarray(colors, dtype=np.float32)[:, :4] / 255.0)
+    return _launch.array(rgba, dtype=wp.vec4, device=device)
+
+
+def _material_from_trimesh(material: object, device: wp.DeviceLike) -> Material | None:
+    """
+    Return trimesh's material as a [`Material`][ordito.texture.Material]: its base colour.
+
+    ``None`` for no material, and for the placeholder trimesh invents for UVs read with no image
+    (``trimesh.visual.material.empty_material``: a 2x2 image of one grey), which a file never
+    stored. A material of another kind than a simple or PBR one is left out with a warning.
+    """
+    from trimesh.visual.material import PBRMaterial, SimpleMaterial, color_image
+
+    if material is None:
+        return None
+    if isinstance(material, PBRMaterial):
+        image, factor = material.baseColorTexture, material.baseColorFactor
+    elif isinstance(material, SimpleMaterial):
+        image = material.image
+        if image is not None and np.array_equal(np.asarray(image), np.asarray(color_image())):
+            return None
+        # The diffuse colour beside an image is not applied, as trimesh's own ``to_color`` does
+        # not: trimesh gives every image-less MTL a grey ``Kd`` it would darken the image by.
+        factor = None if image is not None else material.diffuse
+    else:
+        warnings.warn(
+            f"a {type(material).__name__} is not read: the mesh has no material",
+            UserWarning,
+            stacklevel=4,
+        )
+        return None
+    base_color = wp.vec4(1.0, 1.0, 1.0, 1.0)
+    if factor is not None:
+        factor_np = np.asarray(factor, dtype=np.float32).reshape(-1)
+        if np.asarray(factor).dtype.kind in "iu":
+            factor_np = factor_np / 255.0
+        rgba = np.ones(4, dtype=np.float32)
+        rgba[: factor_np.size] = factor_np[:4]
+        base_color = wp.vec4(*rgba.tolist())
+    texture = None
+    if image is not None:
+        texels = np.asarray(image.convert("RGBA"), dtype=np.float32) / 255.0
+        texture = odt.as_array3d(
+            _launch.array(np.ascontiguousarray(texels), dtype=wp.float32, device=device), wp.float32
+        )
+    name = getattr(material, "name", None) or "material"
+    return Material(image=texture, base_color=base_color, name=str(name))
+
+
+def _import_trimesh() -> Any:
+    """Import ``trimesh``, the optional dependency every reader and writer here goes through."""
+    try:
+        import trimesh as tm
+    except ImportError as exc:
+        raise ImportError(
+            "ordito.io requires trimesh. Install it with `pip install ordito[io]`."
+        ) from exc
+    return tm
 
 
 def mesh_from_numpy(

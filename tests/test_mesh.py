@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import warnings
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -1137,6 +1138,185 @@ def test_repr_lists_attributes_and_cache(sphere_irregular: tuple[tm.Trimesh, wp.
         "face attribute 'face_id': int32",
         "cached: edges",
     ]
+
+
+def _painted(mesh_wp: wp.Mesh) -> od.Trimesh:
+    """
+    Wrap ``mesh_wp`` with visuals that are affine in the positions, so an edit's output names them.
+
+    Each vertex colour is ``(x, y, z, 1)`` and each UV ``(x, y)`` of its position, and each face is
+    coloured by its index, so wherever an edit interpolates a vertex between others the carried
+    visuals must equal the same functions of the output positions.
+    """
+    device = mesh_wp.device
+    points_np = mesh_wp.points.numpy()
+    n_faces = mesh_wp.indices.size // 3
+    colors_np = np.column_stack([points_np, np.ones(len(points_np))]).astype(np.float32)
+    face_colors_np = np.zeros((n_faces, 4), dtype=np.float32)
+    face_colors_np[:, 0] = np.arange(n_faces)
+    return od.Trimesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        vertex_attributes={
+            "color": wp.array(colors_np, dtype=wp.vec4, device=device),
+            "uv": wp.array(points_np[:, :2], dtype=wp.vec2, device=device),
+        },
+        face_attributes={"color": wp.array(face_colors_np, dtype=wp.vec4, device=device)},
+    )
+
+
+def _material(device: wp.DeviceLike, name: str = "material") -> od.texture.Material:
+    """Return a two-by-two texture of random RGBA texels."""
+    texels_np = np.random.default_rng(0).random((2, 2, 4), dtype=np.float32)
+    image_wp = wp.array(texels_np, dtype=wp.float32, device=device)
+    return od.texture.Material(image=odt.as_array3d(image_wp, wp.float32), name=name)
+
+
+def test_visuals_read_the_reserved_attributes(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: ``vertex_colors``, ``face_colors`` and ``uv`` read their attributes.
+
+    trimesh synthesizes a grey for a mesh with no colours; ordito reads ``None``. Each reserved name
+    takes one dtype in either table, so a ``vec3`` colour or a ``vec3`` UV is refused at
+    construction rather than read back under the wrong type.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    bare = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    assert (bare.vertex_colors, bare.face_colors, bare.uv, bare.material) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+    painted = _painted(mesh_wp)
+    assert painted.vertex_colors is painted.vertex_attributes["color"]
+    assert painted.face_colors is painted.face_attributes["color"]
+    assert painted.uv is painted.vertex_attributes["uv"]
+
+    device = mesh_wp.device
+    n_vertices, n_faces = bare.n_vertices, bare.n_faces
+    with pytest.raises(TypeError, match="'color' must be vec4f, got vec3f"):
+        bare.with_attributes(vertex_attributes={"color": mesh_wp.points})
+    with pytest.raises(TypeError, match="'uv' must be vec2f, got vec3f"):
+        bare.with_attributes(vertex_attributes={"uv": mesh_wp.points})
+    with pytest.raises(TypeError, match="face attribute 'color' must be vec4f"):
+        bare.with_attributes(
+            face_attributes={"color": wp.zeros(n_faces, dtype=wp.vec3, device=device)}
+        )
+    with pytest.raises(TypeError, match="material must be an ordito Material"):
+        od.Trimesh(mesh_wp.points, mesh_wp.indices, material=cast("Any", "texture.png"))
+    assert (
+        bare.with_attributes(
+            vertex_attributes={"color": wp.zeros(n_vertices, dtype=wp.vec4, device=device)}
+        ).vertex_colors
+        is not None
+    )
+
+
+def test_visuals_blend_through_a_subdivision(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: colours and UVs interpolate where the edit interpolates positions.
+
+    trimesh's ``subdivide`` drops vertex colours (its output reads the default grey), so there is
+    no reference. The visuals are affine in the positions (``_painted``), so each midpoint's colour
+    and UV must be the same function of its position: copied from one endpoint, as the earlier
+    byte colours were, they miss by half an edge. Each child face keeps its parent's colour.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    painted = _painted(mesh_wp)
+    finer = painted.with_edit(
+        *od.remesh.subdivide(painted.vertices, painted.faces, return_provenance=True)
+    )
+    vertices_np = finer.vertices.numpy()
+    assert finer.vertex_colors is not None
+    assert finer.uv is not None
+    assert finer.face_colors is not None
+    expected_np = np.column_stack([vertices_np, np.ones(len(vertices_np))])
+    assert np.allclose(finer.vertex_colors.numpy(), expected_np, rtol=1e-5, atol=1e-6)
+    assert np.allclose(finer.uv.numpy(), vertices_np[:, :2], rtol=1e-5, atol=1e-6)
+    assert np.array_equal(
+        np.bincount(finer.face_colors.numpy()[:, 0].astype(np.int64)), np.full(painted.n_faces, 4)
+    )
+
+
+def test_material_rides_along(three_spheres: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: every method returning a mesh keeps its material, and ``+`` checks it.
+
+    The same object comes back from the methods that alias (equality is identity), with or without
+    attributes to carry, and ``copy`` returns a new one on a copy of the image. ``+`` keeps a
+    material both operands share; given two, it cannot texture both through one image, so it
+    warns and keeps the UVs.
+    """
+    _mesh_tm, mesh_wp = three_spheres
+    device = mesh_wp.device
+    material = _material(device)
+    plain = od.Trimesh(mesh_wp.points, mesh_wp.indices, material=material)
+    painted = _painted(mesh_wp).with_material(material)
+    keep_wp = wp.array(np.arange(0, plain.n_faces, 2, dtype=np.int32), device=device)
+
+    for mesh in (plain, painted):
+        derived = [
+            mesh.transform(od.transform.translation_matrix((1.0, 0.0, 0.0))),
+            mesh.invert(),
+            mesh.with_vertices(mesh.vertices),
+            mesh.with_faces(mesh.faces),
+            mesh.with_attributes(vertex_attributes={"extra": mesh.vertices}),
+            mesh.with_edit(*od.remesh.subdivide(mesh.vertices, mesh.faces, return_provenance=True)),
+            mesh.submesh(keep_wp),
+            *mesh.split(),
+        ]
+        assert all(result.material is material for result in derived)
+        duplicate = mesh.copy().material
+        assert duplicate is not None
+        assert duplicate.image is not None
+        assert material.image is not None
+        assert duplicate is not material
+        assert duplicate.image.ptr != material.image.ptr
+        assert np.array_equal(duplicate.image.numpy(), material.image.numpy())
+    assert painted.with_material(None).material is None
+    assert "    material 'material': 2x2 image" in repr(painted).splitlines()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (painted + painted).material is material
+    other = painted.with_material(_material(device, "other"))
+    with pytest.warns(UserWarning, match="different materials"):
+        joined = painted + other
+    assert joined.material is None
+    assert joined.uv is not None
+    assert joined.uv.size == 2 * painted.n_vertices
+    with pytest.warns(UserWarning, match="different materials"):
+        assert (painted + painted.with_material(None)).material is None
+
+
+def test_to_color_reads_the_material_at_the_uvs(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``to_color`` is ``texture.material_colors`` at ``uv`` as vertex colours.
+
+    The sampler itself is compared with trimesh in ``tests/test_texture.py`` (Class A); this pins
+    the method to it, keeping the UVs, the material and the cache, and its refusal without either.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    painted = _painted(mesh_wp).with_material(_material(mesh_wp.device))
+    normals = painted.face_normals
+    colored = painted.to_color()
+    assert painted.uv is not None
+    assert painted.material is not None
+    expected_wp = od.texture.material_colors(painted.material, painted.uv)
+    assert colored.vertex_colors is not None
+    assert np.array_equal(colored.vertex_colors.numpy(), expected_wp.numpy())
+    assert np.ptp(colored.vertex_colors.numpy()[:, 0]) > 1e-3
+    assert colored.uv is painted.uv
+    assert colored.material is painted.material
+    assert colored.face_normals is normals
+    with pytest.raises(ValueError, match="both a material and UVs"):
+        painted.with_material(None).to_color()
+    with pytest.raises(ValueError, match="both a material and UVs"):
+        painted.with_attributes(vertex_attributes={"uv": None}).to_color()
 
 
 def test_vertex_face_adjacency_cached_off_is_rebuilt_ascending_once_on(

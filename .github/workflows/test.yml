@@ -46,7 +46,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install
-      # `--extra io` is load-bearing, not tidiness: `ordito/io.py` imports `meshio` under
+      # `--extra io` is load-bearing, not tidiness: `ordito/io.py` imports `trimesh` under
       # `if TYPE_CHECKING:`, which basedpyright resolves even though the runtime import is lazy.
       # Without it the gate reports a spurious `reportMissingImports` and fails green-looking
       # code -- the failure mode section 8 already warns about for a dev-only environment.

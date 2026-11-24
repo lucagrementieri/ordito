@@ -24,8 +24,8 @@ Requires Python ≥ 3.11 and `warp-lang` ≥ 1.19. A CUDA-capable GPU is recomme
 every function also runs on Warp's CPU backend, with the same code. Warp's PyPI wheels are
 built with CUDA 13, so the GPU path needs an NVIDIA R580-series or newer driver and a Turing
 (`sm_75`) or newer GPU; Warp publishes CUDA 12 wheels (`+cu12`) on its GitHub releases for older
-drivers. Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
-`pip install "ordito[io]"`.
+drivers. Mesh file I/O, with colours, UVs and textures, via
+[trimesh](https://github.com/mikedh/trimesh) is an optional extra: `pip install "ordito[io]"`.
 
 ### Platform support
 
@@ -180,26 +180,28 @@ print(np.array_equal(faces_rows, mesh_tm.faces))  # True
 ```
 
 **From a file**: install the I/O extra (`pip install "ordito[io]"`) and call
-[`io.load_mesh_data`][ordito.io.load_mesh_data], which reads any format
-[meshio](https://github.com/nschloe/meshio) does (OBJ, PLY, STL, OFF, VTK, glTF, ...) and returns
-the vertices, faces and whatever per-vertex attributes the file carries. ordito has no writer of
-its own; meshio writes the arrays back out:
+[`io.load_trimesh`][ordito.io.load_trimesh], which reads any format
+[trimesh](https://github.com/mikedh/trimesh) does (OBJ with its materials, PLY, glTF / GLB, STL,
+OFF, ...) into a [`Trimesh`][ordito.mesh.Trimesh] with the file's vertex or face colours, UVs and
+texture. [`io.save_mesh`][ordito.io.save_mesh] writes one back, with the visuals the format
+holds:
 
 ```python
 import pathlib
 import tempfile
 
-import meshio
+import warp as wp
 
 import ordito as od
 
 vertices, faces = od.creation.torus(major_radius=1.0, minor_radius=0.3)
+gold = wp.full(vertices.size, wp.vec4(1.0, 0.8, 0.2, 1.0), dtype=wp.vec4, device=vertices.device)
+mesh = od.Trimesh(vertices, faces, vertex_attributes={"color": gold})
 with tempfile.TemporaryDirectory() as folder:
     path = pathlib.Path(folder) / "torus.ply"
-    cells = [("triangle", faces.numpy().reshape(-1, 3))]
-    meshio.write(path, meshio.Mesh(vertices.numpy(), cells))
-    data = od.io.load_mesh_data(path)
-print(data["vertices"].shape == vertices.shape, data["faces"].shape == faces.shape)  # True True
+    od.io.save_mesh(mesh, path)
+    loaded = od.io.load_trimesh(path)
+print(loaded.n_faces == mesh.n_faces, loaded.vertex_colors is not None)  # True True
 ```
 
 **From and to PyTorch**, without a copy: `wp.from_torch` wraps a tensor's memory as a Warp array,

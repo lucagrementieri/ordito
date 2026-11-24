@@ -184,7 +184,7 @@ _MODULES_WITHOUT_BENCHMARKS = frozenset(
         "constants",  # no callables
         "typing",  # annotations and rank/dtype guards; nothing with a runtime cost
         "config",  # a process-wide setting and its context manager; nothing launches
-        "io",  # meshio round-trips, i.e. a benchmark of meshio
+        "io",  # trimesh round-trips, i.e. a benchmark of trimesh
         "precompile",  # a build step: it would time nvcc and the CPU compiler, not ordito
     }
 )

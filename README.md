@@ -95,8 +95,9 @@ pip install ordito
 ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.19. A CUDA-capable GPU is recommended but not
-required — every function also runs on Warp's CPU backend. Mesh file I/O via
-[meshio](https://github.com/nschloe/meshio) is an optional extra: `pip install "ordito[io]"`.
+required — every function also runs on Warp's CPU backend. Mesh file I/O, with colours, UVs and
+textures, via [trimesh](https://github.com/mikedh/trimesh) is an optional extra:
+`pip install "ordito[io]"`.
 
 Tested on **Linux**, with and without CUDA, and on **macOS** (Apple Silicon, CPU backend). The
 wheel is pure Python and `warp-lang` supports Windows, so ordito is expected to work there, but it
@@ -163,7 +164,7 @@ close, stray debris to drop — see the
 | **Operators & solvers** | `laplacian`, `energies`, `linalg`, `interpolation`, `parametrization` | Cotangent Laplacian, mass matrices, discrete energies, sparse conjugate-gradient solvers (Jacobi and multigrid-preconditioned), harmonic, LSCM, and ARAP parametrization |
 | **Geodesics & heat methods** | `geodesic_walk`, `heat` | Straightest-geodesic walks (exponential map), heat-method geodesic distance, vector heat / parallel transport / log maps, signed heat method, on meshes and on point clouds |
 | **Curves** | `polyline` | Polyline resampling, simplification, and measures; triangulation of polygons with holes |
-| **Attributes & I/O** | `texture`, `io` | Per-vertex/face attribute handling, meshio-backed mesh loading |
+| **Attributes & I/O** | `texture`, `io` | Per-vertex/face attribute handling, materials and texture sampling, trimesh-backed mesh reading and writing with colours, UVs and textures |
 | **Arrays & infrastructure** | `array`, `reduce`, `grouping`, `graph`, `typing`, `constants` | GPU sort/scan/unique/group primitives, reductions, graph algorithms (connected components, shortest paths, cycles), typed array aliases |
 
 55 public modules in total — the full API reference, generated per module, lives at

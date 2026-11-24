@@ -517,6 +517,45 @@ def _nearest_texel(
     return r, c
 
 
+# How a texel index past the image's edge is brought back: clamped to the edge texel (the
+# samplers of baked textures, whose UVs lie in ``[0, 1]``) or wrapped around (a material's
+# texture, which tiles, as glTF's and OBJ's default sampler does).
+TEXEL_CLAMP = wp.int32(0)
+TEXEL_REPEAT = wp.int32(1)
+
+
+@wp.func
+def _texel_index(index: wp.int32, size: wp.int32, wrap: wp.int32) -> wp.int32:
+    """Bring a texel index into ``[0, size)``: clamped, or wrapped for ``TEXEL_REPEAT``."""
+    if wrap == TEXEL_REPEAT:
+        return ((index % size) + size) % size
+    return wp.clamp(index, wp.int32(0), size - 1)
+
+
+@wp.func
+def _bilinear_texels(
+    row: wp.float32, col: wp.float32, height: wp.int32, width: wp.int32, wrap: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32, wp.float32, wp.float32]:
+    """
+    Return the four texels around a continuous ``(row, col)`` and the blend fractions.
+
+    ``(r0, r1, c0, c1, fr, fc)``: rows ``r0`` / ``r1`` and columns ``c0`` / ``c1``, each brought
+    into the image per ``wrap``, and the fractions ``fr`` / ``fc`` of the way to ``r1`` / ``c1``.
+    """
+    r0 = wp.int32(wp.floor(row))
+    c0 = wp.int32(wp.floor(col))
+    fr = row - wp.float32(r0)
+    fc = col - wp.float32(c0)
+    return (
+        _texel_index(r0, height, wrap),
+        _texel_index(r0 + 1, height, wrap),
+        _texel_index(c0, width, wrap),
+        _texel_index(c0 + 1, width, wrap),
+        fr,
+        fc,
+    )
+
+
 @wp.kernel
 def sample_texture(
     uv: wp.array[wp.vec2],
@@ -551,18 +590,47 @@ def sample_texture(
         for k in range(n_channels):
             out_values[v, k] = image[r, c, k]
     else:
-        r0 = wp.int32(wp.floor(row))
-        c0 = wp.int32(wp.floor(col))
-        fr = row - wp.float32(r0)
-        fc = col - wp.float32(c0)
-        r0c = wp.clamp(r0, wp.int32(0), height - 1)
-        r1c = wp.clamp(r0 + 1, wp.int32(0), height - 1)
-        c0c = wp.clamp(c0, wp.int32(0), width - 1)
-        c1c = wp.clamp(c0 + 1, wp.int32(0), width - 1)
+        r0c, r1c, c0c, c1c, fr, fc = _bilinear_texels(row, col, height, width, TEXEL_CLAMP)
         for k in range(n_channels):
             top = wp.lerp(image[r0c, c0c, k], image[r0c, c1c, k], fc)
             bottom = wp.lerp(image[r1c, c0c, k], image[r1c, c1c, k], fc)
             out_values[v, k] = wp.lerp(top, bottom, fr)
+
+
+@wp.func
+def _texel_rgba(image: wp.array3d[wp.float32], row: wp.int32, col: wp.int32) -> wp.vec4:
+    """Return the four channels of an ``(H, W, 4)`` image's texel as one ``wp.vec4``."""
+    return wp.vec4(image[row, col, 0], image[row, col, 1], image[row, col, 2], image[row, col, 3])
+
+
+@wp.kernel
+def material_colors(
+    uv: wp.array[wp.vec2],
+    image: wp.array3d[wp.float32],
+    base_color: wp.vec4,
+    out_colors: wp.array[wp.vec4],
+) -> None:
+    """
+    Sample an RGBA texture bilinearly at each UV, wrapping around, times ``base_color``.
+
+    ``sample_texture``'s bilinear branch with the texture tiling (``TEXEL_REPEAT``) instead of
+    clamped, four channels read as one vector, and the material's factor applied in the same
+    pass. A UV outside ``[0, 1]`` is a tiled texture, not an error, so nothing is flagged; an Inf
+    or NaN UV gives a NaN colour.
+    """
+    v = wp.int32(wp.tid())
+    u = uv[v][0]
+    w = uv[v][1]
+    if not wp.isfinite(u) or not wp.isfinite(w):
+        out_colors[v] = wp.vec4(NAN_F32, NAN_F32, NAN_F32, NAN_F32)
+        return
+    height = image.shape[0]
+    width = image.shape[1]
+    row, col = _texel_coordinate(u - wp.floor(u), w - wp.floor(w), height, width)
+    r0, r1, c0, c1, fr, fc = _bilinear_texels(row, col, height, width, TEXEL_REPEAT)
+    top = wp.lerp(_texel_rgba(image, r0, c0), _texel_rgba(image, r0, c1), fc)
+    bottom = wp.lerp(_texel_rgba(image, r1, c0), _texel_rgba(image, r1, c1), fc)
+    out_colors[v] = wp.cw_mul(wp.lerp(top, bottom, fr), base_color)
 
 
 @wp.kernel

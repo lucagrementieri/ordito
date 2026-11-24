@@ -384,7 +384,9 @@ def test_from_warp_mesh(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="mesh_attributes")
 @pytest.mark.benchlibs("ordito")
-@pytest.mark.parametrize("mode", ["with_attributes", "submesh", "with_edit"])
+@pytest.mark.parametrize(
+    "mode", ["with_attributes", "with_material", "submesh", "with_edit", "to_color"]
+)
 def test_attributes(bench_case: BenchCase, mode: str) -> None:
     """
     What a mesh's attributes cost: setting them, and carrying them through a selection or an edit.
@@ -394,8 +396,11 @@ def test_attributes(bench_case: BenchCase, mode: str) -> None:
     other face and carries the three through its provenance (read against ``selection``'s
     ``submesh_from_face_mask`` row, the difference is the carry); ``with_edit`` carries them through
     a precomputed subdivision's provenance, a gather a label and an operator product a float field.
-    ordito-only, as ``mesh_invalidation`` is: trimesh's ``submesh`` drops ``vertex_attributes``,
-    and no reference carries a field through an edit's interpolation weights.
+    ``with_material`` is the same bookkeeping for the texture, and ``to_color`` reads the material
+    at the vertices' UVs into vertex colours (``texture.material_colors`` and a ``with_attributes``;
+    trimesh's counterpart is timed in that group). ordito-only, as ``mesh_invalidation`` is:
+    trimesh's ``submesh`` drops ``vertex_attributes``, and no reference carries a field through an
+    edit's interpolation weights.
     """
     skip_larger_than(bench_case, "happy_buddha")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
@@ -413,6 +418,19 @@ def test_attributes(bench_case: BenchCase, mode: str) -> None:
     if mode == "with_attributes":
         mask = wp.ones(vertices.size, dtype=wp.bool, device=device)
         result = bench_case.run(lambda: mesh.with_attributes(vertex_attributes={"mask": mask}))
+    elif mode == "with_material":
+        material = od.texture.Material(base_color=wp.vec4(0.5, 0.5, 0.5, 1.0))
+        result = bench_case.run(lambda: mesh.with_material(material))
+    elif mode == "to_color":
+        # The vertices' xy as UVs (they tile), on a 256^2 texture of noise.
+        uv = wp.array(
+            bench_case.vertices_np[:, :2].astype(np.float32), dtype=wp.vec2, device=device
+        )
+        texels = np.random.default_rng(0).random((256, 256, 4), dtype=np.float32)
+        textured = mesh.with_attributes(vertex_attributes={"uv": uv}).with_material(
+            od.texture.Material(image=wp.array(texels, dtype=wp.float32, device=device))
+        )
+        result = bench_case.run(textured.to_color)
     elif mode == "submesh":
         keep_np = np.zeros(n_faces, dtype=bool)
         keep_np[::2] = True

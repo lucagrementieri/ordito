@@ -16,12 +16,17 @@ See [`rasterize_attribute`][ordito.texture.rasterize_attribute],
 [`rasterize_face_indices`][ordito.texture.rasterize_face_indices],
 [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv], and
 [`remap_discrete_attribute_from_uv`][ordito.texture.remap_discrete_attribute_from_uv].
+
+A [`Material`][ordito.texture.Material] is what a textured mesh carries: a base-colour image and
+the factor that multiplies it, read at the mesh's UVs by
+[`material_colors`][ordito.texture.material_colors].
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 import warp as wp
@@ -665,3 +670,145 @@ def _raise_on_uv_flag(flag: wp.array[wp.int32]) -> None:
     """
     if int(read_scalar(flag, 0)) != 0:
         raise ValueError("UV coordinates must be in the range [0, 1]")
+
+
+@dataclass(frozen=True, eq=False)
+class Material:
+    """
+    A surface's base colour: an RGBA texture image and a factor multiplying it.
+
+    What a textured [`Trimesh`][ordito.mesh.Trimesh] carries beside its UVs (glTF's base colour,
+    an OBJ material's ``map_Kd`` and ``Kd``). The colour of a point is the image sampled at its UV,
+    channel by channel times ``base_color``; with no image it is ``base_color`` alone. Colours are
+    in ``[0, 1]`` in the image's own encoding (sRGB for an image read from a file): nothing is
+    converted.
+
+    Two meshes share a material only by holding the same object: equality is identity.
+
+    Parameters
+    ----------
+    image
+        ``(height, width, 4)`` ``float32`` RGBA texture, row 0 the top of the image (``v = 1``),
+        or ``None`` for a uniform colour.
+    base_color
+        RGBA factor multiplying the image. Defaults to opaque white, which leaves the image as it
+        is.
+    name
+        Name the material is written under.
+
+    Raises
+    ------
+    TypeError
+        If ``image`` is not a rank-3 ``wp.float32`` array.
+    ValueError
+        If ``image`` does not have four channels or has no texel.
+
+    See Also
+    --------
+    [`material_colors`][ordito.texture.material_colors]
+    [`ordito.mesh.Trimesh.material`][]
+    [`trimesh.visual.material.PBRMaterial`][]
+
+    Examples
+    --------
+    A two-texel texture, red over blue, read at the centre of each texel:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    texels = np.array([[[1.0, 0.0, 0.0, 1.0]], [[0.0, 0.0, 1.0, 1.0]]], dtype=np.float32)
+    material = od.texture.Material(image=wp.array(texels, dtype=wp.float32))
+    uv = wp.array([[0.5, 0.75], [0.5, 0.25]], dtype=wp.vec2)
+    print(od.texture.material_colors(material, uv).numpy().tolist())
+    # [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]
+    ```
+    """
+
+    image: odt.Array3dFloat32 | None = None
+    base_color: wp.vec4 = field(default_factory=lambda: wp.vec4(1.0, 1.0, 1.0, 1.0))
+    name: str = "material"
+
+    def __post_init__(self) -> None:
+        """Validate the image's rank, dtype and channels."""
+        if self.image is None:
+            return
+        odt.ensure_ndim(self.image, 3, dtype=wp.float32)
+        height, width, channels = (int(extent) for extent in self.image.shape)
+        if channels != 4:
+            raise ValueError(f"a material image must have 4 (RGBA) channels, got {channels}")
+        if height == 0 or width == 0:
+            raise ValueError(f"a material image must have a texel, got shape {(height, width, 4)}")
+
+
+def material_colors(material: Material, uv: wp.array[wp.vec2]) -> wp.array[wp.vec4]:
+    """
+    Return a material's RGBA colour at each UV.
+
+    The image is sampled bilinearly at pixel centres (``col = u * W - 0.5``,
+    ``row = (1 - v) * H - 0.5``, the convention of
+    [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]) and tiles: a UV outside
+    ``[0, 1]`` reads the texture repeated, as glTF's and OBJ's default sampler does. Each colour is
+    the sample times the material's ``base_color``; a material with no image gives
+    ``base_color`` everywhere.
+
+    Parameters
+    ----------
+    material
+        Material to read.
+    uv
+        ``(n,)`` texture coordinates. An Inf or NaN UV gives a NaN colour.
+
+    Returns
+    -------
+    wp.array[wp.vec4]
+        ``(n,)`` RGBA colours.
+
+    Raises
+    ------
+    RuntimeError
+        If ``uv`` and the material's image are not on one device.
+
+    See Also
+    --------
+    [`Material`][ordito.texture.Material]
+    [`ordito.mesh.Trimesh.to_color`][]
+    [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]
+        The clamped, any-channel sampler of a baked texture.
+
+    Notes
+    -----
+    trimesh's ``TextureVisuals.to_color`` reads the nearest pixel under ``col = u * (W - 1)`` and
+    leaves the factor out when there is an image; the two agree wherever the texture is constant
+    over a few texels around the UV.
+
+    Examples
+    --------
+    A uniform material is its factor at every UV:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    material = od.texture.Material(base_color=wp.vec4(0.5, 0.25, 1.0, 1.0))
+    uv = wp.array([[0.1, 0.2], [3.5, -1.0]], dtype=wp.vec2)
+    print(od.texture.material_colors(material, uv).numpy().tolist())
+    # [[0.5, 0.25, 1.0, 1.0], [0.5, 0.25, 1.0, 1.0]]
+    ```
+    """
+    device = uv.device
+    if material.image is None:
+        return _launch.full(uv.size, material.base_color, dtype=wp.vec4, device=device)
+    require_same_device(uv=uv, image=material.image)
+    out_colors = _launch.empty(uv.size, dtype=wp.vec4, device=device)
+    if uv.size > 0:
+        _launch.launch(
+            kernel_texture.material_colors,
+            dim=uv.size,
+            inputs=[uv, material.image, material.base_color, out_colors],
+            device=device,
+        )
+    return out_colors

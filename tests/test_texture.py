@@ -26,7 +26,7 @@ from scipy.ndimage import map_coordinates
 import ordito as od
 import ordito.typing as odt
 from tests.conftest import sphere_irregular_arrays
-from tests.conversions import points_to_warp_uv
+from tests.conversions import points_to_warp_uv, warp_empty
 
 
 # --------------------------------------------------------------------------------------------
@@ -1117,3 +1117,110 @@ def test_remap_attribute_from_uv_rejects_an_image_of_rank_four(device: str) -> N
             _point_uv(device, [[0.25, 0.25]]),
             wp.zeros((2, 2, 1, 1), dtype=wp.float32, device=device),  # pyright: ignore[reportArgumentType]  # the rank under test
         )
+
+
+def _blocky_texels(rng: np.random.Generator, blocks: int, block: int) -> npt.NDArray[np.uint8]:
+    """Return a ``(blocks * block, blocks * block, 4)`` RGBA texture constant over each block."""
+    colors = rng.integers(0, 256, size=(blocks, blocks, 4), dtype=np.uint8)
+    return np.repeat(np.repeat(colors, block, axis=0), block, axis=1)
+
+
+@pytest.mark.parity("material_colors", "trimesh")
+def test_material_colors_matches_trimesh(device: str) -> None:
+    """
+    Class A against trimesh's ``PBRMaterial.to_color``, where the two pixel conventions agree.
+
+    trimesh reads the nearest texel under ``col = u * (W - 1)``, ordito blends four at pixel centres
+    (``col = u * W - 0.5``), so they part by up to half a texel's blend wherever the texture varies.
+    The texture here is constant over 8x8 blocks and each UV lies within half a texel of a block's
+    centre, where both read the block's colour exactly; the copies shifted by whole tiles check the
+    wrap, which trimesh applies modulo its texel count. Swapping the vertical axis (``row = v * H``)
+    or dropping the wrap fails on value: the blocks are random and distinct. The factor is checked
+    with no image, where trimesh returns ``baseColorFactor``.
+    """
+    from PIL import Image
+    from trimesh.visual.material import PBRMaterial
+
+    rng = np.random.default_rng(0)
+    blocks, block = 8, 8
+    texels_np = _blocky_texels(rng, blocks, block)
+    centres = (np.arange(blocks) + 0.5) / blocks
+    uv_np = np.stack(np.meshgrid(centres, centres), axis=-1).reshape(-1, 2)
+    uv_np += rng.uniform(-0.5, 0.5, size=uv_np.shape) / (blocks * block)
+    shifts_np = np.array([[0.0, 0.0], [1.0, 0.0], [-2.0, 3.0]])
+    uv_np = (uv_np[None] + shifts_np[:, None]).reshape(-1, 2).astype(np.float32)
+
+    colors_tm = PBRMaterial(baseColorTexture=Image.fromarray(texels_np)).to_color(uv_np)
+    assert np.unique(colors_tm, axis=0).shape[0] > blocks  # not one colour
+    image_wp = wp.array(texels_np.astype(np.float32) / 255.0, dtype=wp.float32, device=device)
+    material = od.texture.Material(image=odt.as_array3d(image_wp, wp.float32))
+    colors_wp = od.texture.material_colors(material, points_to_warp_uv(uv_np, device))
+    assert np.allclose(colors_wp.numpy(), colors_tm / 255.0, rtol=1e-5, atol=1e-6)
+
+    factor_np = np.array([0.2, 0.4, 0.6, 1.0], dtype=np.float32)
+    plain_tm = PBRMaterial(baseColorFactor=factor_np).to_color(uv_np)
+    plain = od.texture.Material(base_color=wp.vec4(*factor_np.tolist()))
+    plain_wp = od.texture.material_colors(plain, points_to_warp_uv(uv_np, device))
+    assert np.allclose(
+        plain_wp.numpy(), np.broadcast_to(plain_tm / 255.0, (uv_np.shape[0], 4)), atol=0.5 / 255.0
+    )
+
+
+def test_material_colors_blends_tiles_and_scales(device: str) -> None:
+    """
+    Not a library comparison: the bilinear blend, the tiling and the factor, on four texels.
+
+    No reference blends a material's texels (trimesh reads the nearest one): at a texel centre the
+    colour is that texel times the factor, half-way between two it is their mean, half-way across
+    the edge it is the mean of the first and last texel (the wrap; a clamped sampler reads the edge
+    texel), and an Inf or NaN UV reads NaN.
+    """
+    texels_np = np.array(
+        [[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]],
+        dtype=np.float32,
+    )
+    image_wp = wp.array(texels_np, dtype=wp.float32, device=device)
+    material = od.texture.Material(
+        image=odt.as_array3d(image_wp, wp.float32), base_color=wp.vec4(0.5, 1.0, 1.0, 1.0)
+    )
+    uv_np = np.array(
+        [[0.125, 0.5], [0.25, 0.5], [0.0, 0.5], [1.125, -3.5], [np.nan, 0.5], [np.inf, 0.5]],
+        dtype=np.float32,
+    )
+    colors_np = od.texture.material_colors(material, points_to_warp_uv(uv_np, device)).numpy()
+    factor_np = np.array([0.5, 1.0, 1.0, 1.0], dtype=np.float32)
+    assert np.allclose(colors_np[0], texels_np[0, 0] * factor_np)
+    assert np.allclose(colors_np[1], (texels_np[0, 0] + texels_np[0, 1]) / 2 * factor_np)
+    assert np.allclose(colors_np[2], (texels_np[0, 0] + texels_np[0, 3]) / 2 * factor_np)
+    assert np.allclose(colors_np[3], colors_np[0])
+    assert np.isnan(colors_np[4:]).all()
+    empty_wp = od.texture.material_colors(material, warp_empty(0, wp.vec2, device))
+    assert empty_wp.shape == (0,)
+
+
+@pytest.mark.parametrize(
+    ("image", "error", "match"),
+    [
+        pytest.param(((2, 2), wp.float32), TypeError, "ndim", id="rank"),
+        pytest.param(((2, 2, 4), wp.float64), TypeError, "dtype", id="dtype"),
+        pytest.param(((2, 2, 3), wp.float32), ValueError, "4 \\(RGBA\\) channels", id="channels"),
+        pytest.param(((0, 2, 4), wp.float32), ValueError, "a texel", id="empty"),
+    ],
+)
+def test_material_rejects_an_invalid_image(
+    device: str, image: tuple[tuple[int, ...], type], error: type[Exception], match: str
+) -> None:
+    """Not a library comparison: a material's image is a non-empty ``(H, W, 4)`` ``float32``."""
+    shape, dtype = image
+    with pytest.raises(error, match=match):
+        od.texture.Material(image=wp.zeros(shape, dtype=dtype, device=device))  # pyright: ignore[reportArgumentType]  # the invalid image under test
+
+
+def test_material_colors_rejects_an_image_on_another_device() -> None:
+    """Not a library comparison: the UVs and the image must share a device."""
+    if not wp.is_cuda_available():
+        pytest.skip("needs a CUDA device beside the CPU")
+    image_wp = wp.ones((1, 1, 4), dtype=wp.float32, device="cpu")
+    material = od.texture.Material(image=odt.as_array3d(image_wp, wp.float32))
+    with pytest.raises(RuntimeError):
+        od.texture.material_colors(material, wp.zeros(1, dtype=wp.vec2, device="cuda:0"))

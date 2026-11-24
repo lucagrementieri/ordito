@@ -32,7 +32,8 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | **Create and load** | |
 | make a primitive (box, sphere, cylinder, torus...) | [`creation`][ordito.creation]: [`box`][ordito.creation.box], [`icosphere`][ordito.creation.icosphere], [`uv_sphere`][ordito.creation.uv_sphere], [`cylinder`][ordito.creation.cylinder], [`torus`][ordito.creation.torus], [`grid`][ordito.creation.grid] |
 | revolve, extrude or sweep a profile | [`revolve`][ordito.creation.revolve], [`extrude_polygon`][ordito.creation.extrude_polygon], [`sweep_polygon`][ordito.creation.sweep_polygon] |
-| load a mesh file (OBJ, PLY, STL, ...) | [`io.load_mesh_data`][ordito.io.load_mesh_data], [`io.load_mesh`][ordito.io.load_mesh] (needs `ordito[io]`) |
+| load a mesh file (OBJ, PLY, glTF, STL, ...) with its colours, UVs and texture | [`io.load_trimesh`][ordito.io.load_trimesh], [`io.load_mesh_data`][ordito.io.load_mesh_data], [`io.load_mesh`][ordito.io.load_mesh] (needs `ordito[io]`) |
+| write a mesh file with its colours, UVs and texture | [`io.save_mesh`][ordito.io.save_mesh] (needs `ordito[io]`) |
 | work with an object that caches derived quantities | [`Trimesh`][ordito.mesh.Trimesh] |
 | **Inspect** | |
 | face normals, areas, angles, centroids | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas], [`face_angles`][ordito.triangles.face_angles], [`face_centroids`][ordito.triangles.face_centroids] |
@@ -111,6 +112,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | geodesic distance | [`heat.heat_geodesic`][ordito.heat.heat_geodesic] (approximate, fast), [`heat.fast_marching_distance`][ordito.heat.fast_marching_distance] (first-order front, no solve), [`geodesic_walk.geodesic_path`][ordito.geodesic_walk.geodesic_path] |
 | flatten to the plane (UV parametrization) | [`parametrization`][ordito.parametrization]: [`harmonic`][ordito.parametrization.harmonic], [`lscm`][ordito.parametrization.lscm], [`arap`][ordito.parametrization.arap], [`slim`][ordito.parametrization.slim] (least symmetric Dirichlet distortion from a start, fold-free), [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization] (free boundary, no pins, any topology), [`arap_parametrization`][ordito.parametrization.arap_parametrization] (the same from a classic map, any surface with a boundary), [`slim_parametrization`][ordito.parametrization.slim_parametrization] (the whole unwrap to the least symmetric Dirichlet distortion, from the free chart or a classic map; fold-free on a disk) |
 | bake or sample textures | [`texture`][ordito.texture] |
+| colour a mesh from its texture | [`Trimesh.to_color`][ordito.mesh.Trimesh.to_color], [`texture.material_colors`][ordito.texture.material_colors] |
 | which face covers each pixel of a UV window (visibility buffer) | [`texture.rasterize_face_indices`][ordito.texture.rasterize_face_indices] |
 | **Arrays** | |
 | NumPy-like `unique`, `sort`, `isin`, `searchsorted`-style helpers | [`grouping`][ordito.grouping], [`array`][ordito.array] |
@@ -216,8 +218,8 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 
 | Module | Contents |
 |---|---|
-| [texture](api/ordito/texture.md) | Bake per-vertex attributes into UV-space textures and sample them back. |
-| [io](api/ordito/io.md) | Mesh file loading through the optional `meshio` dependency. |
+| [texture](api/ordito/texture.md) | Bake per-vertex attributes into UV-space textures and sample them back; materials. |
+| [io](api/ordito/io.md) | Mesh file reading and writing, with colours, UVs and textures, through the optional `trimesh` dependency. |
 
 ### Arrays & infrastructure
 

@@ -22,6 +22,22 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+- Colours, UVs and textures on `Trimesh`, as in trimesh. A `"color"` vertex or face attribute
+  (`wp.vec4`, RGBA in `[0, 1]`) reads as `vertex_colors` / `face_colors`, a `"uv"` vertex
+  attribute (`wp.vec2`) as `uv`; both now blend through every edit like any float attribute. The
+  new `texture.Material` (an RGBA image and a base-colour factor) is held as `Trimesh.material`,
+  set with `with_material` and carried by every method returning a mesh; `+` keeps a material
+  both operands share and warns and drops it otherwise. `Trimesh.to_color` and
+  `texture.material_colors` read a material at UVs (bilinear, tiling, times the factor).
+- `ordito.io` reads and writes through trimesh instead of meshio: the `io` extra installs
+  `trimesh` and `Pillow`. The new `io.load_trimesh` returns a `Trimesh` with the file's colours,
+  UVs and texture (OBJ materials, glTF base colours, several materials packed into one image),
+  and `io.save_mesh` writes one, warning about any visual the format cannot hold. Breaking:
+  `load_mesh_data` splits a UV seam's vertices and returns per-vertex `uv` instead of
+  `corner_uv`, returns `colors` as `wp.vec4` always and face colours as `face_colors`, and no
+  longer returns file normals (`vertex_normals`, `face_normals`), which trimesh does not keep;
+  polygons are triangulated rather than skipped. VTK, Gmsh and the other volume formats are read
+  only when `meshio` is installed as well.
 - Python 3.15 is a supported version. Before it publishes, the release pipeline now installs the
   built wheel on every supported Python, 3.11 to 3.15, and runs it there.
 - `reconstruction.delaunay_triangulation` triangulates repeated points. A copy of the

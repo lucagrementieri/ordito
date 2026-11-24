@@ -4708,6 +4708,12 @@
    "scan": 2
   }
  },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-to_color]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-with_attributes]": {
   "counts": {}
  },
@@ -4716,6 +4722,9 @@
    "launch": 3,
    "alloc": 3
   }
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-with_material]": {
+  "counts": {}
  },
  "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cuda-cold]": {
   "counts": {
@@ -8812,6 +8821,12 @@
    "memset": 1,
    "d2h": 1,
    "scan": 2
+  }
+ },
+ "benchmarks/test_texture.py::test_material_colors[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
   }
  },
  "benchmarks/test_texture.py::test_rasterize_attribute[sphere_small-ordito-cuda-2048]": {

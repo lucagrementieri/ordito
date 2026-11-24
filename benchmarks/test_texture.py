@@ -52,7 +52,13 @@ projected UVs front and back overlap, which open3d resolves its own way: the row
 and the overlap is no parity claim. Its ``bake_triangle_attr_textures`` bakes a *per-face*
 attribute, which no ordito group takes (``rasterize_discrete_attribute`` resolves per-vertex
 labels by a weighted vote). Neither trimesh nor libigl has a UV-space attribute rasterizer or
-sampler.
+sampler of any channel count.
+
+**trimesh is the baseline for ``material_colors``**: ``PBRMaterial.to_color`` reads a material's
+base-colour texture at each UV, the nearest texel under ``col = u * (W - 1)`` in NumPy, where
+ordito blends four texels at pixel centres; ``tests/test_texture.py`` compares them where the
+texture is constant around each UV (Class A). Its texture is a PIL image built outside the timed
+callable.
 
 **pymeshlab has both directions** — ``transfer_attributes_to_texture_per_vertex`` forward,
 ``compute_color_from_texture_per_vertex`` inverse — so all five groups have a counterpart. What
@@ -114,6 +120,7 @@ _attribute_cache: dict[tuple[str, str], odt.Array2dFloat32] = {}
 _labels_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
 _image_cache: dict[tuple[str, str], odt.Array3dFloat32] = {}
 _class_image_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
+_texels_cache: dict[str, np.ndarray] = {}
 
 
 def _uv_wp(bench_case: BenchCase) -> wp.array[wp.vec2]:
@@ -286,3 +293,33 @@ def test_remap_discrete_attribute_from_uv(bench_case: BenchCase) -> None:
     uv, class_image = _uv_wp(bench_case), _class_image_wp(bench_case)
     labels = bench_case.run(lambda: od.texture.remap_discrete_attribute_from_uv(uv, class_image))
     assert labels.shape[0] == bench_case.n_vertices
+
+
+def _texels_np(bench_case: BenchCase) -> np.ndarray:
+    """Return a seeded ``(_RESOLUTION, _RESOLUTION, 4)`` ``uint8`` RGBA texture, once per mesh."""
+    if bench_case.mesh_name not in _texels_cache:
+        rng = np.random.default_rng(0)
+        texels = rng.integers(0, 256, size=(_RESOLUTION, _RESOLUTION, 4), dtype=np.uint8)
+        _texels_cache[bench_case.mesh_name] = texels
+    return _texels_cache[bench_case.mesh_name]
+
+
+@pytest.mark.benchmark(group="material_colors")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_material_colors(bench_case: BenchCase) -> None:
+    """A material's RGBA colour at each vertex UV: a tiled bilinear fetch times the factor."""
+    texels = _texels_np(bench_case)
+    if bench_case.kind == "trimesh":
+        from PIL import Image
+        from trimesh.visual.material import PBRMaterial
+
+        material_tm = PBRMaterial(baseColorTexture=Image.fromarray(texels))
+        uv_np = _uv_wp(bench_case).numpy()
+        colors_tm = bench_case.run(lambda: material_tm.to_color(uv_np))
+        assert colors_tm.shape == (bench_case.n_vertices, 4)
+        return
+    image = wp.array(texels.astype(np.float32) / 255.0, dtype=wp.float32, device=bench_case.device)
+    material = od.texture.Material(image=odt.as_array3d(image, wp.float32))
+    uv = _uv_wp(bench_case)
+    colors = bench_case.run(lambda: od.texture.material_colors(material, uv))
+    assert colors.shape == (bench_case.n_vertices,)

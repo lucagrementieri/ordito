@@ -1463,6 +1463,12 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
+- **Mesh visuals, the parts not yet built** (2026-11-24): `interpolation.average_onto_vertices`
+  / `average_onto_faces` take `float32` only, so face and vertex colours (`wp.vec4`) do not
+  convert into each other (trimesh's `face_to_vertex_color` / `vertex_to_face_color`); a vector
+  vertex sum must take the exact group sum in deterministic mode (§2.2), signed components
+  breaking the `float32`-into-`float64` shortcut. `Trimesh.__add__` of two meshes with different
+  materials drops the material with a warning where trimesh packs the images into one atlas.
 - **A Class C pair an option could make Class A**, by porting the reference's algorithm:
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
