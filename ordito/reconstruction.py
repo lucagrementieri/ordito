@@ -95,7 +95,9 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     -------
     wp.array[wp.int32]
         ``(3 * n_faces,)`` flat buffer of CCW triangles over the input point indices, on
-        ``points.device``. Empty when the points are collinear.
+        ``points.device``. Empty when the points are collinear. Coincident points are triangulated
+        once: the faces name the first copy in input order of each, and leave the others
+        unreferenced.
 
     Raises
     ------

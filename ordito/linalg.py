@@ -1354,7 +1354,7 @@ def _rhs_rows(fixed_values: odt.ArrayNd, load: odt.ArrayNd | None) -> int:
 
 
 def solve_spd(
-    matrix: odt.SparseMatrix,
+    matrix: odt.BsrMatrix[Any],
     rhs: odt.ArrayNd,
     solution: odt.ArrayNd,
     *,
@@ -1388,7 +1388,8 @@ def solve_spd(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-(semi-)definite operator. Scalar or block dtype.
+        ``(n, n)`` symmetric positive-(semi-)definite operator, of ``float32`` or ``float64``
+        scalars or square blocks of them (``wp.mat22d``, ``wp.mat33d``, ...).
     rhs
         ``(n,)`` right-hand side, with as many rows as ``matrix``.
     solution
@@ -1587,7 +1588,7 @@ def _as_scalar_view(vectors: odt.ArrayNd) -> wp.array[wp.float64]:
     return vectors.view(wp.float64).flatten()
 
 
-def jacobi_preconditioner(matrix: odt.SparseMatrix) -> wpl.LinearOperator:
+def jacobi_preconditioner(matrix: odt.BsrMatrix[Any]) -> wpl.LinearOperator:
     """
     Jacobi preconditioner for a symmetric positive-definite operator.
 
@@ -1601,7 +1602,8 @@ def jacobi_preconditioner(matrix: odt.SparseMatrix) -> wpl.LinearOperator:
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-(semi-)definite operator. Scalar or block dtype.
+        ``(n, n)`` symmetric positive-(semi-)definite operator, of ``float32`` or ``float64``
+        scalars or square blocks of them (``wp.mat22d``, ``wp.mat33d``, ...).
 
     Returns
     -------
@@ -1683,7 +1685,8 @@ def solve_spd_columns(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-definite operator.
+        ``(n, n)`` symmetric positive-definite operator, ``float64``, or ``float32`` under
+        ``preconditioner="diag"`` alone.
     rhs
         ``(n_rhs, n)`` right-hand sides, one per row. Must be contiguous.
     solution
@@ -1749,7 +1752,8 @@ def solve_spd_columns(
     ValueError
         If ``preconditioner`` is not one of the five names above. It is rejected rather than
         treated as ``"diag"``, so a misspelling cannot turn into a silently slower solve. Or if
-        ``factorization`` holds another operator than ``matrix``.
+        ``matrix`` is not ``float64`` and ``preconditioner`` is not ``"diag"``, checked before any
+        iteration. Or if ``factorization`` holds another operator than ``matrix``.
     RuntimeError
         If ``matrix``, ``rhs`` and ``solution`` are not all on one device.
 
@@ -2035,7 +2039,8 @@ def spd_column_solver(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-definite operator. Held by the returned state.
+        ``(n, n)`` symmetric positive-definite operator. Held by the returned state. ``float64``, or
+        ``float32`` under ``preconditioner="diag"`` alone.
     rhs
         ``(n_rhs, n)`` right-hand sides; re-read from this buffer on every call.
     solution
@@ -2082,7 +2087,7 @@ def spd_column_solver(
     ------
     ValueError
         If ``preconditioner`` is ``"auto"``, for the reason above, or is not one of the four names
-        this accepts.
+        this accepts. Or if ``matrix`` is not ``float64`` and ``preconditioner`` is not ``"diag"``.
     RuntimeError
         If ``matrix``, ``rhs``, ``solution`` and ``coordinates`` are not all on one device.
 
@@ -3093,6 +3098,7 @@ def _cg_columns(
     """
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
     iteration_cap = maxiter if maxiter is not None else CG_MAXITER_FACTOR * n
+    _require_jacobi_below_float64(matrix, preconditioner, caller)
     if preconditioner == "auto":
         if not run:
             raise ValueError(
@@ -3172,6 +3178,26 @@ def _cg_columns(
         pooled=True,
     )
     return cast("tuple[int, float, float]", state.solve(rhs.flatten(), solution.flatten()))
+
+
+def _require_jacobi_below_float64(
+    matrix: odt.SparseMatrix, preconditioner: str | SquaredLaplacianPreconditioner, caller: str
+) -> None:
+    """
+    Raise unless ``matrix`` is ``float64`` or ``preconditioner`` is ``"diag"``.
+
+    Only the Jacobi state stores a narrower operator. Checked before any solve rather than where a
+    state is built: ``"adaptive"`` and ``"auto"`` build theirs only once a Jacobi probe has failed,
+    after the probe has written ``solution``, and ``"auto"``'s operator test reads ``float64``
+    values alone.
+    """
+    dtype = matrix.values.dtype
+    if dtype != wp.float64 and not (isinstance(preconditioner, str) and preconditioner == "diag"):
+        named = preconditioner if isinstance(preconditioner, str) else type(preconditioner).__name__
+        raise ValueError(
+            f'{caller}: a {dtype.__name__} operator takes only preconditioner="diag", got '
+            f"{named!r}; pass a float64 operator for another preconditioner."
+        )
 
 
 def _require_preconditioner_name(preconditioner: str, caller: str) -> None:

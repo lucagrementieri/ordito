@@ -2679,6 +2679,46 @@ def test_triangulate_polygons_matches_manifold3d(
     assert np.array_equal(packed_wp.numpy().reshape(-1, 3), faces_m3)
 
 
+@pytest.mark.parity("triangulate_polygons", "manifold3d")
+@pytest.mark.parity("triangulate_polygons_from_offsets", "manifold3d")
+def test_triangulate_polygons_matches_manifold3d_on_edge_inputs(device: str) -> None:
+    """
+    Class A against ``manifold3d.triangulate`` where the region is empty or a loop is.
+
+    No loop at all gives no triangle on both sides; an empty loop after a square adds nothing to
+    the square's two triangles; ``float64`` points take the clipper's own precision without the
+    conversion; and three collinear points enclose no area, which Manifold still closes with its
+    one zero-area triangle. The square's answer is two triangles, so the empty answers are not a
+    constant output.
+    """
+    square_np = np.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=np.float64)
+    assert np.asarray(m3.triangulate([], -1.0, True)).shape == (0, 3)
+    assert od.polyline.triangulate_polygons([]).size == 0
+
+    faces_m3 = np.asarray(m3.triangulate([square_np, square_np[:0]], -1.0, True))
+    assert faces_m3.shape == (2, 3)
+    polygons_wp = [
+        wp.array(square_np, dtype=wp.vec2, device=device),
+        warp_empty(0, wp.vec2, device),
+    ]
+    assert np.array_equal(
+        od.polyline.triangulate_polygons(polygons_wp).numpy().reshape(-1, 3), faces_m3
+    )
+    offsets_wp = wp.array([0, 4], dtype=wp.int32, device=device)
+    doubles_wp = wp.array(square_np, dtype=wp.vec2d, device=device)
+    assert np.array_equal(
+        od.polyline.triangulate_polygons_from_offsets(doubles_wp, offsets_wp)
+        .numpy()
+        .reshape(-1, 3),
+        faces_m3,
+    )
+
+    line_np = np.array([[0, 0], [1, 0], [2, 0]], dtype=np.float64)
+    line_m3 = np.asarray(m3.triangulate([line_np], -1.0, True))
+    line_wp = od.polyline.triangulate_polygons([wp.array(line_np, dtype=wp.vec2, device=device)])
+    assert np.array_equal(line_wp.numpy().reshape(-1, 3), line_m3)
+
+
 def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -> None:
     """
     Ordito against ordito: repeated calls on one long, tilted ring give one triangle set.

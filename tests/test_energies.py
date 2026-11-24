@@ -35,6 +35,7 @@ from tests.conversions import (
     numpy_to_warp,
     scipy_to_bsr,
     trimesh_to_pytorch3d,
+    warp_empty,
 )
 
 
@@ -127,6 +128,13 @@ def test_normal_consistency_loss_matches_pytorch3d_on_flips_and_fans(
 
     assert np.allclose(fan_p3d, 0.777404, rtol=1e-4, atol=0.0)
     assert np.allclose(fan_wp, fan_p3d, rtol=1e-5, atol=0.0)
+
+    # One face has no pair to average: the reference reports 0.0 rather than a division by zero.
+    lone_tm = tm.Trimesh(vertices_np[:3], faces_np[:1], process=False)
+    lone_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(lone_tm)))
+    lone_vertices_wp, lone_faces_wp = numpy_to_warp(vertices_np[:3], faces_np[:1], device)
+    assert lone_p3d == 0.0
+    assert od.energies.normal_consistency_loss(lone_vertices_wp, lone_faces_wp) == lone_p3d
 
 
 @pytest.mark.parametrize(
@@ -370,6 +378,23 @@ def test_k_harmonic_identity_mass_and_power_guard(
 
     with pytest.raises(ValueError, match="k must be >= 1"):
         od.energies.k_harmonic(laplacian_wp, k=0)
+
+    # A mass of another precision than ``L`` is converted to ``L``'s first: a ``float32`` lumped
+    # mass gives the ``float64`` mass's operator to the mass's own rounding.
+    mass_np = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()
+    q_f64_wp = bsr_to_csr(
+        od.energies.k_harmonic(
+            laplacian_wp, wp.array(mass_np, dtype=wp.float64, device=mesh_wp.device), k=2
+        )
+    )
+    q_f32_wp = bsr_to_csr(
+        od.energies.k_harmonic(
+            laplacian_wp, wp.array(mass_np, dtype=wp.float32, device=mesh_wp.device), k=2
+        )
+    )
+    assert q_f32_wp.dtype == np.float64
+    scale = abs(q_f64_wp).max()
+    assert sparse_allclose(q_f32_wp, q_f64_wp, rtol=1e-6, atol=1e-6 * scale)
 
 
 _HESSIAN_ENERGIES = {
@@ -672,6 +697,14 @@ def test_crouzeix_raviart_operators_match_igl(
     difference = (matrix_wp - matrix_igl).tocoo()
     reference = np.asarray(matrix_igl[difference.row, difference.col]).ravel()
     assert np.all(np.abs(difference.data) <= 1e-5 + 1e-5 * np.abs(reference))
+    if operator == "cotmatrix":
+        # A caller's own half-cotangent table spares the face pass's, and changes no entry.
+        given_wp = od.energies.crouzeix_raviart_cotmatrix(
+            mesh_wp.points,
+            mesh_wp.indices,
+            od.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices),
+        )
+        assert sparse_allclose(bsr_to_csr(given_wp), matrix_wp, rtol=0.0, atol=0.0)
 
 
 def test_crouzeix_raviart_shared_edge_numbering(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -718,6 +751,11 @@ def test_operator_family_empty_mesh(device: str) -> None:
     assert (int(cr_cot.nrow), int(cr_cot.ncol)) == (0, 0)
     cr_mass = od.energies.crouzeix_raviart_massmatrix(vertices_wp, faces_wp)
     assert (int(cr_mass.nrow), int(cr_mass.ncol)) == (0, 0)
+    lscm = od.energies.lscm_hessian(vertices_wp, faces_wp)
+    assert (int(lscm.nrow), int(lscm.ncol)) == (6, 6)
+    no_vertices_wp = warp_empty(0, wp.vec3, device)
+    lscm = od.energies.lscm_hessian(no_vertices_wp, faces_wp)
+    assert (int(lscm.nrow), int(lscm.ncol)) == (0, 0)
 
 
 def test_curved_hessian_and_crouzeix_raviart_cotmatrix_reject_non_edge_manifold(
@@ -791,6 +829,16 @@ def test_lscm_hessian_matches_igl(
         pattern=mesh.mesh_operator_pattern,
     )
     assert sparse_allclose(bsr_to_csr(hessian_cached_wp), hessian_igl, rtol=1e-5, atol=1e-5)
+    # Either cached input alone: the other is built as the plain call builds it.
+    for hessian_half_wp in (
+        od.energies.lscm_hessian(
+            mesh_wp.points, mesh_wp.indices, cot_entries=mesh.cotmatrix_entries
+        ),
+        od.energies.lscm_hessian(
+            mesh_wp.points, mesh_wp.indices, pattern=mesh.mesh_operator_pattern
+        ),
+    ):
+        assert sparse_allclose(bsr_to_csr(hessian_half_wp), hessian_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_lscm_hessian_rejects_cached_inputs_of_another_mesh(

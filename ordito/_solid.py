@@ -12,6 +12,7 @@ answer built on it is Manifold's bit for bit. Its kernels are ``kernels/algorith
 
 from __future__ import annotations
 
+import math
 from typing import NamedTuple, Protocol, cast
 
 import warp as wp
@@ -491,8 +492,8 @@ def _require_closed(defects: tuple[int, int, int], name: str) -> None:
 
 
 def empty_solid(device: wp.DeviceLike) -> Solid:
-    """Return the empty solid."""
-    nothing = (0.0, 0.0, 0.0)
+    """Return the empty solid, whose box is Manifold's default ``Box``, meeting no other box."""
+    inf = math.inf
     return Solid(
         _launch.empty(0, dtype=wp.vec3d, device=device),
         _launch.empty(0, dtype=wp.int32, device=device),
@@ -502,8 +503,8 @@ def empty_solid(device: wp.DeviceLike) -> Solid:
         _launch.empty(0, dtype=wp.int32, device=device),
         -1.0,
         -1.0,
-        nothing,
-        nothing,
+        (inf, inf, inf),
+        (-inf, -inf, -inf),
     )
 
 

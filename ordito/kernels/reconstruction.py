@@ -170,6 +170,15 @@ def hull_side(points: wp.array[wp.vec2], a: wp.int32, b: wp.int32, c: wp.int32) 
 
 
 @wp.func
+def same_point(points: wp.array[wp.vec2], a: wp.int32, b: wp.int32) -> wp.bool:
+    # Whether points ``a`` and ``b`` coincide exactly: ``lexicographic_triangulation`` keeps one of
+    # each such run, as its insertions do.
+    pa = points[a]
+    pb = points[b]
+    return pa[0] == pb[0] and pa[1] == pb[1]
+
+
+@wp.func
 def hull_edge_side(
     points: wp.array[wp.vec2],
     hull: wp.array[wp.int32],
@@ -231,33 +240,55 @@ def lexicographic_triangulation(
     start = wp.int32(0)
     # Logical position of the last vertex inserted.
     newest = wp.int32(0)
+    # Sorted position of the first point apart from ``order[0]``, which with it spans the prefix's
+    # line; -1 while every point so far coincides with ``order[0]``. Lex order puts coincident
+    # points side by side, so the prefix's duplicates are each adjacent to their first copy, and
+    # the fan and boundary below skip them: a zero-length line or edge has no side.
+    distinct = wp.int32(-1)
+    if not same_point(points, order[0], order[1]):
+        distinct = wp.int32(1)
 
     for i in range(2, n):
         ci = order[i]
 
         if n_boundary == 0:
             # Every point so far is collinear; the first off-line point fans the whole prefix.
-            side = hull_side(points, order[0], order[1], ci)
+            if distinct < 0:
+                if not same_point(points, order[0], ci):
+                    distinct = wp.int32(i)
+                continue
+            side = hull_side(points, order[0], order[distinct], ci)
             if side != 0:
-                for j in range(i - 1):
-                    if n_faces < max_faces:
-                        first = order[j]
-                        second = order[j + 1]
-                        if side < 0:
-                            first, second = second, first
-                        out_faces[3 * n_faces + 0] = first
-                        out_faces[3 * n_faces + 1] = second
-                        out_faces[3 * n_faces + 2] = ci
-                    n_faces += 1
+                # Each run of coincident points is represented by its first copy, in the fan and
+                # the boundary alike, so the faces meet at one index a point and flip as one mesh.
+                last_kept = order[0]
+                for j in range(1, i):
+                    v = order[j]
+                    if not same_point(points, last_kept, v):
+                        if n_faces < max_faces:
+                            first = last_kept
+                            second = v
+                            if side < 0:
+                                first, second = second, first
+                            out_faces[3 * n_faces + 0] = first
+                            out_faces[3 * n_faces + 1] = second
+                            out_faces[3 * n_faces + 2] = ci
+                        n_faces += 1
+                        last_kept = v
+                kept = wp.int32(0)
                 for j in range(i + 1):
                     # The prefix in lex order, plus ``curr``; reversed when ``curr`` is right of it,
-                    # so the boundary comes out counter-clockwise either way.
-                    if side > 0:
-                        hull[j] = order[j]
+                    # so the boundary comes out counter-clockwise either way. The reversed walk
+                    # meets a run's last copy first, so a later one of the run replaces it.
+                    v = order[wp.where(side > 0, j, i - j)]
+                    if kept > 0 and same_point(points, hull[kept - 1], v):
+                        if side < 0:
+                            hull[kept - 1] = v
                     else:
-                        hull[j] = order[i - j]
-                n_boundary = i + 1
-                newest = wp.where(side > 0, i, 0)
+                        hull[kept] = v
+                        kept += 1
+                n_boundary = kept
+                newest = wp.where(side > 0, kept - 1, 0)
             continue
 
         nb = n_boundary
@@ -336,24 +367,13 @@ def lexicographic_triangulation(
                     left = j
                 previous = orientation
                 a = b
-        # No visible edge at all means a degenerate insertion (a duplicate point, since a lex sweep
-        # always sees the hull from the new rightmost point otherwise). Both indices stay -1, which
-        # in the Python original wrapped to the last boundary entry and broke the walk immediately;
-        # mapping them to ``nb - 1`` reproduces that exactly rather than reading out of bounds.
-        #
-        # That collapse also fires -- and drops every other boundary vertex from the hull,
-        # unreferenced, rather than only the duplicate -- when ``curr`` is exactly collinear with
-        # the whole current boundary. A hand-traced general-position case exists in principle at
-        # ``n_boundary == 2``, but a large randomized search over properly lex-sorted point sets
-        # never reduced ``n_boundary`` to 2 at all: reaching it seems to require an earlier
-        # degenerate step, which is the same input class ``test_delaunay_collinear`` already accepts
-        # producing zero faces for. So the dropped vertex ends up in the "unreferenced by any face"
-        # outcome that class already produces deliberately. Left as is; revisit only with a concrete
-        # reachable repro, not a hand-traced hypothetical one.
-        if right < 0:
-            right = nb - 1
+        # No visible edge means ``curr`` duplicates a boundary vertex: a point that is not one is
+        # lex-larger than every point so far, so it lies strictly outside their convex hull, which
+        # is the boundary, and sees an edge with an exact sign. It is left out, unreferenced, and
+        # the boundary stays as it was. (The Python original collapsed the boundary to its last
+        # vertex and ``curr`` instead, so a third copy of a vertex dropped every later point.)
         if left < 0:
-            left = nb - 1
+            continue
 
         # Keep the non-visible arc right..left going forward, then insert ``curr`` after it.
         if left < right:

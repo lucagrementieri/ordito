@@ -24,6 +24,20 @@ from the one matching its tag — so prose sections do not belong between them.
 
 - Python 3.15 is a supported version. Before it publishes, the release pipeline now installs the
   built wheel on every supported Python, 3.11 to 3.15, and runs it there.
+- `reconstruction.delaunay_triangulation` triangulates repeated points. A copy of the
+  lexicographically first point returned no faces, and a third copy of any point lost every point
+  after it; coincident points now triangulate once, through their first copy.
+- `array.block_diag` stacks a zero-row operator, which raised a `TypeError`.
+- `boolean.union_all` given an empty mesh beside one clear of the origin returns Manifold's face
+  order; the empty mesh's box was the origin point, where Manifold's holds nothing.
+- `linalg.solve_spd_columns` and `linalg.spd_column_solver` reject a `float32` operator under any
+  preconditioner but `"diag"` with a `ValueError` before solving. `"adaptive"` raised only once its
+  Jacobi probe had stalled and overwritten `solution`, and `"auto"` failed with a `RuntimeError`.
+- `sample.sample_surface_blue_noise` and `sample.sample_surface_poisson_disk` document the
+  `ValueError` a zero-area mesh raises, which now says the mesh has zero surface area rather than
+  naming a face weight the call never passed.
+- `linalg.solve_spd` and `linalg.jacobi_preconditioner` are annotated to take an operator of any
+  square block type, as they did and documented.
 
 ## [0.5.2] - 2026-11-23
 

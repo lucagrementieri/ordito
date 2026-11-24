@@ -730,6 +730,31 @@ def test_dir_lists_the_whole_surface_before_it_is_touched() -> None:
     assert sorted(completed.stdout.split()) == sorted([*od.__all__, "__version__"])
 
 
+def test_version_resolves_in_process_and_falls_back_when_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ``ordito.__version__`` is the installed distribution's version, or a sentinel from a raw tree.
+
+    Not a library comparison. In-process, so the coverage of ``__getattr__``'s version branch and
+    of ``__dir__`` is measured (the subprocessed tests above run outside the tracer). The cached
+    attribute is removed first so the lookup runs, and restored after; ``importlib.metadata``'s
+    lookup is then made to fail as it does in a source tree that was never installed.
+    """
+    import importlib.metadata
+
+    monkeypatch.delitem(vars(od), "__version__", raising=False)
+    assert od.__version__ == importlib.metadata.version("ordito")
+    assert "__version__" in dir(od)
+
+    def not_installed(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(_name)
+
+    monkeypatch.delitem(vars(od), "__version__")
+    monkeypatch.setattr(importlib.metadata, "version", not_installed)
+    assert od.__version__ == "0.0.0+unknown"
+
+
 def test_single_index_tid_carries_the_declarative_cast() -> None:
     """
     A single-index ``wp.tid()`` is assigned as ``wp.int32(wp.tid())``, the one cast the tree keeps.

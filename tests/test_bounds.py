@@ -145,6 +145,21 @@ def test_aabb_single_point(device: str) -> None:
     assert od.bounds.enclosing_diagonal(points_wp) == 0.0
 
 
+def test_aabb_of_an_empty_cloud_is_the_inverted_infinite_box(device: str) -> None:
+    """
+    Not a library comparison: an empty cloud's box is ``(+inf, -inf)`` and its diagonal ``inf``.
+
+    The documented empty answer: the identity of a box union, so ``aabb_union`` with it returns the
+    other box. A zero box at the origin would also be "empty-looking" and fails every assertion.
+    """
+    empty_wp = warp_empty(0, wp.vec3, device)
+    lower_wp, upper_wp = od.bounds.aabb(empty_wp)
+
+    assert np.array_equal(_bounds_np(lower_wp, upper_wp), [[np.inf] * 3, [-np.inf] * 3])
+    assert od.bounds.enclosing_diagonal(empty_wp) == np.inf
+    assert od.bounds.enclosing_diagonal(empty_wp, empty_wp) == np.inf
+
+
 def test_aabb_union_encloses_both_boxes(device: str) -> None:
     """
     The union takes the component-wise min of the mins and max of the maxes, nothing more.
@@ -600,6 +615,30 @@ def test_crop_mesh_reports_provenance(sphere_irregular: tuple[tm.Trimesh, wp.Mes
     assert_provenance_describes(provenance, mesh_wp.points, mesh_wp.indices, new_v, new_f)
 
 
+@pytest.mark.parametrize("return_provenance", [False, True])
+def test_crop_mesh_of_a_faceless_mesh_is_empty(device: str, return_provenance: bool) -> None:
+    """
+    Not a library comparison: a mesh with vertices but no faces crops to nothing.
+
+    The box holds every vertex, so a crop that kept the loose vertices would return them; the
+    provenance, when asked for, still names the input's vertex count.
+    """
+    vertices_wp = points_to_warp(np.eye(3), device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    lower_wp, upper_wp = wp.vec3(-1.0, -1.0, -1.0), wp.vec3(2.0, 2.0, 2.0)
+    if return_provenance:
+        new_v, new_f, provenance = od.bounds.crop_mesh(
+            vertices_wp, faces_wp, lower_wp, upper_wp, return_provenance=True
+        )
+        assert provenance.n_vertices == 3
+        assert provenance.vertex_index.size == 0
+        assert provenance.face_index.size == 0
+    else:
+        new_v, new_f = od.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
+    assert new_v.size == 0
+    assert new_f.size == 0
+
+
 def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     """An empty cloud and an inverted box both select nothing, through all four entry points."""
     rng = np.random.default_rng(21)
@@ -611,6 +650,7 @@ def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     assert od.bounds.points_in_aabb(empty_wp, lower_wp, upper_wp).size == 0
     assert od.bounds.points_in_aabb_mask(empty_wp, lower_wp, upper_wp).size == 0
     assert od.bounds.points_in_obb(empty_wp, identity_wp, lower_wp, upper_wp).size == 0
+    assert od.bounds.points_in_obb_mask(empty_wp, identity_wp, lower_wp, upper_wp).size == 0
     assert od.bounds.crop_points(empty_wp, lower_wp, upper_wp)[0].size == 0
 
     # An inverted box is empty rather than universal: no point satisfies both comparisons.

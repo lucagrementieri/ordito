@@ -222,6 +222,13 @@ def test_trace_from_vertex_accepts_precomputed_rings(
     assert np.all(np.diff(offsets_wp.numpy()) > 1)
     assert np.array_equal(ringed_offsets_wp.numpy(), offsets_wp.numpy())
     assert np.allclose(ringed_points_wp.numpy(), points_wp.numpy(), rtol=1e-5, atol=1e-5)
+    # Both hints together, as a ``Trimesh`` holds them.
+    twins_wp = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    hinted_points_wp, hinted_offsets_wp = od.geodesic_walk.trace_from_vertex(
+        mesh_wp.points, mesh_wp.indices, starts_wp, directions_wp, twins=twins_wp, rings=rings
+    )
+    assert np.array_equal(hinted_offsets_wp.numpy(), offsets_wp.numpy())
+    assert np.allclose(hinted_points_wp.numpy(), points_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
 def _normalized_edge_direction(
@@ -429,6 +436,18 @@ def test_trace_from_face_matches_potpourri3d(
         points = curves[ray].numpy()
         assert np.allclose(points[0], path_pp[0], rtol=1e-4, atol=1e-4)
         assert np.isclose(_path_length(points), _path_length(path_pp), rtol=1e-4, atol=1e-5)
+
+    # The caller's twins only spare their pairing: the same trace, bit for bit.
+    hinted_points_wp, hinted_offsets_wp = od.geodesic_walk.trace_from_face(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(start_faces, dtype=wp.int32, device=mesh_wp.device),
+        points_to_warp(barycentric, mesh_wp.device),
+        points_to_warp(directions, mesh_wp.device),
+        twins=od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=mesh_wp.points.size),
+    )
+    assert np.array_equal(hinted_offsets_wp.numpy(), offsets_wp.numpy())
+    assert np.array_equal(hinted_points_wp.numpy(), points_wp.numpy())
 
 
 def test_trace_from_face_zero_direction_is_a_single_point(

@@ -1874,6 +1874,21 @@ def test_query_weighted_nearest_matches_meshlib(device: str) -> None:
     assert np.array_equal(index_wp.numpy(), nearest_np)
     assert np.allclose(distance_wp.numpy(), weighted_np, rtol=1e-5, atol=1e-5)
 
+    # The caller's weight bound, tree or leaf size only spare work: the same answer, bit for bit.
+    sites_wp = points_to_warp(points_np, device)
+    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
+    queries_wp = points_to_warp(queries_np, device)
+    tree_wp = od.neighbors.bvh_from_points(sites_wp, leaf_size=1)
+    for hinted_index_wp, hinted_distance_wp in (
+        od.neighbors.query_weighted_nearest(
+            sites_wp, weights_wp, queries_wp, max_weight=float(weights_np.max())
+        ),
+        od.neighbors.query_weighted_nearest(sites_wp, weights_wp, queries_wp, accelerator=tree_wp),
+        od.neighbors.query_weighted_nearest(sites_wp, weights_wp, queries_wp, leaf_size=4),
+    ):
+        assert np.array_equal(hinted_index_wp.numpy(), index_wp.numpy())
+        assert np.array_equal(hinted_distance_wp.numpy(), distance_wp.numpy())
+
     tree_ml = mm.AABBTreePoints(points_to_meshlib(points_np))
     params_ml = mm.DistanceFromWeightedPointsComputeParams()
     params_ml.pointWeight = cast(

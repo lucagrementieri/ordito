@@ -241,6 +241,27 @@ def test_heat_operators_reuse_prebuilt_parts(
             od.heat.vector_heat_operators(vertices, faces, pattern=wrong)
 
 
+def test_heat_operators_of_a_faceless_point_set_couple_nothing(device: str) -> None:
+    """
+    Not a library comparison: with no face there is no edge, so every operator is empty.
+
+    Every reference needs faces to build these. The scalar Laplacian, heat and Poisson systems and
+    the vector heat system keep their square shapes (one row per vertex, two for the vector
+    system's ``2 x 2`` blocks) and store no entry, and the per-face tables have no row.
+    """
+    vertices = points_to_warp(np.eye(3), device)
+    faces = warp_empty(0, wp.int32, device)
+
+    scalar = od.heat.heat_operators(vertices, faces)
+    for matrix in (scalar[0], scalar[2], scalar[3]):
+        assert (int(matrix.nrow), int(matrix.ncol)) == (3, 3)
+        assert np.array_equal(matrix.offsets.numpy(), np.zeros(4, dtype=np.int32))
+    assert scalar[5].shape == (0, 3)
+    vector_system = od.heat.vector_heat_operators(vertices, faces)[0]
+    assert (int(vector_system.nrow), int(vector_system.ncol)) == (3, 3)
+    assert np.array_equal(vector_system.offsets.numpy(), np.zeros(4, dtype=np.int32))
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_heat_operators_voronoi_mass_matches_igl(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1750,6 +1771,22 @@ def test_open_curve_still_changes_sign_across_itself(
     assert distance.min() < 0.0 < distance.max()
 
 
+def test_heat_signed_distance_is_zero_when_the_curve_pins_every_vertex(device: str) -> None:
+    """
+    Not a library comparison: a curve through every vertex leaves no free vertex to solve for.
+
+    The zero-set constraint pins the curve's vertices to zero, so a lone triangle's boundary curve
+    pins the whole mesh and the field is zero, with no Poisson solve over an empty system.
+    """
+    vertices_wp = points_to_warp(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), device
+    )
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    curve_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    distance_wp = od.heat.heat_signed_distance(vertices_wp, faces_wp, curve_wp)
+    assert np.array_equal(distance_wp.numpy(), np.zeros(3))
+
+
 @pytest.mark.parametrize(
     ("argument", "value"), [("level_set_constraint", "Multiple"), ("method", "dense_eikonal")]
 )
@@ -1901,6 +1938,27 @@ def test_extend_scalar_single_source_is_constant(
     )
     # One source has nothing to blend against, so its value must fill the surface.
     assert np.allclose(extended.numpy(), 3.5, rtol=1e-6, atol=1e-6)
+
+
+def test_extend_scalar_without_a_source_extends_nothing(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: with no source the indicator is zero everywhere, so is the field.
+
+    potpourri3d needs at least one source. Every vertex then has no value to extend, which is
+    the zero field, and no range to leave, so nothing warns.
+    """
+    _, mesh_wp = sphere_irregular
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        extended = od.heat.extend_scalar(
+            mesh_wp.points,
+            mesh_wp.indices,
+            warp_empty(0, wp.int32, mesh_wp.device),
+            warp_empty(0, wp.float64, mesh_wp.device),
+        )
+    assert np.array_equal(extended.numpy(), np.zeros(mesh_wp.points.size))
 
 
 # ---------------------------------------------------------------------------
@@ -3474,6 +3532,28 @@ def test_point_cloud_signed_distance_signs_as_the_mesh_does(device: str) -> None
     assert mesh_field[north] > 0.0 > mesh_field[south]
     assert cloud_field[north] > 0.0 > cloud_field[south]
     assert np.corrcoef(mesh_field, cloud_field)[0, 1] > 0.99
+
+
+def test_point_cloud_release_keeps_the_answers_and_an_empty_curve_is_zero(device: str) -> None:
+    """
+    Not a library comparison: ``release`` drops held memory only, and no curve has no distance.
+
+    After ``release`` the solver holds nothing (``nbytes`` is zero) and answers as before, bit for
+    bit, rebuilding whatever it needs. A curve with no point bounds no region, so the signed
+    distance is zero everywhere rather than a solve against an empty right-hand side.
+    """
+    vertices, _faces = od.creation.icosphere(subdivisions=3, device=device)
+    solver = od.heat.PointCloudHeatSolver(vertices, normals=vertices)
+    sources = wp.array([0], dtype=wp.int32, device=device)
+    before_np = solver.distance(sources).numpy()
+    assert before_np.max() > 1.0  # non-vacuity: a real geodesic field, not zeros
+    solver.release()
+    assert solver.nbytes == 0
+    assert np.array_equal(solver.distance(sources).numpy(), before_np)
+
+    no_curve = warp_empty(0, wp.int32, device)
+    signed_np = solver.signed_distance(no_curve).numpy()
+    assert np.array_equal(signed_np, np.zeros(vertices.size))
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

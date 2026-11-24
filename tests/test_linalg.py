@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import warnings
 import weakref
+from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
 import igl
@@ -422,6 +423,70 @@ def test_min_quad_with_fixed_data_matches_only_its_own_mask(device: str) -> None
         False,
     ]
     assert not data.matches(wp.array(other_np[:-1], dtype=wp.bool, device=device))
+
+
+def test_min_quad_with_fixed_data_matches_after_its_flag_wraps(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the reused flag is zeroed when its base nears the limit.
+
+    With the limit lowered to one stride every call wraps the base back to zero and clears the
+    word, so a stale difference left from the call before would answer ``False`` for a match.
+    """
+    monkeypatch.setattr(od.linalg._StampedFlag, "_LIMIT", od.linalg._StampedFlag._STRIDE)
+    matrix_wp, fixed_wp, _values_wp, _expected_np = _pinned_grid(device)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    other_np = fixed_wp.numpy().copy()
+    other_np[np.flatnonzero(~other_np)[0]] = True
+    other_wp = wp.array(other_np, dtype=wp.bool, device=device)
+    copy_wp = wp.array(fixed_wp.numpy(), dtype=wp.bool, device=device)
+    answers = [data.matches(mask) for mask in (copy_wp, other_wp, copy_wp, other_wp, copy_wp)]
+    assert answers == [True, False, True, False, True]
+    assert data._match_flag is not None
+    assert data._match_flag.base == 0
+
+
+def test_min_quad_with_fixed_data_with_every_dof_pinned(device: str) -> None:
+    """
+    Not a library comparison: with nothing free the answer is ``(n_rhs, 0)`` and nothing factors.
+
+    A mask pinning every degree of freedom leaves no reduced system, so the precompute holds no
+    factorization, a solve returns the empty answer without iterating, and a release is a no-op.
+    """
+    matrix_wp, _fixed_wp, values_wp, _expected_np = _pinned_grid(device)
+    all_wp = wp.ones(int(values_wp.shape[1]), dtype=wp.bool, device=device)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, all_wp)
+    assert data.n_free == 0
+    assert not data.factored
+    solution_wp, _free_map_wp, n_free = data.solve(values_wp)
+    assert n_free == 0
+    assert solution_wp.shape == (2, 0)
+    data.release()
+    assert data.nbytes == 0
+
+
+def test_min_quad_with_fixed_data_over_no_degree_of_freedom(device: str) -> None:
+    """
+    Not a library comparison: a ``0 x 0`` system extracts, precomputes and matches only itself.
+
+    ``partitioned_interior_system`` returns an empty partition at once, and ``matches`` answers
+    an empty mask ``True`` (and a non-empty one ``False``) without a launch.
+    """
+    empty_q = scipy_to_bsr(sp.csr_matrix((0, 0)), device)
+    empty_mask = wp.zeros(0, dtype=wp.bool, device=device)
+    empty_values = odt.empty_2d((1, 0), wp.float64, device=device)
+    q_uu, rhs, free_map, n_free = od.linalg.partitioned_interior_system(
+        empty_q, empty_mask, empty_values
+    )
+    assert n_free == 0
+    assert int(q_uu.nrow) == 0
+    assert rhs.shape == (1, 0)
+    assert free_map.size == 0
+    data = od.linalg.min_quad_with_fixed_precompute(empty_q, empty_mask)
+    assert data.n_free == 0
+    assert data.matches(wp.zeros(0, dtype=wp.bool, device=device))
+    assert not data.matches(wp.zeros(1, dtype=wp.bool, device=device))
 
 
 def test_operator_entry_points_reject_an_operator_on_another_device() -> None:
@@ -1128,6 +1193,44 @@ def test_solve_spd_columns_iterates_past_its_rent_when_nothing_can_be_factored(
     )
 
 
+def test_solve_spd_columns_warns_when_iterating_past_its_rent_still_fails(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the iteration past the rent that also fails warns, unfactored.
+
+    The operator is over ``CHOLESKY_MEMORY_BUDGET``, so the verified solve iterates on from its
+    rent of two rounds up to a cap of six; six Jacobi rounds cannot reach ``1e-12`` on the nearly
+    singular grid, so the second verification fails as well and the solve warns.
+    """
+    matrix_wp, rhs_wp, _dense_np, _rhs_np = _grid_laplacian_system(device, k=12, shift=1e-7)
+    monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_ROUNDS", 2)
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    runs: list[int] = []
+    original = od.linalg._cg_columns
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        runs.append(int(kwargs["maxiter"]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "_cg_columns", counted)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    with pytest.warns(UserWarning, match="cannot be factored"):
+        od.linalg.solve_spd_columns(
+            matrix_wp,
+            rhs_wp,
+            solution_wp,
+            tol=1e-12,
+            maxiter=6,
+            check_every=1,
+            preconditioner="diag",
+            factorization=held,
+        )
+    assert held.factorization is None
+    assert runs == [2, 4]
+
+
 def test_solve_spd_columns_rejects_another_operators_factorization(device: str) -> None:
     """A factorization is matched to its operator by identity, as in ``solve_spd_settled``."""
     matrix_wp, rhs_wp, _, _ = _grid_laplacian_system(device)
@@ -1167,6 +1270,82 @@ def test_solve_spd_settled_solves_by_a_held_factorization(device: str) -> None:
         assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
         held.release()
     assert held.nbytes == 0
+
+
+def test_operator_factorization_rejects_invalid_use(device: str) -> None:
+    """
+    Not a library comparison: each documented ``ValueError`` of ``OperatorFactorization`` raises.
+
+    A ``float32`` operator, a partition given by half (``fixed_mask`` without ``free_map``), and a
+    solve before anything is factored.
+    """
+    matrix_wp, rhs_wp, _dense_np, _rhs_np = _spd_system(device, n=16, n_rhs=1)
+    narrow_wp = wps.bsr_copy(
+        matrix_wp,
+        scalar_type=wp.float32,  # pyright: ignore[reportArgumentType]  # Warp types it an instance
+    )
+    assert odt.has_blocks(narrow_wp, wp.float32)
+    with pytest.raises(ValueError, match="float64 or wp"):
+        od.linalg.OperatorFactorization(narrow_wp)
+    with pytest.raises(ValueError, match="give fixed_mask and free_map together"):
+        od.linalg.OperatorFactorization(
+            matrix_wp, fixed_mask=wp.zeros(16, dtype=wp.bool, device=device)
+        )
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    rhs_1d = odt.as_dense(rhs_wp[0])
+    with pytest.raises(ValueError, match="nothing is factored"):
+        held.solve(rhs_1d, wp.zeros_like(rhs_1d), tol=1e-12)
+
+
+def test_operator_factorization_solves_a_block_operator(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a ``wp.mat22d`` operator factors and solves.
+
+    The block operator is factored as its scalar expansion, and a ``wp.vec2d`` right-hand side is
+    solved through its interleaved ``float64`` view; a wrong interleaving would solve a permuted
+    system.
+    """
+    matrix_wp, dense_np, rhs_np = _block_system(device)
+    n_blocks = rhs_np.shape[0]
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    assert held.factor()
+    rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)
+    solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
+    held.solve(rhs_wp, solution_wp, tol=1e-12)
+    expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 2)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-10, atol=1e-12)
+
+
+def test_solve_spd_settled_leaves_an_indefinite_operator_unfactored(device: str) -> None:
+    """
+    Not a library comparison: an indefinite operator has no definite solve to compare against.
+
+    The settled iterate is rejected by the backward-error check, the fallback factorization finds
+    the operator indefinite either way round, and the solve returns its rounds without a warning
+    (documented: the check cannot tell a far field from a wrong answer). The holder remembers the
+    refusal, so a later ``factor`` answers ``False`` without trying again.
+    """
+    n = 64
+    signs_np = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    laplacian_np = 2.0 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1)
+    matrix_wp = scipy_to_bsr(sp.coo_matrix(laplacian_np + 3.0 * np.diag(signs_np)), device)
+    rhs_wp = wp.ones(n, dtype=wp.float64, device=device)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        od.linalg.solve_spd_settled(
+            matrix_wp,
+            rhs_wp,
+            wp.zeros_like(rhs_wp),
+            check_rounds=1,
+            change_tolerance=10.0,
+            settle_rounds=1,
+            factorization=held,
+        )
+    assert held.iterate_rejected
+    assert held.refused
+    assert held.factorization is None
+    assert not held.factor()
 
 
 def test_solve_spd_settled_rejects_an_unsupported_system(device: str) -> None:
@@ -1488,6 +1667,39 @@ def test_solver_cache_keys_on_the_operator(device: str) -> None:
 
 
 @pytest.mark.usefixtures("batched_engine")
+def test_solver_cache_evicts_its_oldest_state(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a full cache drops a state, and solves stay right.
+
+    With room for one state per operator and one remembered pooled shape, solves under two
+    tolerances evict each other's state and solves of two sizes clear the shape memory; every
+    answer still matches the dense solve.
+    """
+    monkeypatch.setattr(od.linalg, "_SOLVER_CACHE_ENTRIES", 1)
+    monkeypatch.setattr(od.linalg, "_SHAPES_SEEN_ENTRIES", 1)
+    monkeypatch.setattr(od.linalg, "_SHAPES_SEEN", set())
+    monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=1, seed=3)
+    expected_np = np.linalg.solve(dense_np, rhs_np.T).T
+    for tol in (1e-8, 1e-9, 1e-8):
+        solution_wp = wp.zeros_like(rhs_wp)
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), tol=tol
+        )
+        assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
+        assert len(od.linalg._SOLVER_CACHE[matrix_wp]) == 1
+    for n in (32, 48):
+        small_wp, small_rhs_wp, small_np, small_rhs_np = _spd_system(device, n=n, n_rhs=1)
+        rhs_1d = odt.as_dense(small_rhs_wp[0])
+        solution_1d = wp.zeros_like(rhs_1d)
+        od.linalg.solve_spd(small_wp, rhs_1d, solution_1d, tol=1e-10)
+        assert np.allclose(
+            solution_1d.numpy(), np.linalg.solve(small_np, small_rhs_np[0]), rtol=1e-6, atol=1e-8
+        )
+        assert len(od.linalg._SHAPES_SEEN) == 1
+
+
+@pytest.mark.usefixtures("batched_engine")
 @pytest.mark.parametrize("kind", ["diag", "chebyshev"])
 def test_pooled_solver_state_follows_each_operator(
     device: str, monkeypatch: pytest.MonkeyPatch, kind: str
@@ -1638,6 +1850,35 @@ def test_solve_spd_block_operator_matches_numpy(device: str) -> None:
     )
     expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 2)
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+def test_solve_spd_mat33_block_operator_matches_numpy(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve`` of the same operator written out densely.
+
+    A ``wp.mat33d`` operator is neither scalar nor ``wp.mat22d``, so ``solve_spd`` hands it to
+    ``warp.optim.linear.cg`` under Warp's blocked Jacobi rather than to its own engines.
+    """
+    n_blocks = 20
+    rng = np.random.default_rng(23)
+    dense_np = rng.standard_normal((3 * n_blocks, 3 * n_blocks))
+    dense_np = dense_np @ dense_np.T + 3 * n_blocks * np.eye(3 * n_blocks)
+    blocks_np = dense_np.reshape(n_blocks, 3, n_blocks, 3).transpose(0, 2, 1, 3)
+    rows_np, cols_np = np.meshgrid(np.arange(n_blocks), np.arange(n_blocks), indexing="ij")
+    matrix_wp = wps.bsr_from_triplets(
+        n_blocks,
+        n_blocks,
+        wp.array(rows_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 3, 3)), dtype=wp.mat33d, device=device),
+    )
+    rhs_np = rng.standard_normal((n_blocks, 3))
+    rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec3d, device=device)
+    solution_wp = wp.zeros(n_blocks, dtype=wp.vec3d, device=device)
+    assert odt.has_blocks(matrix_wp, wp.mat33d)
+    od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp, tol=1e-10)
+    expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 3)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-8)
 
 
 def _block_system(
@@ -2375,6 +2616,30 @@ def test_multigrid_preconditioner_auto_gate_takes_both_branches(device: str) -> 
     assert np.allclose(answers["auto"].numpy(), answers["multigrid"].numpy(), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.usefixtures("batched_engine")
+def test_solve_spd_columns_auto_under_the_probe_cap_runs_jacobi(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: ``"auto"`` with a cap the probe would fill.
+
+    A ``maxiter`` under ``CG_PROBE_ITERATIONS`` leaves no rounds to escalate into, so the solve is
+    Jacobi to the cap, which converges on the shifted grid.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=24, shift=1e-2)
+    assert not od.linalg._wants_multigrid(matrix_wp)
+    solution_wp = wp.zeros_like(rhs_wp)
+    od.linalg.solve_spd_columns(
+        matrix_wp,
+        rhs_wp,
+        odt.as_array2d(solution_wp, wp.float64),
+        tol=1e-10,
+        maxiter=od.linalg.CG_PROBE_ITERATIONS // 2,
+        preconditioner="auto",
+    )
+    assert np.allclose(
+        solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-6, atol=1e-7
+    )
+
+
 def test_spd_column_solver_rejects_the_auto_preconditioner(device: str) -> None:
     # A hoisted state is built to be driven many times, and the probe decides on the first solve --
     # so "auto" has no meaning there and says so rather than quietly picking one of the two.
@@ -2384,6 +2649,60 @@ def test_spd_column_solver_rejects_the_auto_preconditioner(device: str) -> None:
         od.linalg.spd_column_solver(
             matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
         )
+
+
+def _float32_grid_system(device: str) -> tuple[odt.BsrMatrix[Any], wp.array[Any], np.ndarray]:
+    """``_grid_laplacian_system`` narrowed to ``float32``, shifted so little Jacobi stalls on it."""
+    matrix64_wp, _rhs, dense_np, rhs_np = _grid_laplacian_system(device, n_rhs=2, shift=1e-6)
+    matrix_wp = wps.bsr_copy(
+        matrix64_wp,
+        scalar_type=wp.float32,  # pyright: ignore[reportArgumentType]  # Warp types it an instance
+    )
+    assert odt.has_blocks(matrix_wp, wp.float32)
+    rhs_wp = wp.array(rhs_np.astype(np.float32), dtype=wp.float32, device=device)
+    return matrix_wp, rhs_wp, dense_np
+
+
+@pytest.mark.parametrize("preconditioner", ["chebyshev", "adaptive", "multigrid", "auto"])
+@pytest.mark.parametrize("entry", ["solve_spd_columns", "spd_column_solver"])
+def test_column_solvers_take_only_jacobi_on_a_float32_operator(
+    device: str, entry: str, preconditioner: str
+) -> None:
+    """
+    Not a library comparison: an argument check, with no reference that has the restriction.
+
+    Only the Jacobi state stores a ``float32`` operator. Excludes the check moving behind a probe:
+    ``"adaptive"`` once raised only after a stalled Jacobi probe had overwritten ``solution``, and
+    ``"auto"`` failed inside its operator test with a ``RuntimeError``. So the error comes before
+    any work, ``solution`` keeps its sentinel, and the system is one Jacobi stalls on.
+    """
+    matrix_wp, rhs_wp, _dense_np = _float32_grid_system(device)
+    solution_wp = wp.full(rhs_wp.shape, 7.0, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match='float32 operator takes only preconditioner="diag"'):
+        getattr(od.linalg, entry)(
+            matrix_wp, rhs_wp, solution_wp, check_every=8, preconditioner=preconditioner
+        )
+    assert np.array_equal(solution_wp.numpy(), np.full(rhs_wp.shape, 7.0, dtype=np.float32))
+
+
+def test_solve_spd_columns_float32_jacobi_matches_numpy(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: ``"diag"`` still solves the ``float32`` operator.
+
+    The other half of [`test_column_solvers_take_only_jacobi_on_a_float32_operator`], at
+    ``float32``'s tolerance.
+    """
+    matrix_wp, rhs_wp, dense_np = _float32_grid_system(device)
+    solution_wp = wp.zeros_like(rhs_wp)
+    od.linalg.solve_spd_columns(
+        matrix_wp,
+        odt.as_array2d(rhs_wp, wp.float32),
+        odt.as_array2d(solution_wp, wp.float32),
+        tol=1e-6,
+        check_every=8,
+    )
+    expected_np = np.linalg.solve(dense_np, rhs_wp.numpy().astype(np.float64).T).T
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-3, atol=1e-3)
 
 
 def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
@@ -2417,6 +2736,35 @@ def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
     )[0]
     assert iterations == 1, iterations
     assert np.allclose(solution_wp.numpy(), rhs_np / diagonal_np, rtol=1e-8, atol=1e-10)
+
+
+def test_multigrid_preconditioner_operator_is_jacobi_without_a_hierarchy(device: str) -> None:
+    """
+    Class A, against the inverse diagonal: the public operator falls back to Jacobi as documented.
+
+    The diagonal operator of the test above has no hierarchy, so
+    [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner] returns Jacobi over its
+    two columns, which applies the exact inverse. A cycle's own operator, built on a grid that
+    coarsens, refuses any ``matvec`` other than ``z = M x``.
+    """
+    n = 1024
+    rng = np.random.default_rng(7)
+    diagonal_np = rng.uniform(1.0, 4.0, size=n)
+    index_np = np.arange(n)
+    matrix_wp = scipy_to_bsr(
+        sp.coo_matrix((diagonal_np, (index_np, index_np)), shape=(n, n)), device
+    )
+    operator = od.linalg.multigrid_preconditioner(matrix_wp, n_columns=2)
+    x_np = rng.standard_normal(2 * n)
+    x_wp = wp.array(x_np, dtype=wp.float64, device=device)
+    z_wp = wp.zeros_like(x_wp)
+    operator.matvec(x_wp, z_wp, z_wp, 1.0, 0.0)
+    assert np.allclose(z_wp.numpy(), x_np / np.tile(diagonal_np, 2), rtol=1e-12, atol=0.0)
+    grid_wp, _rhs_wp, _dense_np, _rhs_np = _grid_laplacian_system(device)
+    cycle = od.linalg.multigrid_preconditioner(grid_wp)
+    y_wp = wp.zeros(int(grid_wp.nrow), dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match="only implements z = M x"):
+        cycle.matvec(y_wp, y_wp, y_wp, 2.0, 0.0)
 
 
 def _normal_equations_system(
@@ -2602,6 +2950,35 @@ def test_squared_laplacian_preconditioner_rejects_an_unknown_method(device: str)
         )
 
 
+def test_squared_laplacian_multigrid_falls_back_to_the_polynomial(device: str) -> None:
+    """
+    Class A, against the diagonal's exact inverse: no hierarchy means the polynomial form.
+
+    A diagonal ``L`` above the dense-coarse cap does not coarsen, so ``method="multigrid"`` returns
+    the polynomial preconditioner instead. With ``D = L`` the square block ``D^-1 L`` is the
+    identity, and the diagonal system then solves to its exact inverse under it.
+    """
+    n = 1024
+    rng = np.random.default_rng(9)
+    diagonal_np = rng.uniform(1.0, 4.0, size=n)
+    index_np = np.arange(n)
+    laplacian_wp = scipy_to_bsr(
+        sp.coo_matrix((diagonal_np, (index_np, index_np)), shape=(n, n)), device
+    )
+    sums_wp = wp.array(diagonal_np, dtype=wp.float64, device=device)
+    preconditioner = od.linalg.squared_laplacian_preconditioner(
+        laplacian_wp, sums_wp, method="multigrid"
+    )
+    assert preconditioner._is_polynomial()
+    rhs_np = rng.standard_normal((1, n))
+    rhs_wp = odt.as_array2d(
+        wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device), wp.float64
+    )
+    solution_wp = odt.as_array2d(wp.zeros((1, n), dtype=wp.float64, device=device), wp.float64)
+    od.linalg.solve_spd_columns(laplacian_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
+    assert np.allclose(solution_wp.numpy(), rhs_np / diagonal_np, rtol=1e-8, atol=1e-10)
+
+
 def _chebyshev_reference(dense_np: np.ndarray, rhs_np: np.ndarray) -> np.ndarray:
     """
     ``p(D^-1 A) D^-1 rhs`` in closed form, for the interval ``chebyshev_preconditioner`` picks.
@@ -2668,6 +3045,17 @@ def test_chebyshev_preconditioner_applies_the_chebyshev_polynomial(
     assert np.ptp(reference_np) > 1e-3  # non-vacuity
     # Symmetric, and definite with the operator's sign: <r, M r> > 0 for a positive diagonal.
     assert float(rhs_np[0] @ applied.numpy()) > 0.0
+
+
+def test_chebyshev_preconditioner_refuses_a_scaled_matvec(device: str) -> None:
+    """Not a library comparison: the operator documents ``z = M x`` only, and raises otherwise."""
+    _system, _rhs, laplacian_wp, _sums, _system_np, _rhs_np = _normal_equations_system(
+        device, negative=False
+    )
+    operator = od.linalg.chebyshev_preconditioner(laplacian_wp)
+    vector = wp.zeros(int(laplacian_wp.nrow), dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match="only implements z = M x"):
+        operator.matvec(vector, vector, vector, 1.0, 1.0)
 
 
 @pytest.mark.parametrize("negative", [False, True], ids=["positive_weights", "negative_weights"])
@@ -2973,3 +3361,25 @@ def test_replicated_operator_applies_the_base_to_each_block(device: str, n_colum
         [dense_np @ vector_np[column * n : (column + 1) * n] for column in range(n_columns)]
     )
     assert np.allclose(result_wp.numpy(), expected_np, rtol=1e-10, atol=1e-10)
+
+
+def test_symmetric_inverse_runs_without_an_openblas_thread_setter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    Not a library comparison: NumPy's pseudo-inverse is the oracle, with no thread limit to set.
+
+    The search for ``openblas_set_num_threads_local`` skips a candidate that does not load and
+    answers ``None`` when none does; the inverse is then formed with no limit set, and is the same.
+    """
+    unloadable = tmp_path / "libopenblas_stub.so"
+    unloadable.write_text("not a shared library")
+    monkeypatch.setattr(
+        od.linalg.glob, "glob", lambda pattern: [str(unloadable)] if "libs" in pattern else []
+    )
+    assert od.linalg._openblas_thread_setter.__wrapped__() is None
+    monkeypatch.setattr(od.linalg, "_openblas_thread_setter", lambda: None)
+    n = 40
+    block_np = -(2.0 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1))
+    inverse_np = od.linalg._symmetric_inverse(block_np)
+    assert np.allclose(inverse_np, np.linalg.inv(block_np), rtol=1e-9, atol=1e-9)

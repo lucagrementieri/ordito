@@ -136,6 +136,26 @@ def test_sparse_cholesky_solves_columns_together(
         assert np.allclose(together.numpy()[column], alone.numpy(), rtol=1e-12, atol=1e-14)
 
 
+def test_sparse_cholesky_solves_in_place(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``: one buffer as right-hand side and solution.
+
+    The refinement reads the right-hand side after the solution is overwritten, so a buffer
+    passed as both is copied aside first; reading it in place would refine against the answer.
+    """
+    _, mesh_wp = sphere_irregular
+    system = _heat_system(mesh_wp)
+    n = int(system.nrow)
+    rhs_np = np.random.default_rng(5).standard_normal(n)
+    factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    buffer = wp.array(rhs_np, dtype=wp.float64, device=device)
+    factor.solve(buffer, buffer)
+    expected_np = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
+    assert np.allclose(buffer.numpy(), expected_np, rtol=1e-10, atol=1e-12)
+
+
 @pytest.mark.parametrize("system_name", ["heat", "poisson"])
 def test_sparse_cholesky_solves_unrefined(
     device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], system_name: str
@@ -374,6 +394,8 @@ def test_an_empty_operator_factors_and_solves_nothing(device: str, with_coordina
     """
     Not a library comparison: a ``0 x 0`` operator factors with no levels and solves to nothing.
 
+    It refactors too, twice, with no stored entry to copy.
+
     The coordinate-free path computes landmark coordinates first, which raised on an empty
     operator; both paths now return an empty factorization.
     """
@@ -383,6 +405,12 @@ def test_an_empty_operator_factors_and_solves_nothing(device: str, with_coordina
     solution = warp_empty(0, wp.float64, device)
     factor.solve(warp_empty(0, wp.float64, device), solution)
     assert factor.n == 0
+    assert solution.shape == (0,)
+    # Refactored twice: the first copies the (empty) pattern into storage of its own, the second
+    # has no stored entry to copy into it.
+    factor.refactor(empty)
+    factor.refactor(empty)
+    factor.solve(warp_empty(0, wp.float64, device), solution)
     assert solution.shape == (0,)
 
 

@@ -205,10 +205,20 @@ def test_pack_1d_arrays_reuses_what_split_produced(device: str) -> None:
     # The default still copies, so a caller that writes into the result is unaffected.
     assert od.array.pack_1d_arrays(segments_wp)[0].ptr != flat_wp.ptr
 
+    # Rows of a buffer allocated two-dimensional: no one-dimensional base to alias.
+    grid_wp = wp.array(np.arange(12, dtype=np.int32).reshape(3, 4), dtype=wp.int32, device=device)
     for label, sequence in (
         ("out of order", segments_wp[::-1]),
         ("a gap between them", [segments_wp[0], segments_wp[2]]),
         ("separate allocations", [wp.clone(segment) for segment in segments_wp]),
+        (
+            "an empty segment among them",
+            [segments_wp[0], warp_empty(0, wp.int32, device), segments_wp[1]],
+        ),
+        (
+            "rows of a two-dimensional buffer",
+            [cast("wp.array[wp.int32]", grid_wp[row]) for row in range(3)],
+        ),
     ):
         rebuilt_wp, _ = od.array.pack_1d_arrays(sequence, copy=False)
         assert rebuilt_wp.ptr != sequence[0].ptr, label
@@ -757,6 +767,36 @@ def test_block_diag_matches_scipy(device: str) -> None:
     assert od.array.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
 
 
+def test_block_diag_stacks_zero_row_operators(device: str) -> None:
+    """
+    Class A, against ``scipy.sparse.block_diag`` with an empty operator between two others.
+
+    A zero-row operator has no entry storage (its ``columns`` and ``values`` hold no allocation),
+    which once made the stack raise a ``TypeError`` instead of contributing nothing. A stack of only
+    such operators is the empty operator.
+    """
+    rng = np.random.default_rng(41)
+    first_np = scipy.sparse.random(5, 5, density=0.5, random_state=rng, format="coo")
+    second_np = scipy.sparse.random(3, 3, density=0.5, random_state=rng, format="coo")
+    empty_wp = od.array.empty_square_bsr(0, wp.float64, device)
+    assert first_np.nnz > 0
+    assert second_np.nnz > 0
+
+    stacked_wp = od.array.block_diag(
+        (scipy_to_bsr(first_np, device), empty_wp, scipy_to_bsr(second_np, device))
+    )
+
+    expected_np = scipy.sparse.block_diag((first_np, second_np)).toarray()
+    assert stacked_wp.nrow == expected_np.shape[0] == 8
+    assert np.allclose(bsr_to_dense(stacked_wp, 8), expected_np, rtol=1e-12, atol=1e-12)
+
+    empty_stack_wp = od.array.block_diag(
+        (empty_wp, od.array.empty_square_bsr(0, wp.float64, device))
+    )
+    assert empty_stack_wp.nrow == empty_stack_wp.ncol == 0
+    assert np.array_equal(empty_stack_wp.offsets.numpy(), [0])
+
+
 def test_scalar_expansion_matches_scipy(device: str) -> None:
     """
     Class A, against ``scipy.sparse.bsr_matrix(...).toarray()`` of the same 2 x 2 blocks.
@@ -798,6 +838,11 @@ def test_scalar_expansion_matches_scipy(device: str) -> None:
         wp.array(2.0 * matrix_wp.values.numpy(), dtype=wp.mat22d, device=device)
     )
     assert od.array.scalar_expansion(matrix_wp) is scalar_wp
+
+    # No block row expands to no scalar row.
+    empty_wp = od.array.scalar_expansion(od.array.empty_square_bsr(0, wp.mat22d, device))
+    assert (int(empty_wp.nrow), int(empty_wp.ncol)) == (0, 0)
+    assert np.array_equal(empty_wp.offsets.numpy(), [0])
     assert np.allclose(
         bsr_to_dense(scalar_wp, 2 * n_blocks), 2.0 * expected_np, rtol=1e-12, atol=1e-12
     )
@@ -1062,6 +1107,19 @@ def test_index_sparse(data: npt.NDArray[np.int32] | None, device: str):
     assert result_wp.values.dtype == (data_wp.dtype if data_wp is not None else wp.float32)
     assert np.array_equal(result_wp.offsets.numpy(), result_np.indptr)
     assert np.array_equal(result_wp.values.numpy(), result_np.data)
+
+
+@pytest.mark.parity("index_sparse", "trimesh")
+def test_index_sparse_of_no_indices(device: str) -> None:
+    """Class A against ``trimesh.geometry.index_sparse``: no index, an all-empty row table."""
+    result_np = tm.geometry.index_sparse(4, np.zeros((0, 3), dtype=np.int64)).tocsr()
+    indices_wp = odt.as_array2d(wp.zeros((0, 3), dtype=wp.int32, device=device), wp.int32)
+
+    result_wp = od.array.index_sparse(4, indices_wp)
+
+    assert (int(result_wp.nrow), int(result_wp.ncol)) == result_np.shape
+    assert np.array_equal(result_wp.offsets.numpy(), result_np.indptr)
+    assert result_wp.columns.size == result_np.nnz == 0
 
 
 def test_index_sparse_repeated_indices(device: str):
@@ -1343,6 +1401,12 @@ def test_bit_ranks_is_the_scan_of_the_word_populations(device: str, n_words: int
     assert np.array_equal(ranks_wp.numpy(), np.cumsum(populations_np).astype(np.int32))
     if n_words:
         assert np.ptp(ranks_wp.numpy()) > 0 or n_words == 1
+    # Into a caller's buffer: the same ranks, written in place; a buffer of another size refused.
+    out_wp = warp_empty(n_words, wp.int32, device)
+    assert od.array.bit_ranks(words_wp, out=out_wp) is out_wp
+    assert np.array_equal(out_wp.numpy(), ranks_wp.numpy())
+    with pytest.raises(ValueError, match="one per word"):
+        od.array.bit_ranks(words_wp, out=warp_empty(n_words + 1, wp.int32, device))
 
 
 @pytest.mark.parity("counts_to_offsets", "numpy")
@@ -1812,6 +1876,11 @@ def test_index_bound_can_check_non_negativity_in_the_same_reduction(device: str)
     assert od.array.index_bound(negative_wp) == 8
     with pytest.raises(ValueError, match="non-negative"):
         _ = od.array.index_bound(negative_wp, require_non_negative=True)
+    # Every index negative: the bound is still the maximum plus one, here below zero's.
+    all_negative_wp = wp.array(
+        np.array([-5, -2, -3], dtype=np.int32), dtype=wp.int32, device=device
+    )
+    assert od.array.index_bound(all_negative_wp) == -2 + 1
 
     # An empty buffer has no indices to be out of range, and both forms agree on that.
     empty_wp = warp_empty((0, 2), wp.int32, device)

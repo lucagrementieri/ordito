@@ -1518,7 +1518,8 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
     for name in ("offsets", "columns", "values"):
         field = records[name]
         arrays = [getattr(block, name) for block in blocks]
-        field["data"] = [int(arr.ptr) for arr in arrays]
+        # A zero-capacity array has no allocation (``ptr`` is ``None``): null, never read.
+        field["data"] = [int(arr.ptr or 0) for arr in arrays]
         field["shape"][:, 0] = [int(arr.shape[0]) for arr in arrays]
         field["strides"][:, 0] = [int(arr.strides[0]) for arr in arrays]
         field["ndim"] = 1

@@ -298,25 +298,27 @@ def test_procrustes_far_from_origin(device: str) -> None:
     assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("return_cost", [True, False], ids=["with_cost", "matrix_only"])
 @pytest.mark.parametrize(
     ("n_b", "weights", "message"),
     [(11, None, "same length"), (10, 5, "same length"), (10, 10, "sum to zero")],
     ids=["points_length", "weights_length", "all_zero_weights"],
 )
 def test_procrustes_validates_its_input(
-    device: str, n_b: int, weights: int | None, message: str
+    device: str, n_b: int, weights: int | None, message: str, return_cost: bool
 ) -> None:
     """
     The two clouds and the weights must match in length, and the weights may not sum to zero.
 
-    An all-zero, non-empty ``weights`` must raise rather than silently return NaN.
+    An all-zero, non-empty ``weights`` must raise rather than silently return NaN, under both
+    return forms: the matrix-only form tests the weight sum the fit accumulated on its own path.
     """
     rng = np.random.default_rng(20)
     a_wp = points_to_warp(rng.standard_normal((10, 3)), device)
     b_wp = points_to_warp(rng.standard_normal((n_b, 3)), device)
     weights_wp = None if weights is None else wp.zeros(weights, dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match=message):
-        od.registration.procrustes(a_wp, b_wp, weights=weights_wp)
+        od.registration.procrustes(a_wp, b_wp, weights=weights_wp, return_cost=return_cost)
 
 
 def test_procrustes_scale_on_duplicated_points(device: str) -> None:
@@ -2180,6 +2182,113 @@ def test_icp_empty_source(device: str) -> None:
     assert np.allclose(matrix_wp.numpy()[0], np.eye(4), atol=1e-6)
     assert transformed_wp.shape == (0,)
     assert not np.isfinite(cost_od)
+
+
+@pytest.mark.parametrize("empty", ["source", "target"])
+def test_icp_point_to_plane_empty_input(device: str, empty: str) -> None:
+    """
+    Not a library comparison: an empty source or target has no correspondence to fit.
+
+    Either returns the identity seed, the source as it was, and an infinite cost -- the answer a
+    weightless fit reports -- rather than the NaN an empty mean would give.
+    """
+    rng = np.random.default_rng(14)
+    cloud_np = rng.standard_normal((30, 3)).astype(np.float32)
+    cloud_wp = points_to_warp(cloud_np, device)
+    empty_wp = wp.zeros(0, dtype=wp.vec3, device=device)
+    source_wp, target_wp = (empty_wp, cloud_wp) if empty == "source" else (cloud_wp, empty_wp)
+
+    matrix_wp, transformed_wp, cost = od.registration.icp_point_to_plane(
+        source_wp, target_wp, None, target_normals=target_wp
+    )
+    assert np.array_equal(matrix_wp.numpy()[0], np.eye(4, dtype=np.float32))
+    assert np.array_equal(transformed_wp.numpy(), source_wp.numpy())
+    assert cost == np.inf
+
+
+@pytest.mark.parametrize("function", ["icp", "icp_point_to_plane"])
+def test_icp_takes_its_seed_as_an_array(device: str, function: str) -> None:
+    """
+    Ordito against ordito: a ``(1,)`` array seed is the ``wp.mat44`` seed, and is not aliased.
+
+    With no iteration the call returns its seed, so the array form must return the same matrix and
+    image as the value form, in a matrix buffer of its own: writing the returned matrix must leave
+    the caller's seed array as it was.
+    """
+    rng = np.random.default_rng(16)
+    target_np = rng.standard_normal((40, 3)).astype(np.float32)
+    source_np = (target_np + np.array([0.1, -0.2, 0.05], dtype=np.float32)).astype(np.float32)
+    initial_np = np.eye(4, dtype=np.float32)
+    initial_np[:3, 3] = [0.01, 0.0, -0.02]
+    source_wp = points_to_warp(source_np, device)
+    target_wp = points_to_warp(target_np, device)
+    normals_np = target_np / np.linalg.norm(target_np, axis=1, keepdims=True)
+    normals_wp = points_to_warp(normals_np, device)
+
+    def run(initial: wp.array[wp.mat44] | wp.mat44) -> tuple[wp.array[wp.mat44], np.ndarray]:
+        if function == "icp":
+            matrix_wp, transformed_wp, _ = od.registration.icp(
+                source_wp, target_wp, None, initial=initial, max_iterations=0
+            )
+        else:
+            matrix_wp, transformed_wp, _ = od.registration.icp_point_to_plane(
+                source_wp,
+                target_wp,
+                None,
+                target_normals=normals_wp,
+                initial=initial,
+                max_iterations=0,
+            )
+        return matrix_wp, transformed_wp.numpy()
+
+    seed_wp = wp.array([wp.mat44(*initial_np.ravel())], dtype=wp.mat44, device=device)
+    matrix_array_wp, transformed_array_np = run(seed_wp)
+    matrix_value_wp, transformed_value_np = run(wp.mat44(*initial_np.ravel()))
+    assert np.array_equal(matrix_array_wp.numpy(), matrix_value_wp.numpy())
+    assert np.array_equal(matrix_array_wp.numpy()[0], initial_np)
+    assert np.array_equal(transformed_array_np, transformed_value_np)
+    assert np.allclose(transformed_array_np, source_np + initial_np[:3, 3], rtol=0.0, atol=1e-6)
+    matrix_array_wp.fill_(wp.mat44(*np.zeros(16, dtype=np.float32)))
+    assert np.array_equal(seed_wp.numpy()[0], initial_np)
+
+
+@pytest.mark.parametrize("max_iterations", [1, 5])
+@pytest.mark.parametrize("gate", ["median_factor", "huber_scale"])
+def test_icp_point_to_plane_gate_past_every_first_correspondence(
+    device: str, gate: str, max_iterations: int
+) -> None:
+    """
+    Not a library comparison: a first round whose gate rejects everything returns the seed.
+
+    Every source point of a grid lifted by 1 off its own plane lies exactly 1 from the target, so
+    the median gate at half the median distance rejects every correspondence, and so does a fixed
+    ``max_distance=0.5``. The median arm takes the CPU's host-issued rounds (the gate moves with
+    each round's median); the Huber arm estimates its scale from the in-range residuals before the
+    first fit, and with none in range must take a zero scale rather than a median of nothing. Both
+    must stop at the weightless first round with the identity and an infinite cost, rather than
+    report the zero step a weightless solve gives as a converged ``cost=0.0`` fit.
+    """
+    grid_np = np.stack(np.meshgrid(np.arange(8.0), np.arange(8.0), indexing="ij"), axis=-1)
+    target_np = np.concatenate([grid_np.reshape(-1, 2), np.zeros((64, 1))], axis=1).astype(
+        np.float32
+    )
+    source_np = (target_np + np.array([0.0, 0.0, 1.0], dtype=np.float32)).astype(np.float32)
+    normals_np = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (64, 1))
+    run = partial(
+        od.registration.icp_point_to_plane,
+        points_to_warp(source_np, device),
+        points_to_warp(target_np, device),
+        None,
+        target_normals=points_to_warp(normals_np, device),
+        max_iterations=max_iterations,
+    )
+    if gate == "median_factor":
+        matrix_wp, transformed_wp, cost = run(max_distance_factor=0.5)
+    else:
+        matrix_wp, transformed_wp, cost = run(max_distance=0.5, robust_kernel="huber")
+    assert np.array_equal(matrix_wp.numpy()[0], np.eye(4, dtype=np.float32))
+    assert np.array_equal(transformed_wp.numpy(), source_np)
+    assert cost == np.inf
 
 
 @pytest.mark.parametrize(

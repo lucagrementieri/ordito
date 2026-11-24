@@ -630,6 +630,40 @@ def test_fit_plane_matches_igl(device: str, n_points: int, seed: int) -> None:
     assert np.isclose(abs(float(np.dot(np.array(normal_wp), normal_igl))), 1.0, atol=1e-6)
 
 
+@pytest.mark.parametrize("fit", ["fit_line", "fit_plane"])
+def test_fits_through_the_arrival_order_fit_launch(
+    device: str, fit: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class B (sign fix) against trimesh, through the fit's own launch after the scatter matrix.
+
+    With the deterministic setting off, a cloud of more than ``_FIT_TICKET_MAX_BLOCKS`` blocks
+    commits its scatter matrix in arrival order and fits it in a launch of its own rather than in
+    the block drawing the last ticket. The gate is lowered here so a 5 000-point cloud takes that
+    path, whose axis must still be trimesh's up to sign (``1e-5``; the planted 1000:1 needle and
+    the Gaussian blob are the well-determined cases of ``test_fit_line`` and ``test_fit_plane``).
+    """
+    monkeypatch.setattr(od, "_FIT_TICKET_MAX_BLOCKS", 0)
+    rng = np.random.default_rng(8)
+    if fit == "fit_line":
+        direction_np = np.array([0.6, -0.48, 0.64])
+        t_np = rng.uniform(-10.0, 10.0, size=5000)
+        points_np = t_np[:, None] * direction_np + 0.01 * rng.standard_normal((5000, 3))
+    else:
+        points_np = rng.standard_normal((5000, 3)) * np.array([3.0, 2.0, 0.2])
+    points_wp = points_to_warp(points_np, device)
+    with od_config.deterministic(False):
+        if fit == "fit_line":
+            axis_wp = np.array(od.fit_line(points_wp))
+            axis_tm = tm.major_axis(points_np)
+        else:
+            normal_wp, centroid_wp = od.fit_plane(points_wp)
+            axis_wp = np.array(normal_wp)
+            centroid_tm, axis_tm = tm.plane_fit(points_np)
+            assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-5, atol=1e-5)
+    assert np.isclose(np.abs(np.dot(axis_wp, axis_tm)), 1.0, atol=1e-5)
+
+
 @pytest.mark.parametrize(
     "normal",
     [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.95, 0.1, 0.2), (0.3, 0.9, 0.1), (0.0, -2.0, 0.0)],
@@ -1415,6 +1449,28 @@ def test_local_triangulation_refuses_a_wide_table(device: str) -> None:
         od.local_triangulation(points_wp, neighbor_idx_wp, frames=narrow_wp)
 
 
+@pytest.mark.parametrize("width", [1, 2, 7])
+def test_local_triangulation_needs_two_neighbours_a_star(device: str, width: int) -> None:
+    """
+    Not a library comparison: a star's triangle spans two of its neighbours.
+
+    A table of the point alone, or of the point and one neighbour, leaves every star without a
+    triangle, so the list is empty; with six neighbours a point the sphere's stars triangulate
+    (the non-vacuity arm).
+    """
+    points_np = _fibonacci_sphere(200)
+    points_wp = points_to_warp(points_np, device)
+    _, idx_np = scipy.spatial.cKDTree(points_np).query(points_np, k=width)
+    neighbor_idx_wp = odt.as_array2d(
+        wp.array(np.asarray(idx_np, dtype=np.int32).reshape(200, width), device=device), wp.int32
+    )
+    faces_np = od.local_triangulation(points_wp, neighbor_idx_wp, points_wp).numpy()
+    if width < 3:
+        assert faces_np.size == 0
+    else:
+        assert faces_np.size > 0
+
+
 @pytest.mark.parametrize("max_gap", [math.pi / 2.0, 0.75 * math.pi])
 @pytest.mark.parametrize("knn", [30, 48, 70])
 @pytest.mark.parity("point_boundary_mask", "open3d")
@@ -1497,6 +1553,50 @@ def test_neighborhood_functions_reject_invalid_arguments(
     }
     with pytest.raises(ValueError, match=match):
         calls[case]()
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        "orient_normals",
+        "smooth_normals",
+        "smooth_points",
+        "smooth_points_mls",
+        "smooth_points_bilateral",
+        "point_covariances",
+        "point_frames",
+        "local_triangulation",
+        "point_boundary_mask",
+    ],
+)
+def test_neighborhood_functions_of_an_empty_cloud_are_empty(device: str, function: str) -> None:
+    """
+    Not a library comparison: an empty cloud and its empty table have nothing to answer.
+
+    Every per-point output is empty, as is the triangle list, rather than a launch over no rows
+    reading the table out of bounds.
+    """
+    points_wp = warp_empty(0, wp.vec3, device)
+    neighbor_idx_wp = odt.as_array2d(wp.zeros((0, 6), dtype=wp.int32, device=device), wp.int32)
+    calls: dict[str, Callable[[], object]] = {
+        "orient_normals": lambda: od.orient_normals(points_wp, points_wp, neighbor_idx_wp),
+        "smooth_normals": lambda: od.smooth_normals(points_wp, neighbor_idx_wp, 2),
+        "smooth_points": lambda: od.smooth_points(points_wp, neighbor_idx_wp, 2),
+        "smooth_points_mls": lambda: od.smooth_points_mls(points_wp, neighbor_idx_wp),
+        "smooth_points_bilateral": lambda: od.smooth_points_bilateral(
+            points_wp, points_wp, neighbor_idx_wp, 0.1, 0.1
+        ),
+        "point_covariances": lambda: od.point_covariances(points_wp, neighbor_idx_wp),
+        "point_frames": lambda: od.point_frames(points_wp, neighbor_idx_wp),
+        "local_triangulation": lambda: od.local_triangulation(points_wp, neighbor_idx_wp),
+        "point_boundary_mask": lambda: od.point_boundary_mask(
+            points_wp, points_wp, neighbor_idx_wp
+        ),
+    }
+    result = calls[function]()
+    outputs = result if isinstance(result, tuple) else (result,)
+    for output in cast("tuple[wp.array[wp.vec3], ...]", outputs):
+        assert output.size == 0
 
 
 def _cloud_with_outliers(seed: int = 3, n_inliers: int = 400, n_outliers: int = 15) -> np.ndarray:
@@ -1725,12 +1825,16 @@ def test_radius_outlier_mask_matches_open3d(device: str) -> None:
     count_wp = od_neighbors.query_ball_count(points_wp, points_wp, radius)
     assert np.array_equal(count_wp.numpy(), count_o3d)
 
+    grid_wp = od_neighbors.hashgrid_from_points(points_wp, radius)
     for min_neighbors in (3, 6, 12):
         outlier_o3d = count_o3d <= min_neighbors
         # non-vacuity: this threshold splits the cloud rather than condemning or sparing all of it
         assert 0 < outlier_o3d.sum() < 500
         outlier_wp = od.radius_outlier_mask(points_wp, radius, min_neighbors)
         assert np.array_equal(outlier_wp.numpy().astype(bool), outlier_o3d)
+        # A caller's grid, built once for the sweep, gives the same mask.
+        gridded_wp = od.radius_outlier_mask(points_wp, radius, min_neighbors, grid=grid_wp)
+        assert np.array_equal(gridded_wp.numpy().astype(bool), outlier_o3d)
 
 
 def _scan_with_outliers(seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -1979,10 +2083,14 @@ def test_normal_outlier_mask_matches_meshlib(device: str, min_angle: float) -> N
         points_np, normals_np, 0.1, mm.OutlierTypeMask.AwayNormal, minAngle=min_angle
     )
     assert 0 < outlier_ml.sum() < 0.5 * points_np.shape[0]  # non-vacuity
-    outlier_wp = od.normal_outlier_mask(
-        points_to_warp(points_np, device), points_to_warp(normals_np, device), 0.1, min_angle
-    )
+    points_wp = points_to_warp(points_np, device)
+    normals_wp = points_to_warp(normals_np, device)
+    outlier_wp = od.normal_outlier_mask(points_wp, normals_wp, 0.1, min_angle)
     assert np.array_equal(outlier_wp.numpy(), outlier_ml)
+    # A caller's grid, of any cell width, gives the same mask.
+    grid_wp = od_neighbors.hashgrid_from_points(points_wp, 0.1)
+    gridded_wp = od.normal_outlier_mask(points_wp, normals_wp, 0.1, min_angle, grid=grid_wp)
+    assert np.array_equal(gridded_wp.numpy(), outlier_ml)
 
 
 @pytest.mark.parametrize(
@@ -2012,6 +2120,29 @@ def test_ball_outlier_masks_reject_invalid_arguments(device: str, case: str, mat
     }
     with pytest.raises(ValueError, match=match):
         calls[case]()
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        "radius_outlier_mask",
+        "cluster_outlier_mask",
+        "cluster_labels",
+        "plane_outlier_mask",
+        "normal_outlier_mask",
+    ],
+)
+def test_ball_outlier_masks_of_an_empty_cloud_are_empty(device: str, function: str) -> None:
+    """Not a library comparison: an empty cloud has no point to flag or label."""
+    points_wp = warp_empty(0, wp.vec3, device)
+    calls: dict[str, Callable[[], wp.array[wp.bool] | wp.array[wp.int32]]] = {
+        "radius_outlier_mask": lambda: od.radius_outlier_mask(points_wp, 0.1, 2),
+        "cluster_outlier_mask": lambda: od.cluster_outlier_mask(points_wp, 0.1),
+        "cluster_labels": lambda: od.cluster_labels(points_wp, 0.1),
+        "plane_outlier_mask": lambda: od.plane_outlier_mask(points_wp, 0.1, 0.01),
+        "normal_outlier_mask": lambda: od.normal_outlier_mask(points_wp, points_wp, 0.1),
+    }
+    assert calls[function]().size == 0
 
 
 @pytest.mark.parity(
@@ -2169,8 +2300,9 @@ def test_point_duplicate_mask_distinct_points_sharing_a_slot(device: str) -> Non
     assert np.array_equal(duplicate_wp, np.array([False, False, True, True]))
 
 
+@pytest.mark.parametrize("n_points", [500, 8000], ids=["small_block", "large_block"])
 @pytest.mark.parity("farthest_point_sample", "open3d")
-def test_farthest_point_sample_matches_open3d(device: str) -> None:
+def test_farthest_point_sample_matches_open3d(device: str, n_points: int) -> None:
     """
     Class A (`od.equality.points_allclose`): the same points as ``farthest_point_down_sample``.
 
@@ -2179,10 +2311,11 @@ def test_farthest_point_sample_matches_open3d(device: str) -> None:
     two point sets must be equal up to order, exactly (``SelectByIndex`` copies), and the match is
     a bijection, so a repeated selection cannot hide. The reference's order is asserted ascending,
     which is why order is all that is discarded. The sequence is pinned separately below, against a
-    transcription of its own loop.
+    transcription of its own loop. The 8 000-point cloud runs the sweep in the widest block
+    (``kernels.points.FARTHEST_BLOCK_LARGE_FROM``).
     """
     rng = np.random.default_rng(0)
-    points_np = rng.random((500, 3)).astype(np.float32).astype(np.float64)
+    points_np = rng.random((n_points, 3)).astype(np.float32).astype(np.float64)
     cloud_o3d = points_to_open3d(points_np)
 
     points_wp = points_to_warp(points_np, device)
@@ -2473,6 +2606,30 @@ def test_convex_hull_of_a_large_far_cloud_matches_scipy(
         lexsort_rows(np.sort(faces_np.reshape(-1, 3), axis=1)),
         lexsort_rows(np.sort(hull_scipy.simplices, axis=1)),
     )
+
+
+def test_convex_hull_of_a_sphere_outgrowing_its_first_face_tables_matches_scipy(
+    device: str,
+) -> None:
+    """
+    Class A on the vertex set, Class B (sorted corners) on the faces, against qhull.
+
+    The growth starts with tables for ``2**13`` faces; 6 000 points on a sphere are all hull
+    vertices, so their ``2 * 6 000 - 4`` faces outgrow those tables mid-growth and the surface is
+    copied into wider ones, which must lose no face, flag or dirty mark: the hull must still be
+    qhull's, triangle for triangle.
+    """
+    points_np = _hull_cloud("sphere", 6000, seed=27)
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
+    assert hull_scipy.simplices.shape[0] > 1 << 13  # non-vacuity: past the first tables
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
+    assert set(np.unique(faces_np).tolist()) == set(hull_scipy.vertices.tolist())
+    assert np.array_equal(
+        lexsort_rows(np.sort(faces_np.reshape(-1, 3), axis=1)),
+        lexsort_rows(np.sort(hull_scipy.simplices, axis=1)),
+    )
+    _assert_convex_hull_of(points_np, faces_np)
 
 
 @pytest.mark.parity("convex_hull", "trimesh", "open3d", "pymeshlab")

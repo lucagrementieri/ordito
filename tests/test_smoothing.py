@@ -13,6 +13,7 @@ import numpy.typing as npt
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
+import pyvista as pv
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import trimesh as tm
@@ -1098,6 +1099,31 @@ def test_filter_spikes_spike_rows_match_the_whole_operator(
     assert not np.array_equal(rows_wp.numpy(), vertices_np)
 
 
+def test_filter_spikes_spike_rows_take_a_high_valence_apex(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a spike past the spike rows' first key capacity reads the same 1-ring.
+
+    The spike-row path sizes its first key collection for a valence of 16 and re-collects at the
+    exact count when a spike has more. A 40-section cone's apex is its one spike (angle sum 0.47
+    against ``pi``), with 80 keys, so only the re-collection sees its whole ring; the whole-mesh
+    operator gives the reference positions, and the apex alone moves.
+    """
+    vertices_wp, faces_wp = od.creation.cone(0.3, 4.0, sections=40, device=device)
+    results = []
+    for ratio in (0, 1 << 30):
+        monkeypatch.setattr(od.smoothing, "_FEW_SPIKES_RATIO", ratio)
+        results.append(
+            od.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi, return_count=True)
+        )
+    (rows_wp, rows_count), (operator_wp, operator_count) = results
+    assert rows_count == operator_count == 1
+    assert np.array_equal(rows_wp.numpy(), operator_wp.numpy())
+    moved_np = np.flatnonzero(np.any(rows_wp.numpy() != vertices_wp.numpy(), axis=1))
+    assert moved_np.size == 1
+
+
 def test_filter_spikes_leaves_a_clean_mesh_alone(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
@@ -1955,6 +1981,40 @@ def test_filter_windowed_sinc_matches_pyvista(
     points_pv = np.asarray(smoothed_pv.points)
     assert np.abs(points_pv - mesh_tm.vertices).max() > 3e-5
     assert np.allclose(smoothed_wp.numpy(), points_pv, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("filter_windowed_sinc", "pyvista")
+def test_filter_windowed_sinc_scales_a_vertex_with_no_ring_as_pyvista_does(device: str) -> None:
+    """
+    Class A: a vertex no face uses is fixed and scaled by the filter's response at zero, as in VTK.
+
+    An unreferenced vertex far from an icosphere comes out of ``pyvista``'s ``smooth_taubin`` moved
+    radially by the response's offset from one (``2e-6`` of its distance from the origin at this
+    pass band), and ordito's matches it with the rest of the mesh. A faceless point set has no edge
+    at all, so every point is such a vertex and takes the same scale; the do-nothing answer misses
+    it by that offset, which the exact factor below separates.
+    """
+    sphere_tm = tm.creation.icosphere(2)
+    points_np = np.vstack([sphere_tm.vertices, [[1000.0, 0.0, 0.0]]]).astype(np.float32)
+    faces_np = sphere_tm.faces.astype(np.int32)
+    mesh_pv = pv.PolyData(
+        points_np.astype(np.float64),
+        np.hstack([np.full((faces_np.shape[0], 1), 3), faces_np]).ravel(),
+    )
+    points_pv = np.asarray(mesh_pv.smooth_taubin(n_iter=20, pass_band=0.1).points)
+    response = points_pv[-1, 0] / 1000.0
+    assert abs(response - 1.0) > 1e-6  # non-vacuity: the loose vertex really moves
+
+    vertices_wp, faces_wp = numpy_to_warp(points_np, faces_np, device)
+    smoothed_wp = od.smoothing.filter_windowed_sinc(vertices_wp, faces_wp, 20, 0.1)
+    assert np.allclose(smoothed_wp.numpy(), points_pv, rtol=1e-5, atol=1e-5)
+
+    cloud_np = (np.eye(3) * 1000.0).astype(np.float32)
+    cloud_wp = points_to_warp(cloud_np, device)
+    no_faces_wp = warp_empty(0, wp.int32, device)
+    scaled_wp = od.smoothing.filter_windowed_sinc(cloud_wp, no_faces_wp, 20, 0.1)
+    assert np.allclose(scaled_wp.numpy(), cloud_np * response, rtol=1e-6, atol=1e-6)
+    assert not np.array_equal(scaled_wp.numpy(), cloud_np)
 
 
 def test_filter_windowed_sinc_validates_and_warns(device: str) -> None:
@@ -3483,6 +3543,33 @@ def test_refine_and_smooth_region_by_density_keeps_the_density_refinement(device
     assert np.array_equal(refined_faces_wp.numpy(), density_faces_wp.numpy())
     assert np.array_equal(refined_patch_wp.numpy(), density_patch_wp.numpy())
 
+    # The density refinement's provenance, carried through the smoothing: the same answer, and
+    # the input's own vertices carried to where they were.
+    traced_wp, traced_faces_wp, _traced_patch_wp, provenance = (
+        od.smoothing.refine_and_smooth_region(
+            vertices_wp,
+            faces_wp,
+            n_vertices_before,
+            patch_wp,
+            max_edge=1.0,
+            smooth_curvature=True,
+            refine="density",
+            return_provenance=True,
+            **_REFINE_KWARGS,
+        )
+    )
+    assert np.array_equal(traced_wp.numpy(), refined_wp.numpy())
+    assert np.array_equal(traced_faces_wp.numpy(), refined_faces_wp.numpy())
+    assert_provenance_describes(
+        provenance,
+        vertices_wp,
+        faces_wp,
+        traced_wp,
+        traced_faces_wp,
+        positions_reproduce=False,
+        faces_inside_sources=False,
+    )
+
     with pytest.raises(ValueError, match="unknown refine 'area'"):
         od.smoothing.refine_and_smooth_region(
             vertices_wp,
@@ -4368,6 +4455,48 @@ def test_filter_two_step_meshlab_matches_pymeshlab(
     assert np.allclose(smoothed_wp.numpy(), pml_np, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("filter_two_step_meshlab", "pymeshlab")
+@pytest.mark.parametrize(("normal_steps", "fit_steps"), [(3, 5), (0, 3), (3, 0)])
+def test_filter_two_step_meshlab_matches_pymeshlab_at_odd_step_counts(
+    device: str, normal_steps: int, fit_steps: int
+) -> None:
+    """
+    Class A: ``method="meshlab"`` at odd and zero normal and fit step counts, vertex for vertex.
+
+    The two stages ping-pong between buffers, so an odd count ends a stage on the other buffer
+    and a zero count skips the stage; MeshLab's ``stepnormalnum`` and ``stepfitnum`` are the same
+    counts. The noisy cube of
+    [`test_filter_two_step_meshlab_matches_pymeshlab`][tests.test_smoothing.test_filter_two_step_meshlab_matches_pymeshlab],
+    at that test's tolerance. With no fit step MeshLab moves nothing, which ordito must match
+    exactly; the other two pairs move the input.
+    """
+    _clean_np, faces_np, noisy_np = _noisy_cube()
+    noisy_np = noisy_np.astype(np.float32).astype(np.float64)
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(noisy_np, faces_np))
+    meshset_pml.apply_coord_two_steps_smoothing(
+        stepsmoothnum=2, normalthr=60.0, stepnormalnum=normal_steps, stepfitnum=fit_steps
+    )
+    pml_np = np.ascontiguousarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
+
+    vertices_wp, faces_wp = numpy_to_warp(noisy_np, faces_np, device)
+    smoothed_wp = od.smoothing.filter_two_step(
+        vertices_wp,
+        faces_wp,
+        iterations=2,
+        threshold=60.0,
+        normal_iterations=normal_steps,
+        fit_iterations=fit_steps,
+        method="meshlab",
+    )
+
+    if fit_steps == 0:
+        assert np.array_equal(smoothed_wp.numpy(), vertices_wp.numpy())
+    elif normal_steps > 0:
+        assert np.abs(pml_np - noisy_np).max() > 1e-3
+    assert np.allclose(smoothed_wp.numpy(), pml_np, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parity("filter_two_step_meshlib", "meshlib")
 @pytest.mark.parametrize("mesh_name", ["cube", "saddle_graded", "sphere_irregular"])
 def test_filter_two_step_meshlib_method_matches_meshlib(device: str, mesh_name: str) -> None:
@@ -4476,23 +4605,25 @@ def test_filter_two_step_leaves_a_flat_patch_alone(device: str) -> None:
     assert np.allclose(smoothed_wp.numpy(), grid_vertices_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("fit_iterations", [20, 3, 0])
 @pytest.mark.parametrize("deterministic_on", [True, False], ids=["on", "off"])
 def test_filter_two_step_without_normal_filtering_is_a_fixed_point(
-    device: str, deterministic_on: bool
+    device: str, deterministic_on: bool, fit_iterations: int
 ) -> None:
     """
     Not a library comparison: fitting vertices to their own faces' normals moves nothing.
 
     With ``normal_iterations=0`` the target field is the geometric one, and every vertex already
     lies in the plane of each incident face, so each fit step is zero up to rounding, under either
-    deterministic setting (the off mode leaves the vertex -> face rows in fill order). The noise
-    makes the mesh far from a fixed point of the ordinary filter, which is checked too.
+    deterministic setting (the off mode leaves the vertex -> face rows in fill order). An odd fit
+    count ends the step buffers' rotation on the other buffer, and zero fit steps run none. The
+    noise makes the mesh far from a fixed point of the ordinary filter, which is checked too.
     """
     mesh_tm = _noisy_icosphere(3, 0.02)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     with od.config.deterministic(deterministic_on):
         fitted_wp = od.smoothing.filter_two_step(
-            mesh_wp.points, mesh_wp.indices, normal_iterations=0
+            mesh_wp.points, mesh_wp.indices, normal_iterations=0, fit_iterations=fit_iterations
         )
         filtered_wp = od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(fitted_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-5, atol=1e-5)
@@ -4511,6 +4642,37 @@ def test_filter_two_step_mates_change_no_answer(
     ).numpy()
     assert not np.array_equal(plain_np, mesh.vertices.numpy())
     assert np.array_equal(given_np, plain_np)
+
+
+def test_filter_two_step_meshlib_mates_and_skipped_stages(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``method="meshlib"``'s optional stages and its ``mates=`` hint.
+
+    ``mates=`` only spares the pairing its normal system reads, so the answer is bit-identical.
+    With no fit step no vertex moves at all, and with no normal solve the fit targets the faces'
+    own normals, which every vertex already satisfies to rounding. The default call moves the
+    vertices, so neither skipped form is the do-nothing answer by accident.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    vertices_np = mesh.vertices.numpy()
+    plain_np = od.smoothing.filter_two_step(mesh.vertices, mesh.faces, method="meshlib").numpy()
+    given_np = od.smoothing.filter_two_step(
+        mesh.vertices, mesh.faces, method="meshlib", mates=mesh.halfedge_mates
+    ).numpy()
+    assert np.abs(plain_np - vertices_np).max() > 1e-3
+    assert np.array_equal(given_np, plain_np)
+
+    unfitted_np = od.smoothing.filter_two_step(
+        mesh.vertices, mesh.faces, method="meshlib", fit_iterations=0
+    ).numpy()
+    assert np.array_equal(unfitted_np, vertices_np)
+    self_fitted_np = od.smoothing.filter_two_step(
+        mesh.vertices, mesh.faces, method="meshlib", normal_iterations=0
+    ).numpy()
+    assert np.allclose(self_fitted_np, vertices_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("iterations", [1, 10])
@@ -4588,6 +4750,21 @@ def test_filter_sharpen_graph_laplacian_matches_open3d(
             mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1
         )
         assert float(np.abs(default_wp.numpy() - sharpened_o3d).max()) > 1e-2
+        # A caller's own graph Laplacian is the one the call would build, and no step is a copy.
+        graph = od.laplacian.graph_laplacian(mesh_wp.points, mesh_wp.indices)
+        given_wp = od.smoothing.filter_sharpen(
+            mesh_wp.points,
+            mesh_wp.indices,
+            weight=0.1,
+            iterations=1,
+            laplacian_operator=graph,
+            method="graph_laplacian",
+        )
+        assert np.array_equal(given_wp.numpy(), sharpened_wp.numpy())
+        unstepped_wp = od.smoothing.filter_sharpen(
+            mesh_wp.points, mesh_wp.indices, iterations=0, method="graph_laplacian"
+        )
+        assert np.array_equal(unstepped_wp.numpy(), mesh_wp.points.numpy())
 
 
 def test_filter_sharpen_rejects_an_unknown_method(device: str) -> None:
@@ -4774,6 +4951,58 @@ def test_filter_laplacian_leaves_a_faceless_mesh_alone(device: str) -> None:
     smoothed_np = od.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=3).numpy()
     assert np.isfinite(smoothed_np).all()
     assert np.array_equal(smoothed_np, positions_np)
+
+
+_FACELESS_FILTER_CASES = [
+    (
+        "filter_taubin_recompute",
+        lambda v, f: od.smoothing.filter_taubin(v, f, iterations=3, recompute=True),
+    ),
+    ("filter_humphrey", lambda v, f: od.smoothing.filter_humphrey(v, f, iterations=3)),
+    (
+        "filter_neighborhood_average",
+        lambda v, f: od.smoothing.filter_neighborhood_average(v, f, iterations=3),
+    ),
+    ("filter_implicit_fairing", lambda v, f: od.smoothing.filter_implicit_fairing(v, f)),
+    ("relax_keep_volume", lambda v, f: od.smoothing.relax_keep_volume(v, f)),
+    ("equalize_triangle_areas", lambda v, f: od.smoothing.equalize_triangle_areas(v, f)),
+    ("filter_two_step_meshlib", lambda v, f: od.smoothing.filter_two_step(v, f, method="meshlib")),
+]
+
+
+@pytest.mark.parametrize(
+    "smoothing_fn",
+    [case[1] for case in _FACELESS_FILTER_CASES],
+    ids=[case[0] for case in _FACELESS_FILTER_CASES],
+)
+def test_smoothing_leaves_a_faceless_point_set_alone(
+    device: str, smoothing_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], wp.array[wp.vec3]]
+) -> None:
+    """
+    Not a library comparison: with no face a vertex has no ring, so no filter moves it.
+
+    Every reference library needs real faces to smooth. Unlike the empty mesh, the points exist,
+    so a filter that divided by an empty ring's weight or area would write ``NaN`` over them.
+    """
+    positions_np = np.eye(3, dtype=np.float32)
+    vertices_wp = points_to_warp(positions_np, device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    assert np.array_equal(smoothing_fn(vertices_wp, faces_wp).numpy(), positions_np)
+
+
+def test_filter_mut_dif_laplacian_leaves_a_faceless_point_set_alone(device: str) -> None:
+    """
+    Not a library comparison: no face, no ring, so the volume-constrained diffusion moves nothing.
+
+    The mean diffusion coefficient has no residual to average here, so the call warns that it
+    is uncertain; the positions still come back exactly.
+    """
+    positions_np = np.eye(3, dtype=np.float32)
+    vertices_wp = points_to_warp(positions_np, device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    with pytest.warns(UserWarning, match="mean diffusion coefficient"):
+        smoothed_wp = od.smoothing.filter_mut_dif_laplacian(vertices_wp, faces_wp, iterations=3)
+    assert np.array_equal(smoothed_wp.numpy(), positions_np)
 
 
 @pytest.mark.parametrize("function", ["filter_laplacian", "inflate", "filter_mut_dif_laplacian"])

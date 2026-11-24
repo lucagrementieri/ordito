@@ -323,7 +323,8 @@ def sample_surface(
     ------
     ValueError
         If ``face_weight`` is given and its length is not the triangle count, if the mesh has no
-        faces and ``count > 0``, or if the total face weight is not positive.
+        faces and ``count > 0``, or if ``count > 0`` and the total face weight (the surface area,
+        without ``face_weight``) is not positive.
     RuntimeError
         If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.
 
@@ -421,7 +422,8 @@ def sample_surface_poisson_disk(
     Raises
     ------
     ValueError
-        If ``init_factor < 1`` or if the mesh has no faces.
+        If ``init_factor < 1``, or if ``count > 0`` and the mesh has no faces or a total face
+        weight (the surface area, without ``face_weight``) that is not positive.
     RuntimeError
         If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.
 
@@ -507,7 +509,8 @@ def sample_surface_blue_noise(
     Raises
     ------
     ValueError
-        If ``radius <= 0``.
+        If ``radius <= 0``, or if the mesh has faces but zero surface area. A mesh with no faces
+        returns two empty arrays.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -551,7 +554,7 @@ def sample_surface_blue_noise(
     # read back with it, encloses the pool and anchors the dart loop's grid.
     cdf, surface_area, box = _face_cdf_and_vertex_box(vertices, faces)
     if surface_area <= 0.0:
-        raise ValueError("total face weight must be positive")
+        raise ValueError("mesh has zero surface area; cannot sample its surface")
     pool_size, pool_seed, priority_seed = _blue_noise_pool(surface_area, radius, seed)
     init_points, init_face_indices = _draw_surface_samples(
         vertices, faces, cdf, surface_area, pool_size, pool_seed
@@ -1428,6 +1431,8 @@ def _face_cdf(
     # Host readback: the total is a launch argument of the draw and decides whether to raise.
     total = float(read_scalar(cdf))
     if total <= 0.0:
+        if face_weight is None:
+            raise ValueError("mesh has zero surface area; cannot sample its surface")
         raise ValueError("total face weight must be positive")
     return cdf, total
 

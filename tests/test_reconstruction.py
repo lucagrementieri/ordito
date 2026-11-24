@@ -380,6 +380,60 @@ def test_delaunay_cocircular(device: str):
     assert np.isclose(area, float(ConvexHull(points_np.astype(np.float64)).volume), rtol=1e-5)
 
 
+def _duplicated_lex_first_point() -> np.ndarray:
+    corners = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.2]])
+    return np.vstack([corners, corners[:1]]).astype(np.float32)
+
+
+def _repeated_random_points() -> np.ndarray:
+    rng = np.random.default_rng(43)
+    return rng.permutation(np.repeat(rng.random((120, 2)), 3, axis=0)).astype(np.float32)
+
+
+def _duplicated_collinear_prefix() -> np.ndarray:
+    # The lex-first points are collinear and each repeated, ahead of the first point off their line.
+    line = np.array([[0.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0], [2.0, 2.0], [2.0, 2.0]])
+    return np.vstack([line, [[3.0, 1.0], [3.0, 2.5], [1.5, 4.0]]]).astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    "make_points",
+    [
+        pytest.param(_duplicated_lex_first_point, id="lex_first_twice"),
+        pytest.param(_repeated_random_points, id="every_point_thrice"),
+        pytest.param(_duplicated_collinear_prefix, id="collinear_prefix_twice"),
+    ],
+)
+def test_delaunay_of_duplicated_points_matches_scipy_on_the_distinct_points(
+    device: str, make_points: Callable[[], np.ndarray]
+):
+    """
+    Class B (index map): Qhull's triangles of the distinct points, each named by its first copy.
+
+    A duplicate of the lex-first point once left the seed's collinear prefix with no line to measure
+    against, and a third copy of a hull vertex collapsed the boundary, so both returned no faces or
+    lost every later point. Each copy beyond the first must stay unreferenced, so the faces meet at
+    one index a point and the flips see one mesh: compared through the map from each distinct point
+    to its first index in the input.
+    """
+    from scipy.spatial import Delaunay
+
+    points_np = make_points()
+    distinct_np, first_np = np.unique(points_np, axis=0, return_index=True)
+    assert distinct_np.shape[0] < points_np.shape[0]  # non-vacuity: the input repeats points
+    faces_wp = od.reconstruction.delaunay_triangulation(points_to_warp_uv(points_np, device))
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+
+    assert np.isin(faces_np, first_np).all()
+    faces_sp = first_np[Delaunay(distinct_np.astype(np.float64)).simplices]
+    assert faces_sp.shape[0] > 0
+    assert od.equality.rows_equal(
+        _int_rows(np.sort(faces_np, axis=1), device), _int_rows(np.sort(faces_sp, axis=1), device)
+    )
+    tris = points_np.astype(np.float64)[faces_np]
+    assert np.all(_cross2(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]) > 0.0)
+
+
 def test_delaunay_collinear_and_too_few(device: str):
     # Collinear points triangulate to nothing; fewer than three raise.
     points_np = np.array([[float(i), 0.0] for i in range(5)], dtype=np.float32)
@@ -2458,6 +2512,10 @@ def test_resample_uniform_invalid_and_empty(device: str) -> None:
             voxel_size=0.1,
             method=cast(Literal["padded", "igl", "meshlib", "meshlab"], "vcg"),
         )
+    with pytest.raises(ValueError, match="at least 4 nodes along the longest axis, got 2"):
+        od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=1.0, method="igl")
+    with pytest.raises(ValueError, match="past the int32 limit"):
+        od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=1e-4, method="meshlab")
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
     out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(vertices_wp, faces_wp)
@@ -3160,6 +3218,57 @@ def test_ball_pivoting_too_few_points(device: str):
     assert faces_wp.size == 0
 
 
+def test_ball_pivoting_coincident_cloud_guesses_a_unit_ball_and_rests_nowhere(device: str):
+    """
+    Not a library comparison: a cloud of one repeated point has no spacing and no triangle.
+
+    Every nearest-neighbour distance is zero, which the radius guess's positive-finite filter
+    drops, so the guess falls back to its unit spacing instead of dividing by a zero count; a ball
+    of any radius then rests on no three distinct points.
+    """
+    points_wp = points_to_warp(np.full((6, 3), [0.5, -1.0, 2.0]), device)
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp)
+    assert faces_wp.size == 0
+    assert np.all(np.isfinite(vertices_wp.numpy()))
+
+
+@pytest.mark.parametrize(
+    ("crit_hole_length", "closed"),
+    [(0.0, False), (1.0, False), (-1.0, True), (2.0, True)],
+    ids=["off", "shorter", "default", "longer"],
+)
+def test_ball_pivoting_fills_holes_up_to_crit_hole_length(
+    device: str, crit_hole_length: float, closed: bool
+):
+    """
+    Not a library comparison: open3d and pymeshlab pivot without the hole-filling tail.
+
+    Dropping the seven points of an icosphere's top cap leaves one boundary loop of eight edges,
+    perimeter about 1.6, which a ball of the sphere's spacing cannot bridge. One far stray point
+    widens the cloud's box, so the default length, a tenth of its diagonal, is about 1.9: the
+    hole is filled at that default and at 2.0, left open at 1.0 and with filling off. A filled
+    mesh is watertight and consistently wound; the stray point is in no face and is dropped.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
+    keep = sphere_tm.vertices[:, 2] < 0.97
+    points_np = np.vstack([sphere_tm.vertices[keep], [[10.0, 10.0, 10.0]]])
+    normals_np = np.vstack([sphere_tm.vertex_normals[keep], [[0.0, 0.0, 1.0]]])
+    assert 0.1 * np.linalg.norm(np.ptp(points_np, axis=0)) > 1.8
+
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(
+        *_to_warp(points_np, normals_np, device), radius=0.15, crit_hole_length=crit_hole_length
+    )
+    mesh_tm = warp_to_trimesh(vertices_wp, faces_wp)
+    assert len(mesh_tm.vertices) == int(keep.sum())
+    assert mesh_tm.is_winding_consistent
+    boundary_count = int(oriented_boundary_edges(mesh_tm.faces).shape[0])
+    if closed:
+        assert boundary_count == 0
+        assert od.validation.is_watertight(vertices_wp, faces_wp)
+    else:
+        assert boundary_count == 8
+
+
 # --- od.config.deterministic(False): the arrival-order block commits ---
 
 
@@ -3172,6 +3281,10 @@ def _reconstruct(device: str, function: str) -> tuple[np.ndarray, np.ndarray]:
         result = od.reconstruction.ball_pivoting(points_wp)
     elif function == "screened_poisson":
         result = od.reconstruction.screened_poisson(points_wp, normals_wp, depth=5, full_depth=4)
+    elif function == "screened_poisson_adaptive":
+        result = od.reconstruction.screened_poisson(
+            points_wp, normals_wp, depth=5, full_depth=4, method="adaptive"
+        )
     else:
         vertices_wp, faces_wp = od.creation.icosphere(subdivisions=2, device=device)
         result = od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=0.1)
@@ -3179,7 +3292,14 @@ def _reconstruct(device: str, function: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.mark.parametrize(
-    "function", ["triangulate_point_cloud", "ball_pivoting", "screened_poisson", "resample_uniform"]
+    "function",
+    [
+        "triangulate_point_cloud",
+        "ball_pivoting",
+        "screened_poisson",
+        "screened_poisson_adaptive",
+        "resample_uniform",
+    ],
 )
 def test_reconstruction_arrival_order_agrees_with_the_default(device: str, function: str) -> None:
     """
@@ -3188,7 +3308,9 @@ def test_reconstruction_arrival_order_agrees_with_the_default(device: str, funct
     The mode reaches only the reductions that set a scale or an orientation (the centroid that
     orients estimated normals, the automatic ball radius, the Poisson iso-value and the signed
     volume that orients the result), whose last bits move no lattice crossing or pivot of these
-    inputs: the triangulations must be equal, and the vertices equal to float32 rounding. Compared
+    inputs: the triangulations must be equal, and the vertices equal to float32 rounding. The
+    adaptive Poisson solve's restriction also scatters in arrival order with the setting off, where
+    it gathers in a fixed order with it on. Compared
     up to numbering (``od.equality.meshes_allclose``): with the setting off ``ball_pivoting``
     returns its faces in the order its waves append them.
     """

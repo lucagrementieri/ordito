@@ -33,6 +33,7 @@ from tests.conftest import (
     touching_holes_grid_arrays,
 )
 from tests.conversions import (
+    float32_trimesh,
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
     numpy_to_meshlib,
@@ -1361,6 +1362,23 @@ def test_fill_min_weight_is_reproducible_when_deterministic(device: str) -> None
         assert np.array_equal(again_wp.numpy(), filled_np)
 
 
+def test_fill_min_weight_arrival_order_agrees_with_the_default(
+    torus_irregular_holes: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: with determinism off the rims' metrics are summed in arrival order.
+
+    The hole planes and perimeters then differ from the fixed-order sums by rounding alone, which
+    on three rims of a bumpy torus changes no triangle: the same faces, and every rim closed.
+    """
+    _mesh_tm, mesh_wp = torus_irregular_holes
+    fixed_wp = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
+    with od.config.deterministic(False):
+        arrival_wp = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
+    assert fixed_wp.size > mesh_wp.indices.size
+    assert od.equality.faces_equal(arrival_wp, fixed_wp)
+
+
 # A quad rim (0, 1, 2, 3) whose two diagonals are both mesh edges: vertices 4 and 5 each join all
 # four rim vertices, giving the patch one cross-cap (see the test below for why it must be one).
 _CROSS_CAP_VERTICES = np.array(
@@ -1499,6 +1517,10 @@ def test_fill_min_weight_hints_change_no_answer(
         vertices_wp, faces_wp, loops, "plane_normalized", True, n_vertices=vertices_wp.size
     )
     assert np.array_equal(loops_given_wp.numpy(), loops_inferred_wp.numpy())
+    # No loop to fill: the faces come back as a copy.
+    none_wp = od.holes.fill_loops_min_weight(vertices_wp, faces_wp, [], "plane_normalized", True)
+    assert np.array_equal(none_wp.numpy(), faces_wp.numpy())
+    assert none_wp.ptr != faces_wp.ptr
 
 
 def test_fill_min_weight_rejects_a_face_index_past_the_bound(
@@ -2306,6 +2328,141 @@ def test_fill_smooth_meshlib_method_matches_meshlib(
     assert od.equality.meshes_allclose(vertices_wp, faces_wp, *filled_ml_wp)
 
 
+def _no_splits(settings_ml: mm.FillHoleNicelySettings) -> None:
+    settings_ml.subdivideSettings.maxEdgeSplits = 0
+
+
+def _no_smooth_boundary(settings_ml: mm.FillHoleNicelySettings) -> None:
+    settings_ml.triangulateParams.smoothBd = False
+
+
+def _unit_weights(settings_ml: mm.FillHoleNicelySettings) -> None:
+    settings_ml.smoothSettings.edgeWeights = mm.EdgeWeights.Unit
+
+
+def _multiple_edges_kept(settings_ml: mm.FillHoleNicelySettings) -> None:
+    settings_ml.triangulateParams.multipleEdgesResolveMode = getattr(
+        mm.FillHoleParams.MultipleEdgesResolveMode, "None"
+    )
+
+
+# Each option ``fill_smooth`` passes on to the reference's settings, away from its default.
+_FILL_NICELY_OPTIONS = {
+    "no_splits": _no_splits,
+    "no_smooth_boundary": _no_smooth_boundary,
+    "unit_weights": _unit_weights,
+    "multiple_edges_kept": _multiple_edges_kept,
+}
+
+
+@pytest.mark.parametrize("option", list(_FILL_NICELY_OPTIONS))
+@pytest.mark.parity("fill_smooth_meshlib", "meshlib")
+def test_fill_smooth_meshlib_method_options_match_meshlib(device: str, option: str) -> None:
+    """
+    Class A against ``fillHoleNicely`` under each option away from its default.
+
+    No edge splits (the patch stays the triangulation, then is smoothed), no boundary smoothing
+    (the DP's ``smoothBd`` and the fairing pass both off), uniform edge weights in the smoothing
+    solves, and repeated edges left to the DP rather than resolved. Equal meshes up to numbering,
+    the patch faces counted, on a coarse sphere with a large and a small hole; each option but the
+    last also moves the answer off the default one (no chord of these holes repeats an edge, so
+    the last checks only that the DP's unguarded path agrees).
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=3)
+    centres_np = sphere_tm.triangles_center
+    keep_np = (centres_np[:, 2] < 0.6) & (
+        np.linalg.norm(centres_np - [0.9, 0.0, -0.3], axis=1) > 0.35
+    )
+    mesh_tm = float32_trimesh(
+        cast(tm.Trimesh, sphere_tm.submesh([np.flatnonzero(keep_np)], append=True))
+    )
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    settings_ml = mm.FillHoleNicelySettings()
+    settings_ml.subdivideSettings.maxEdgeLen = 0.15
+    _FILL_NICELY_OPTIONS[option](settings_ml)
+    holes_ml = mesh_ml.topology.findHoleRepresentiveEdges()
+    assert len(holes_ml) == 2
+    n_patch_ml = 0
+    for edge_ml in holes_ml:
+        settings_ml.triangulateParams.metric = mm.getCircumscribedMetric(mesh_ml)
+        n_patch_ml += mm.fillHoleNicely(mesh_ml, edge_ml, settings_ml).count()
+    filled_ml = meshlib_to_trimesh(mesh_ml)
+    assert n_patch_ml > 0  # non-vacuity: the reference patched both holes
+
+    vertices_wp, faces_wp, patch_wp = od.holes.fill_smooth(
+        *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device),
+        "circumscribed",
+        max_edge=0.15,
+        max_edge_splits=0 if option == "no_splits" else 1000,
+        edge_weights="unit" if option == "unit_weights" else "cotan",
+        resolve_multiple_edges=option != "multiple_edges_kept",
+        smooth_boundary=option != "no_smooth_boundary",
+        method="meshlib",
+        return_patch=True,
+    )
+    assert int(patch_wp.numpy().sum()) == n_patch_ml
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, *numpy_to_warp(filled_ml.vertices, filled_ml.faces, device)
+    )
+    if option == "multiple_edges_kept":
+        return  # no chord of these holes repeats an edge: the answer is the default one
+    # The option is seen: the default settings give another mesh.
+    assert not od.equality.meshes_allclose(
+        vertices_wp,
+        faces_wp,
+        *od.holes.fill_smooth(
+            *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device),
+            "circumscribed",
+            max_edge=0.15,
+            method="meshlib",
+        ),
+    )
+
+
+@pytest.mark.parity("fill_smooth_meshlib", "meshlib")
+def test_fill_smooth_meshlib_method_keeps_a_trailing_unused_vertex(device: str) -> None:
+    """
+    Class B against ``fillHoleNicely``: equal meshes once ordito's kept unused vertex is removed.
+
+    An input vertex no face names, last in the array, is kept where it is, and the patch's new
+    vertices are numbered after it. MeshLib's topology ends at the last vertex a face names, so
+    its first new vertex takes the unused one's slot instead; dropping that vertex from ordito's
+    answer (and renumbering the faces past it) is the whole transform.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=2)
+    cap_tm = cast(
+        tm.Trimesh,
+        sphere_tm.submesh([np.flatnonzero(sphere_tm.triangles_center[:, 2] < 0.7)], append=True),
+    )
+    unused = len(cap_tm.vertices)
+    vertices_np = np.vstack([cap_tm.vertices, [[5.0, 5.0, 5.0]]]).astype(np.float32)
+    faces_np = np.asarray(cap_tm.faces, dtype=np.int32)
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    settings_ml = mm.FillHoleNicelySettings()
+    settings_ml.subdivideSettings.maxEdgeLen = 0.3
+    for edge_ml in mesh_ml.topology.findHoleRepresentiveEdges():
+        settings_ml.triangulateParams.metric = mm.getCircumscribedMetric(mesh_ml)
+        mm.fillHoleNicely(mesh_ml, edge_ml, settings_ml)
+    filled_ml = meshlib_to_trimesh(mesh_ml)
+    assert len(filled_ml.vertices) > unused  # non-vacuity: the patch added vertices
+
+    filled_vertices_wp, filled_faces_wp = od.holes.fill_smooth(
+        *numpy_to_warp(vertices_np, faces_np, device), max_edge=0.3, method="meshlib"
+    )
+    filled_vertices_np = filled_vertices_wp.numpy()
+    filled_faces_np = filled_faces_wp.numpy().reshape(-1, 3)
+    assert np.array_equal(filled_vertices_np[unused], [5.0, 5.0, 5.0])
+    assert not (filled_faces_np == unused).any()
+    assert od.equality.meshes_allclose(
+        *numpy_to_warp(
+            np.delete(filled_vertices_np, unused, axis=0),
+            np.where(filled_faces_np > unused, filled_faces_np - 1, filled_faces_np),
+            device,
+        ),
+        *numpy_to_warp(filled_ml.vertices, filled_ml.faces, device),
+    )
+
+
 def _without_kernel(
     fill_metric: Callable[..., _serial_mesh.Metric],
 ) -> Callable[..., _serial_mesh.Metric]:
@@ -2489,6 +2646,19 @@ def test_refill_region_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Me
     mm.patchMesh(mesh_refined_ml, region_refined_ml, mm.FillHoleNicelySettings())
     refined_ml = meshlib_to_trimesh(mesh_refined_ml)
 
+    # An explicit target edge length in place of the rim's mean: half the mesh's mean edge
+    # refines the patch further than the derived target.
+    finer_vertices_wp, finer_faces_wp = od.holes.refill_region(
+        mesh_wp.points,
+        mesh_wp.indices,
+        region_wp,
+        metric="circumscribed",
+        max_edge=0.5 * float(od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)),
+    )
+    assert finer_faces_wp.size > refined_faces_wp.size
+    assert od.validation.is_edge_manifold(finer_faces_wp, allow_boundary_edges=False)
+    assert finer_vertices_wp.size > refined_vertices_wp.size
+
     volume_flat = float(od.measures.volume(flat_vertices_wp, flat_faces_wp))
     volume_refined = float(od.measures.volume(refined_vertices_wp, refined_faces_wp))
     assert np.isclose(volume_refined, refined_ml.volume, rtol=0.016)  # 3x the measured 0.53 %
@@ -2499,20 +2669,26 @@ def test_refill_region_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Me
 
 # The region is the faces within ``radius`` of the highest face centre: a cap of the bumpy closed
 # sphere at two sizes, a patch reaching the saddle's rim (the region's boundary then runs along the
-# mesh's own), and a patch of the holed torus.
+# mesh's own), and a patch of the holed torus; the smaller cap also at a target edge length passed
+# rather than derived from its rim.
 @pytest.mark.parametrize(
-    ("mesh_name", "radius"),
+    ("mesh_name", "radius", "max_edge"),
     [
-        ("sphere_irregular", 1.6),
-        ("sphere_irregular", 1.2),
-        ("saddle_graded", 0.4),
-        ("torus_irregular_holes", 0.8),
+        ("sphere_irregular", 1.6, None),
+        ("sphere_irregular", 1.2, None),
+        ("sphere_irregular", 1.2, 0.2),
+        ("saddle_graded", 0.4, None),
+        ("torus_irregular_holes", 0.8, None),
     ],
 )
 @pytest.mark.parametrize("triangulate_only", [True, False])
 @pytest.mark.parity("refill_region_meshlib", "meshlib")
 def test_refill_region_meshlib_method_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str, radius: float, triangulate_only: bool
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    radius: float,
+    max_edge: float | None,
+    triangulate_only: bool,
 ) -> None:
     """
     Class A against ``patchMesh``: equal meshes up to numbering, the patch faces counted.
@@ -2532,6 +2708,8 @@ def test_refill_region_meshlib_method_matches_meshlib(
     region_ml.resize(len(mesh_tm.faces))
     settings_ml = mm.FillHoleNicelySettings()
     settings_ml.triangulateOnly = triangulate_only
+    if max_edge is not None:
+        settings_ml.subdivideSettings.maxEdgeLen = max_edge
     n_patch_ml = mm.patchMesh(mesh_ml, region_ml, settings_ml).count()
     patched_ml = meshlib_to_trimesh(mesh_ml)
 
@@ -2541,6 +2719,7 @@ def test_refill_region_meshlib_method_matches_meshlib(
         wp.array(region_np, dtype=wp.bool, device=mesh_wp.points.device),
         "circumscribed",
         triangulate_only=triangulate_only,
+        max_edge=max_edge,
         method="meshlib",
         return_patch=True,
     )
@@ -2548,6 +2727,59 @@ def test_refill_region_meshlib_method_matches_meshlib(
     assert int(patch_wp.numpy().sum()) == n_patch_ml
     patched_ml_wp = numpy_to_warp(patched_ml.vertices, patched_ml.faces, mesh_wp.points.device)
     assert od.equality.meshes_allclose(vertices_wp, faces_wp, *patched_ml_wp)
+
+
+@pytest.mark.parametrize("region", ["all_but_a_bowtie", "everything"])
+@pytest.mark.parametrize("triangulate_only", [True, False])
+@pytest.mark.parity("refill_region_meshlib", "meshlib")
+def test_refill_region_meshlib_method_matches_meshlib_on_degenerate_regions(
+    device: str, region: str, triangulate_only: bool
+) -> None:
+    """
+    Class A against ``patchMesh`` on regions whose rims are not simple loops.
+
+    ``all_but_a_bowtie`` deletes a closed sphere but two faces meeting at one vertex only: the
+    region's boundary is one loop through that vertex twice, cut there into loops that are
+    refilled in turn (a loop the earlier fills already closed is skipped). ``everything`` is the
+    whole of an open hemisphere: its one rim is the mesh's own, with no face outside, so nothing
+    is refilled and nothing is left. Equal meshes up to numbering, the patch faces counted.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=2)
+    if region == "all_but_a_bowtie":
+        mesh_tm = float32_trimesh(sphere_tm)
+        faces_np = np.asarray(mesh_tm.faces)
+        fan = np.flatnonzero((faces_np == 0).any(axis=1))
+        second = next(f for f in fan[1:] if len(set(faces_np[fan[0]]) & set(faces_np[f])) == 1)
+        region_np = ~np.isin(np.arange(len(faces_np)), [fan[0], second])
+    else:
+        lower = np.flatnonzero(sphere_tm.triangles_center[:, 2] < 0.0)
+        mesh_tm = float32_trimesh(cast(tm.Trimesh, sphere_tm.submesh([lower], append=True)))
+        faces_np = np.asarray(mesh_tm.faces)
+        region_np = np.ones(len(faces_np), dtype=bool)
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    region_ml = mm.FaceBitSet(numpy_to_meshlib_bitset(region_np))
+    region_ml.resize(len(faces_np))
+    settings_ml = mm.FillHoleNicelySettings()
+    settings_ml.triangulateOnly = triangulate_only
+    n_patch_ml = mm.patchMesh(mesh_ml, region_ml, settings_ml).count()
+    patched_ml = meshlib_to_trimesh(mesh_ml)
+    if region == "everything":
+        assert (n_patch_ml, len(patched_ml.faces)) == (0, 0)
+    else:  # non-vacuity: both triangles were refilled
+        assert n_patch_ml >= 2
+
+    vertices_wp, faces_wp, patch_wp = od.holes.refill_region(
+        *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device),
+        wp.array(region_np, dtype=wp.bool, device=device),
+        "circumscribed",
+        triangulate_only=triangulate_only,
+        method="meshlib",
+        return_patch=True,
+    )
+    assert int(patch_wp.numpy().sum()) == n_patch_ml
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, *numpy_to_warp(patched_ml.vertices, patched_ml.faces, device)
+    )
 
 
 def _triangle_set(corners: np.ndarray) -> set[tuple[tuple[float, ...], ...]]:
@@ -2579,6 +2811,13 @@ def test_refill_region_leaves_an_untouched_mesh_alone(
     )
     assert faces_wp.size // 3 == n_faces
     assert not bool(patch_wp.numpy().any())
+    # With the provenance too: every face is its own source, and no vertex is new.
+    *patched, provenance = od.holes.refill_region(
+        mesh_wp.points, mesh_wp.indices, empty_wp, return_patch=True, return_provenance=True
+    )
+    assert np.array_equal(patched[1].numpy(), faces_wp.numpy())
+    assert not bool(patched[2].numpy().any())
+    assert np.array_equal(provenance.face_index.numpy(), np.arange(n_faces))
     assert np.allclose(vertices_wp.numpy(), mesh_wp.points.numpy())
     # Still open: the rim it arrived with is untouched.
     assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) > 0
@@ -3363,13 +3602,16 @@ def test_stitch_smooth_statistics_vs_meshlib(device: str):
 
 # Two facing hemispheres -- a symmetric pair, where the band search's equal weights must pop in
 # the reference's heap order -- banded alone, refined at two targets, and under the other two
-# metrics (``vertical`` with an up direction off every axis).
+# metrics (``vertical`` with an up direction off every axis); ``derived`` passes no target, which
+# then is the two rims' mean edge length (MeshLib reads ``0`` as no subdivision limit, so its
+# reference is handed that mean).
 @pytest.mark.parametrize(
     ("metric", "max_edge", "triangulate_only", "host_band"),
     [
         pytest.param("complex_stitch", 0.15, True, False, id="band"),
         pytest.param("complex_stitch", 0.3, False, False, id="refined"),
         pytest.param("complex_stitch", 0.15, False, False, id="fine"),
+        pytest.param("complex_stitch", None, False, False, id="derived"),
         pytest.param("edge_length_stitch", 0.15, False, False, id="edge_length"),
         pytest.param("vertical", 0.15, True, False, id="vertical"),
         pytest.param("complex_stitch", 0.15, True, True, id="host-band"),
@@ -3382,7 +3624,7 @@ def test_stitch_smooth_meshlib_method_matches_meshlib(
     monkeypatch: pytest.MonkeyPatch,
     device: str,
     metric: str,
-    max_edge: float,
+    max_edge: float | None,
     triangulate_only: bool,
     host_band: bool,
 ) -> None:
@@ -3408,7 +3650,17 @@ def test_stitch_smooth_meshlib_method_matches_meshlib(
         "vertical": lambda: mm.getVerticalStitchMetric(mesh_ml, mm.Vector3f(*up_dir)),
     }
     settings_ml.triangulateParams.metric = metrics_ml[metric]()
-    settings_ml.subdivideSettings.maxEdgeLen = max_edge
+    if max_edge is None:
+        rim_lengths_np = [
+            np.linalg.norm(np.diff(vertices_np[np.append(loop, loop[0])], axis=0), axis=1)
+            for loop in (
+                *(loop.numpy() for loop in od.boundary.boundary_loops(va, fa)),
+                *(loop.numpy() + va.size for loop in od.boundary.boundary_loops(vb, fb)),
+            )
+        ]
+        settings_ml.subdivideSettings.maxEdgeLen = float(np.concatenate(rim_lengths_np).mean())
+    else:
+        settings_ml.subdivideSettings.maxEdgeLen = max_edge
     settings_ml.triangulateOnly = triangulate_only
     n_band_ml = mm.stitchHolesNicely(mesh_ml, holes_ml[0], holes_ml[1], settings_ml).count()
     stitched_ml = meshlib_to_trimesh(mesh_ml)
@@ -4228,14 +4480,23 @@ def test_bridge_edges_smooth_matches_meshlib(
 # Three edge pairs of ``saddle_graded``'s rim at two sampling steps: four, eleven and twenty-four
 # segments' worth of splits, so the spline is resampled to different counts in its three fits.
 # Then the rim edges after and before the first, which share a vertex with it (the quadrangle is a
-# triangle, joined in either order), and the one two back.
+# triangle, joined in either order), and the one two back. The last pair is the first named
+# against the rim's direction: a rim edge is an unordered vertex pair.
 @pytest.mark.parametrize(
-    ("second_edge", "sampling_step"),
-    [(12, 0.25), (30, 0.1), (5, 0.1), (1, 0.1), (-1, 0.1), (-2, 0.1)],
+    ("second_edge", "sampling_step", "reverse"),
+    [
+        (12, 0.25, False),
+        (30, 0.1, False),
+        (5, 0.1, False),
+        (1, 0.1, False),
+        (-1, 0.1, False),
+        (-2, 0.1, False),
+        (12, 0.25, True),
+    ],
 )
 @pytest.mark.parity("bridge_edges_smooth_meshlib", "meshlib")
 def test_bridge_edges_smooth_meshlib_method_matches_meshlib(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh], second_edge: int, sampling_step: float
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], second_edge: int, sampling_step: float, reverse: bool
 ) -> None:
     """
     Class A against ``makeSmoothBridge``: equal meshes up to numbering.
@@ -4263,6 +4524,8 @@ def test_bridge_edges_smooth_meshlib_method_matches_meshlib(
     bridged_ml = meshlib_to_trimesh(mesh_ml)
     assert result_ml.newFaces > 0  # non-vacuity: the reference bridged the pair
 
+    if reverse:
+        edge_a, edge_b = (edge_a[1], edge_a[0]), (edge_b[1], edge_b[0])
     bridged_wp = od.holes.bridge_edges_smooth(
         vertices_wp, faces_wp, edge_a, edge_b, sampling_step, method="meshlib"
     )
@@ -4762,6 +5025,7 @@ _INVALID_ARGUMENT_CASES = [
     "bridge_edges_smooth_method",
     "bridge_edges_smooth_unvalidated_reversed_edge",
     "stitch_loops_min_weight_two_vertex_loop",
+    "stitch_loops_min_weight_face_range",
 ]
 
 
@@ -4773,8 +5037,10 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
     The stitchers need exactly one boundary loop per side, so a watertight mesh (no loop) is
     refused; the loop-level engines need loops of at least three vertices; ``fill_smooth`` names
     its ``edge_weights`` options, ``stitch_min_weight`` its metrics and ``bridge_edges_smooth``
-    its methods; ``join_closest_components`` refuses a negative join budget; and a reversed rim
-    edge handed to ``bridge_edges_smooth(validate=False)`` still finds no face to bridge from.
+    its methods; ``join_closest_components`` refuses a negative join budget; a reversed rim
+    edge handed to ``bridge_edges_smooth(validate=False)`` still finds no face to bridge from; and
+    a face of the second mesh indexing past its ``n_vertices_b`` is named, the first mesh's faces
+    being in range.
     """
     if case == "fill_smooth_edge_weights":
         _, mesh_wp = request.getfixturevalue("saddle_graded")
@@ -4810,6 +5076,17 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
         )
         with pytest.raises(ValueError, match="at least 3 vertices"):
             stitcher(va, fa, loop_a, vb, fb, tiny_loop)
+    elif case == "stitch_loops_min_weight_face_range":
+        _, _, va, fa = _cone_wp(device=device, n=8, apex_z=-1.0, rim_z=0.0)
+        _, _, vb, fb = _cone_wp(device=device, n=8, apex_z=1.0, rim_z=0.5)
+        loop_a = od.boundary.longest_boundary_loop(va, fa)
+        loop_b = od.boundary.longest_boundary_loop(vb, fb)
+        past_np = np.concatenate([fb.numpy(), [0, 1, vb.size]]).astype(np.int32)
+        past_wp = wp.array(past_np, dtype=wp.int32, device=device)
+        with pytest.raises(ValueError, match=r"faces_b must index vertices in \[0, 9\)"):
+            od.holes.stitch_loops_min_weight(
+                va, fa, loop_a, vb, past_wp, loop_b, n_vertices_b=vb.size
+            )
     elif case in {"stitch_smooth_edge_weights", "stitch_smooth_refine"}:
         (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, 8, 8)
         if case == "stitch_smooth_edge_weights":

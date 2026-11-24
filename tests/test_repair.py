@@ -299,6 +299,11 @@ def test_make_solid_leaves_a_solid_alone(sphere_irregular: tuple[tm.Trimesh, wp.
     assert solid_wp.size == mesh_tm.vertices.shape[0]
     assert np.isclose(solid_tm.volume, mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
+    # No repair round at all (only the fills and the component filter) gives the same mesh.
+    rounds_off = od.repair.make_solid(mesh_wp.points, mesh_wp.indices, max_iter=0)
+    assert np.array_equal(rounds_off[0].numpy(), solid_wp.numpy())
+    assert np.array_equal(rounds_off[1].numpy(), solid_faces_wp.numpy())
+
 
 def _resolve_duplicated_faces_ref(faces_np: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """CPU reference mirroring ``igl::resolve_duplicated_faces``."""
@@ -469,6 +474,27 @@ def test_remove_unreferenced_sentinel(device: str):
     assert np.array_equal(nf_wp.numpy().reshape(-1, 3), faces_np)
     expected_remap = np.array([0, 1, 2], dtype=np.int32)
     assert np.array_equal(remap_wp.numpy(), expected_remap)
+
+
+def test_remove_unreferenced_vertices_drops_every_vertex_of_a_faceless_mesh(device: str) -> None:
+    """
+    Not a library comparison: with no face, no vertex is referenced and every one is dropped.
+
+    The remap marks each dropped vertex ``-1``; a pass that skipped the marking on an empty face
+    buffer would keep the three loose vertices.
+    """
+    vertices_wp = points_to_warp(np.eye(3), device)
+    faces_wp = warp_empty(0, wp.int32, device)
+
+    nv_wp, nf_wp, remap_wp, provenance = od.repair.remove_unreferenced_vertices(
+        vertices_wp, faces_wp, return_provenance=True
+    )
+
+    assert nv_wp.size == 0
+    assert nf_wp.size == 0
+    assert np.array_equal(remap_wp.numpy(), [-1, -1, -1])
+    assert provenance.n_vertices == 3
+    assert provenance.vertex_index.size == 0
 
 
 @pytest.mark.parity("remove_unreferenced_vertices", "meshlib")
@@ -3745,6 +3771,28 @@ def test_collapse_small_triangles_reports_provenance(
     assert np.array_equal(unchanged[2].face_index.numpy(), np.arange(faces_wp.size // 3))
 
 
+def test_collapse_small_triangles_can_collapse_a_whole_mesh(device: str) -> None:
+    """
+    Not a library comparison: a threshold above every face collapses the mesh away, pass by pass.
+
+    The igl wheel leaves ``collapse_small_triangles`` unbound. Every face of a two-subdivision
+    icosphere has a doubled area below ``2 * 0.01 * bbd ** 2``, so each pass collapses what the
+    last left until no face remains, and the provenance is as empty as the mesh. The control
+    threshold, below every face, leaves the mesh whole.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(2, device=device)
+
+    kept = od.repair.collapse_small_triangles(vertices_wp, faces_wp, epsilon=1e-6)
+    assert np.array_equal(kept[1].numpy(), faces_wp.numpy())  # the control collapses nothing
+    new_vertices_wp, new_faces_wp, provenance = od.repair.collapse_small_triangles(
+        vertices_wp, faces_wp, epsilon=0.01, return_provenance=True
+    )
+    assert new_vertices_wp.size == 0
+    assert new_faces_wp.size == 0
+    assert provenance.face_index.size == 0
+    assert provenance.vertex_index.size == 0
+
+
 def _kept_input_vertices(vertices_np: np.ndarray, output: tm.Trimesh) -> set[int]:
     # The input vertex each output vertex sits on; the float32 round trip is the only slack.
     distance, index = KDTree(vertices_np).query(np.asarray(output.vertices))
@@ -4114,6 +4162,30 @@ def test_fix_self_intersections_voxel_rebuilds(
     assert int(after_np.sum()) < int(before_np.sum())
     assert after_ml == int(after_np.sum())
     assert after_pmf == int(after_np.sum())
+
+
+def test_fix_self_intersections_leaves_a_mesh_it_would_cut_away_whole(device: str) -> None:
+    """
+    Not a library comparison: a cut that would take every face is refused, the mesh kept as it is.
+
+    Two triangles piercing each other are both self-intersecting, so the region to refill is the
+    whole mesh; refilling it would delete everything. The detector does see the crossing, so the
+    unchanged answer is the refusal and not a clean mesh.
+    """
+    vertices_np = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.2, 0.2, -0.5], [0.2, 0.2, 0.5], [1.2, 0.2, 0.0]],
+        dtype=np.float32,
+    )
+    faces_np = np.arange(6, dtype=np.int32).reshape(2, 3)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    assert od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy().all()
+
+    new_vertices_wp, new_faces_wp = od.repair.fix_self_intersections(
+        vertices_wp, faces_wp, max_expand=0
+    )
+
+    assert np.array_equal(new_faces_wp.numpy(), faces_np.ravel())
+    assert np.array_equal(new_vertices_wp.numpy(), vertices_np)
 
 
 def test_fix_self_intersections_is_reproducible_when_deterministic(device: str) -> None:
@@ -5310,7 +5382,69 @@ _EMPTY_MESH_REPAIR_CASES = [
     ("collapse_small_triangles", lambda v, f: od.repair.collapse_small_triangles(v, f)),
     ("remove_folded_faces", lambda v, f: od.repair.remove_folded_faces(v, f)),
     ("flip_t_vertices", lambda v, f: (od.repair.flip_t_vertices(v, f),)),
+    (
+        "remove_unreferenced_vertices_provenance",
+        lambda v, f: _provenance_arrays(
+            od.repair.remove_unreferenced_vertices(v, f, return_provenance=True)
+        ),
+    ),
+    (
+        "remove_duplicated_vertices",
+        lambda v, f: od.repair.remove_duplicated_vertices(v, f, epsilon=1e-6),
+    ),
+    ("duplicate_vertex_inverse", lambda v, _f: (od.repair.duplicate_vertex_inverse(v, 1e-6),)),
+    (
+        "split_vertices_by_corner_values",
+        lambda v, f: od.repair.split_vertices_by_corner_values(
+            v, f, warp_empty(0, wp.float32, f.device)
+        ),
+    ),
+    ("resolve_duplicated_faces", lambda _v, f: od.repair.resolve_duplicated_faces(f)),
+    ("remove_degenerate_faces", lambda v, f: od.repair.remove_degenerate_faces(v, f)),
+    (
+        "remove_degenerate_faces_provenance",
+        lambda v, f: _provenance_arrays(
+            od.repair.remove_degenerate_faces(v, f, return_provenance=True)
+        ),
+    ),
+    (
+        "remove_non_manifold_faces_meshlab",
+        lambda v, f: od.repair.remove_non_manifold_faces(v, f, method="meshlab"),
+    ),
+    (
+        "remove_degenerate_and_non_manifold_faces_provenance",
+        lambda v, f: _provenance_arrays(
+            od.repair.remove_degenerate_and_non_manifold_faces(v, f, return_provenance=True)
+        ),
+    ),
+    (
+        "remove_small_components_provenance",
+        lambda v, f: _provenance_arrays(
+            od.repair.remove_small_components(v, f, keep_largest=True, return_provenance=True)
+        ),
+    ),
+    (
+        "split_non_manifold_vertices_provenance",
+        lambda v, f: _provenance_arrays(
+            od.repair.split_non_manifold_vertices(v, f, return_provenance=True)
+        ),
+    ),
+    ("fix_degeneracies", lambda v, f: od.repair.fix_degeneracies(v, f, 0.0)),
+    ("fix_self_intersections", lambda v, f: od.repair.fix_self_intersections(v, f)),
+    ("straighten_boundary", lambda v, f: (od.repair.straighten_boundary(v, f),)),
+    ("flatten_degree3_vertices", lambda v, f: (od.repair.flatten_degree3_vertices(v, f),)),
 ]
+
+
+def _provenance_arrays(result: tuple[object, ...]) -> tuple[wp.array[object], ...]:
+    """Return a repair's arrays, then its provenance's two index maps in place of the record."""
+    *arrays, provenance = result
+    assert isinstance(provenance, od.interpolation.Provenance)
+    return (
+        *cast("list[wp.array[object]]", arrays),
+        cast("wp.array[object]", provenance.vertex_index),
+        cast("wp.array[object]", provenance.face_index),
+    )
 
 
 @pytest.mark.parametrize(
@@ -5356,6 +5490,25 @@ _CLEAN_MESH_REPAIR_CASES = [
     # dihedral at its sharpest spike, past the 160-degree default), so it is not a clean input for
     # that predicate; ``test_remove_folded_faces_drops_exactly_the_folded_pairs`` holds it to the
     # exact set instead.
+    (
+        "remove_degenerate_and_non_manifold_faces_provenance",
+        lambda v, f: od.repair.remove_degenerate_and_non_manifold_faces(
+            v, f, return_provenance=True
+        )[:2],
+    ),
+    # ``max_iter=0`` runs no manifold pass at all.
+    (
+        "remove_degenerate_and_non_manifold_faces_no_pass",
+        lambda v, f: od.repair.remove_degenerate_and_non_manifold_faces(v, f, max_iter=0),
+    ),
+    (
+        "straighten_boundary_no_pass",
+        lambda v, f: (v, od.repair.straighten_boundary(v, f, iterations=0)),
+    ),
+    (
+        "flatten_degree3_vertices_no_pass",
+        lambda v, f: (od.repair.flatten_degree3_vertices(v, f, max_iter=0), f),
+    ),
 ]
 
 

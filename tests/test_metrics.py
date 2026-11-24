@@ -1067,6 +1067,27 @@ _DEGENERATE_CASES: list[tuple[str, Callable[[str], np.ndarray], tuple[int, ...],
         (1,),
         0.0,
     ),
+    (
+        "chamfer_points_to_mesh_loss_no_faces",
+        lambda device: od.metrics.chamfer_points_to_mesh_loss(
+            points_to_warp(np.ones((5, 3), dtype=np.float32), device),
+            _zeros_cloud(device, 3),
+            warp_empty(0, wp.int32, device),
+        ).numpy(),
+        (1,),
+        0.0,
+    ),
+    (
+        "chamfer_mesh_to_mesh_loss_no_faces",
+        lambda device: od.metrics.chamfer_mesh_to_mesh_loss(
+            points_to_warp(np.ones((3, 3), dtype=np.float32), device),
+            wp.array([0, 1, 2], dtype=wp.int32, device=device),
+            _zeros_cloud(device, 3),
+            warp_empty(0, wp.int32, device),
+        ).numpy(),
+        (1,),
+        0.0,
+    ),
     ("hausdorff_identical_clouds", _identical_cloud_hausdorff, (1,), 0.0),
     ("chamfer_identical_meshes", _identical_mesh_chamfer, (1,), 1e-6),
 ]
@@ -1086,7 +1107,8 @@ def test_degenerate_inputs_measure_zero(
     Not a library comparison: an empty side or two identical inputs measure exactly nothing.
 
     An empty cloud gives a zero scalar (and empty per-point arrays unreduced), a mesh with no
-    faces a zero Hausdorff distance, and a cloud or mesh against itself zero -- exactly for the
+    faces a zero Hausdorff distance (and a zero differentiable loss, though its sides sit a
+    distance apart), and a cloud or mesh against itself zero -- exactly for the
     clouds, within float32 rounding of the closest-point query for the mesh.
     """
     values_np = case(device)

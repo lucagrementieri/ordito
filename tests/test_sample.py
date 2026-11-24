@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections.abc import Callable
+from functools import partial
 from typing import Any, Literal, cast
 
 import igl
@@ -331,6 +332,7 @@ def test_sample_surface_barycentric_reproduces_the_samples(
     [
         pytest.param("short_weights", "face_weight length must match", id="short_weights"),
         pytest.param("zero_weights", "total face weight must be positive", id="zero_weights"),
+        pytest.param("zero_area", "mesh has zero surface area", id="zero_area"),
         pytest.param("no_faces", "mesh has no faces", id="no_faces"),
     ],
 )
@@ -338,11 +340,12 @@ def test_sample_surface_rejects(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str, match: str
 ) -> None:
     """
-    Not a library comparison: the three inputs ``sample_surface`` documents it refuses.
+    Not a library comparison: the four inputs ``sample_surface`` documents it refuses.
 
-    A ``face_weight`` one entry short, an all-zero ``face_weight`` (no CDF to invert) and a mesh
-    with no faces, each raised by name rather than drawing from a garbage CDF. The short weights
-    raise even at ``count == 0``, before the empty short-circuit.
+    A ``face_weight`` one entry short, an all-zero ``face_weight`` (no CDF to invert), a mesh whose
+    faces have no area (every vertex at one point) and a mesh with no faces, each raised by name
+    rather than drawing from a garbage CDF. The short weights raise even at ``count == 0``, before
+    the empty short-circuit.
     """
     _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -355,10 +358,44 @@ def test_sample_surface_rejects(
         count = 0
     elif case == "zero_weights":
         face_weight = wp.zeros(n_faces, dtype=wp.float32, device=device)
+    elif case == "zero_area":
+        vertices_wp = wp.zeros_like(vertices_wp)
     else:
         faces_wp = warp_empty(0, wp.int32, device)
     with pytest.raises(ValueError, match=match):
         od.sample.sample_surface(vertices_wp, faces_wp, count, face_weight=face_weight, seed=0)
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        pytest.param("zero_weights", "total face weight must be positive", id="zero_weights"),
+        pytest.param("zero_area", "mesh has zero surface area", id="zero_area"),
+        pytest.param("no_faces", "mesh has no faces", id="no_faces"),
+    ],
+)
+def test_sample_surface_poisson_disk_rejects(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str, match: str
+) -> None:
+    """
+    Not a library comparison: the surfaces ``sample_surface_poisson_disk`` documents it refuses.
+
+    An all-zero ``face_weight``, a mesh whose faces have no area and a mesh with no faces leave its
+    uniform pool no distribution to draw from, so each is raised by name.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    face_weight = None
+    if case == "zero_weights":
+        face_weight = wp.zeros(faces_wp.size // 3, dtype=wp.float32, device=vertices_wp.device)
+    elif case == "zero_area":
+        vertices_wp = wp.zeros_like(vertices_wp)
+    else:
+        faces_wp = warp_empty(0, wp.int32, vertices_wp.device)
+    with pytest.raises(ValueError, match=match):
+        od.sample.sample_surface_poisson_disk(
+            vertices_wp, faces_wp, 10, face_weight=face_weight, seed=0
+        )
 
 
 def _sequential_sample_elimination(
@@ -1077,6 +1114,50 @@ def test_sample_surface_in_ball_poisson_disk_spreads_the_count(
     assert pdist(uniform_np).min() < 0.25 * r_max  # Non-vacuity: a uniform draw clumps.
 
 
+@pytest.mark.parametrize("sampler", ["surface", "in_ball"])
+def test_poisson_disk_without_oversampling_returns_the_uniform_draw(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], sampler: str
+) -> None:
+    """
+    Ordito against ordito: at ``init_factor=1`` the pool is the answer, and nothing is eliminated.
+
+    The pool is ``count`` uniform samples drawn with the call's seed, so the Poisson-disk sampler
+    must return the uniform sampler's draw for the same seed, point for point and face for face,
+    over the whole surface and inside a ball alike. Non-vacuity: the default oversampled pool
+    eliminates down to a different set.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    count = 60
+    if sampler == "surface":
+        draw = partial(
+            od.sample.sample_surface_poisson_disk, mesh_wp.points, mesh_wp.indices, count
+        )
+        uniform_wp, uniform_faces_wp = od.sample.sample_surface(
+            mesh_wp.points, mesh_wp.indices, count, seed=4
+        )
+    else:
+        center_np, radius = _in_ball_case(mesh_tm, "small")
+        center = wp.vec3(*center_np.tolist())
+        draw = partial(
+            od.sample.sample_surface_in_ball,
+            mesh_wp.points,
+            mesh_wp.indices,
+            center,
+            radius,
+            count,
+            method="poisson_disk",
+        )
+        uniform_wp, uniform_faces_wp = od.sample.sample_surface_in_ball(
+            mesh_wp.points, mesh_wp.indices, center, radius, count, seed=4
+        )
+    pool_wp, pool_faces_wp = draw(init_factor=1.0, seed=4)
+    assert uniform_wp.shape == (count,)
+    assert np.array_equal(pool_wp.numpy(), uniform_wp.numpy())
+    assert np.array_equal(pool_faces_wp.numpy(), uniform_faces_wp.numpy())
+    eliminated_wp, _ = draw(seed=4)
+    assert not np.array_equal(eliminated_wp.numpy(), uniform_wp.numpy())
+
+
 @pytest.mark.parametrize("ball", ["wide", "small"])
 def test_sample_surface_in_ball_blue_noise_packs_the_ball(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], ball: str
@@ -1136,6 +1217,30 @@ def test_sample_surface_in_ball_returns_nothing_for_a_ball_off_the_surface(devic
         vertices, faces, center, 1.0, method="blue_noise", spacing=0.1
     )
     assert all(buffer.shape == (0,) for buffer in buffers)
+
+
+def test_sample_surface_in_ball_blue_noise_of_a_ball_no_pool_point_reaches(device: str) -> None:
+    """
+    Not a library comparison: a ball on the surface that the spacing's pool misses keeps nothing.
+
+    The pool is drawn at the spacing's density over the faces meeting the ball, about a hundred
+    points on a cube face for a ``0.1`` spacing, so a ball of radius ``1e-3`` on that face holds
+    none of them (seeded): the dart throw gets an empty pool and returns empty buffers rather than
+    gridding nothing. Non-vacuity: a ball of ``0.05`` on the same face keeps samples, all inside.
+    """
+    vertices, faces = od.creation.box(device=device)
+    center_np = np.array([0.5, 0.1, 0.2])
+    center = wp.vec3(*center_np.tolist())
+    buffers = od.sample.sample_surface_in_ball(
+        vertices, faces, center, 1e-3, method="blue_noise", spacing=0.1, seed=0
+    )
+    assert all(buffer.shape == (0,) for buffer in buffers)
+    samples_wp, _ = od.sample.sample_surface_in_ball(
+        vertices, faces, center, 0.05, method="blue_noise", spacing=0.1, seed=0
+    )
+    samples_np = samples_wp.numpy()
+    assert samples_np.size > 0
+    assert np.linalg.norm(samples_np - center_np, axis=1).max() <= 0.05
 
 
 def test_sample_surface_in_ball_returns_what_its_rounds_kept(
@@ -1361,6 +1466,8 @@ def test_sample_surface_arrival_order_scan_draws_the_same_points(device: str) ->
         "fibonacci_sphere",
         "fibonacci_hemisphere",
         "fibonacci_cone",
+        "surface",
+        "surface_barycentric",
         "poisson_disk",
         "blue_noise_no_faces",
         "volume",
@@ -1380,6 +1487,12 @@ def test_samplers_return_empty_buffers_for_an_empty_request(
         buffers = (od.sample.sample_fibonacci_hemisphere(0, device=device),)
     elif sampler == "fibonacci_cone":
         buffers = (od.sample.sample_fibonacci_cone(0, 1.0, device=device),)
+    elif sampler == "surface":
+        buffers = od.sample.sample_surface(mesh_wp.points, mesh_wp.indices, 0, seed=0)
+    elif sampler == "surface_barycentric":
+        buffers = od.sample.sample_surface(
+            mesh_wp.points, mesh_wp.indices, 0, seed=0, return_barycentric=True
+        )
     elif sampler == "poisson_disk":
         buffers = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, 0)
     elif sampler == "blue_noise_no_faces":
@@ -1444,6 +1557,16 @@ def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: st
 @pytest.mark.parametrize(
     ("call", "message"),
     [
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_blue_noise(
+                wp.zeros(3, dtype=wp.vec3, device=mesh_wp.points.device),
+                wp.array([0, 1, 2], dtype=wp.int32, device=mesh_wp.points.device),
+                0.1,
+                seed=0,
+            ),
+            "mesh has zero surface area",
+            id="blue_noise_zero_area",
+        ),
         pytest.param(
             lambda mesh_wp: od.sample.sample_fibonacci_cone(8, 0.0, device=mesh_wp.points.device),
             r"half_angle must be in \(0, pi\]",

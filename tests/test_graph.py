@@ -201,6 +201,9 @@ def test_edges_to_neighbor_lists_empty_and_out_of_range(device: str) -> None:
         od.graph.edges_to_neighbor_lists(
             3, _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
         )
+    # With no node at all every endpoint is out of range, before any row is counted.
+    with pytest.raises(ValueError, match="edge indices must lie in"):
+        od.graph.edges_to_neighbor_lists(0, _edges_wp(np.array([[0, 1]], dtype=np.int32), device))
     edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     for neighbors_wp, offsets_wp in (
         od.graph.edges_to_neighbor_lists(4, edges_wp),
@@ -629,8 +632,9 @@ def test_connected_component_parity_no_edges(device: str, node_count: int) -> No
         ([[0, 10]], 1, 5, "edge indices must lie in"),
         ([[-1, 2]], 1, 5, "edge indices must lie in"),
         ([[0, 1]], 1, -1, "node_count must be non-negative, got -1"),
+        ([[0, 1]], 1, 0, "edge indices must lie in"),
     ],
-    ids=["signs_length", "endpoint_range", "endpoint_negative", "node_count_negative"],
+    ids=["signs_length", "endpoint_range", "endpoint_negative", "node_count_negative", "no_nodes"],
 )
 def test_connected_component_parity_validates_its_input(
     device: str, edges: list[list[int]], n_signs: int, node_count: int, message: str
@@ -773,6 +777,8 @@ def test_successor_cycles_skips_out_of_range_rows(device: str) -> None:
     )
     with pytest.raises(ValueError, match="edge indices must lie in"):
         od.graph.successor_cycles(edges_wp, 4)
+    with pytest.raises(ValueError, match="edge indices must lie in"):
+        od.graph.successor_cycles(edges_wp, 0)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 4, validate=False)
     assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2, 3], dtype=np.int32))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 2, 4], dtype=np.int32))
