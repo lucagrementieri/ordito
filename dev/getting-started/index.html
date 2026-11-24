@@ -6378,8 +6378,8 @@
 every function also runs on Warp's CPU backend, with the same code. Warp's PyPI wheels are
 built with CUDA 13, so the GPU path needs an NVIDIA R580-series or newer driver and a Turing
 (<code>sm_75</code>) or newer GPU; Warp publishes CUDA 12 wheels (<code>+cu12</code>) on its GitHub releases for older
-drivers. Mesh file I/O via <a href="https://github.com/nschloe/meshio">meshio</a> is an optional extra:
-<code>pip install "ordito[io]"</code>.</p>
+drivers. Mesh file I/O, with colours, UVs and textures, via
+<a href="https://github.com/mikedh/trimesh">trimesh</a> is an optional extra: <code>pip install "ordito[io]"</code>.</p>
 <h3 id="platform-support">Platform support</h3>
 <p>ordito ships as a pure-Python <code>py3-none-any</code> wheel; everything platform-specific lives in
 <code>warp-lang</code>, which brings its own compiled backend. What differs between the rows below is how
@@ -6522,24 +6522,26 @@ tensors. The conversions happen at the edges of a pipeline, once each way.</p>
 <span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">faces_rows</span><span class="p">,</span> <span class="n">mesh_tm</span><span class="o">.</span><span class="n">faces</span><span class="p">))</span>  <span class="c1"># True</span>
 </code></pre></div>
 <p><strong>From a file</strong>: install the I/O extra (<code>pip install "ordito[io]"</code>) and call
-<a class="autorefs autorefs-internal" title="load_mesh_data" href="../api/ordito/io/#ordito.io.load_mesh_data"><code>io.load_mesh_data</code></a>, which reads any format
-<a href="https://github.com/nschloe/meshio">meshio</a> does (OBJ, PLY, STL, OFF, VTK, glTF, ...) and returns
-the vertices, faces and whatever per-vertex attributes the file carries. ordito has no writer of
-its own; meshio writes the arrays back out:</p>
+<a class="autorefs autorefs-internal" title="load_trimesh" href="../api/ordito/io/#ordito.io.load_trimesh"><code>io.load_trimesh</code></a>, which reads any format
+<a href="https://github.com/mikedh/trimesh">trimesh</a> does (OBJ with its materials, PLY, glTF / GLB, STL,
+OFF, ...) into a <a class="autorefs autorefs-internal" title="Trimesh" href="../api/ordito/mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a> with the file's vertex or face colours, UVs and
+texture. <a class="autorefs autorefs-internal" title="save_mesh" href="../api/ordito/io/#ordito.io.save_mesh"><code>io.save_mesh</code></a> writes one back, with the visuals the format
+holds:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">meshio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">torus</span><span class="p">(</span><span class="n">major_radius</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">minor_radius</span><span class="o">=</span><span class="mf">0.3</span><span class="p">)</span>
+<span class="n">gold</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertex_attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">gold</span><span class="p">})</span>
 <span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
     <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"torus.ply"</span>
-    <span class="n">cells</span> <span class="o">=</span> <span class="p">[(</span><span class="s2">"triangle"</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))]</span>
-    <span class="n">meshio</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">meshio</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">cells</span><span class="p">))</span>
-    <span class="n">data</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"vertices"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">faces</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># True True</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+    <span class="n">loaded</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_trimesh</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">loaded</span><span class="o">.</span><span class="n">n_faces</span> <span class="o">==</span> <span class="n">mesh</span><span class="o">.</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">loaded</span><span class="o">.</span><span class="n">vertex_colors</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>  <span class="c1"># True True</span>
 </code></pre></div>
 <p><strong>From and to PyTorch</strong>, without a copy: <code>wp.from_torch</code> wraps a tensor's memory as a Warp array,
 and <code>wp.to_torch</code> does the reverse. The two views share storage, so a training loop can call

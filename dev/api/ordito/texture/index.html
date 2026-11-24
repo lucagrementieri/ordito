@@ -5803,6 +5803,67 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#ordito.texture.Material" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Material
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Material">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.image" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        image
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.base_color" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        base_color
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.name" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        name
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.__post_init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __post_init__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.texture.rasterize_attribute" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -5851,6 +5912,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         remap_discrete_attribute_from_uv
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.texture.material_colors" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        material_colors
       </span>
     </span>
   </a>
@@ -6248,6 +6320,67 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#ordito.texture.Material" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Material
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Material">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.image" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        image
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.base_color" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        base_color
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.name" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        name
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.texture.Material.__post_init__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __post_init__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.texture.rasterize_attribute" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6302,6 +6435,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.texture.material_colors" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        material_colors
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6345,6 +6489,14 @@ part of this module.</p>
 <a class="autorefs autorefs-internal" title="rasterize_face_indices" href="./#ordito.texture.rasterize_face_indices"><code>rasterize_face_indices</code></a>,
 <a class="autorefs autorefs-internal" title="remap_attribute_from_uv" href="./#ordito.texture.remap_attribute_from_uv"><code>remap_attribute_from_uv</code></a>, and
 <a class="autorefs autorefs-internal" title="remap_discrete_attribute_from_uv" href="./#ordito.texture.remap_discrete_attribute_from_uv"><code>remap_discrete_attribute_from_uv</code></a>.</p>
+<p>A <a class="autorefs autorefs-internal" title="Material
+
+
+  
+      dataclass
+  " href="./#ordito.texture.Material"><code>Material</code></a> is what a textured mesh carries: a base-colour image and
+the factor that multiplies it, read at the mesh's UVs by
+<a class="autorefs autorefs-internal" title="material_colors" href="./#ordito.texture.material_colors"><code>material_colors</code></a>.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
@@ -6358,6 +6510,32 @@ part of this module.</p>
 
 
 
+
+
+<p><span class="doc-section-title">Classes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="Material
+
+
+  
+      dataclass
+   (ordito.texture.Material)" href="./#ordito.texture.Material">Material</a></code></td>
+            <td>
+              <div class="doc-md-description">
+                <p>A surface's base colour: an RGBA texture image and a factor multiplying it.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 
@@ -6411,6 +6589,14 @@ part of this module.</p>
                 </div>
               </td>
             </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="material_colors (ordito.texture.material_colors)" href="./#ordito.texture.material_colors">material_colors</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Return a material's RGBA colour at each UV.</p>
+                </div>
+              </td>
+            </tr>
       </tbody>
     </table>
 
@@ -6426,6 +6612,352 @@ part of this module.</p>
 
 
 
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="ordito.texture.Material" class="doc doc-heading">
+            <span class="doc doc-object-name doc-class-name">Material</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">Material</span><span class="p">(</span>
+    <span class="n">image</span><span class="p">:</span> <span class="n">Array3dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">base_color</span><span class="p">:</span> <span class="n">vec4</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="k">lambda</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="p">)(),</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"material"</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+
+
+        <p>A surface's base colour: an RGBA texture image and a factor multiplying it.</p>
+<p>What a textured <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a> carries beside its UVs (glTF's base colour,
+an OBJ material's <code>map_Kd</code> and <code>Kd</code>). The colour of a point is the image sampled at its UV,
+channel by channel times <code>base_color</code>; with no image it is <code>base_color</code> alone. Colours are
+in <code>[0, 1]</code> in the image's own encoding (sRGB for an image read from a file): nothing is
+converted.</p>
+<p>Two meshes share a material only by holding the same object: equality is identity.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>image</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array3dFloat32
+
+
+  
+      module-attribute
+   (ordito.typing.Array3dFloat32)" href="../typing/#ordito.typing.Array3dFloat32">Array3dFloat32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(height, width, 4)</code> <code>float32</code> RGBA texture, row 0 the top of the image (<code>v = 1</code>),
+or <code>None</code> for a uniform colour.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>base_color</code>
+            </td>
+            <td>
+                  <code><span title="warp.vec4">vec4</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>RGBA factor multiplying the image. Defaults to opaque white, which leaves the image as it
+is.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(lambda: <span title="warp.vec4">vec4</span>(1.0, 1.0, 1.0, 1.0))()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Name the material is written under.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;material&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#TypeError">TypeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>image</code> is not a rank-3 <code>wp.float32</code> array.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>image</code> does not have four channels or has no texel.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="material_colors" href="./#ordito.texture.material_colors"><code>material_colors</code></a>
+<a class="autorefs autorefs-internal" title="material
+
+
+  
+      property
+  " href="../mesh/#ordito.mesh.Trimesh.material"><code>ordito.mesh.Trimesh.material</code></a>
+<a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.visual.material.html#trimesh.visual.material.PBRMaterial"><code>trimesh.visual.material.PBRMaterial</code></a></p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A two-texel texture, red over blue, read at the centre of each texel:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">texels</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[[</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]],</span> <span class="p">[[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">material</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">texture</span><span class="o">.</span><span class="n">Material</span><span class="p">(</span><span class="n">image</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">texels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">))</span>
+<span class="n">uv</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">],</span> <span class="p">[</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">texture</span><span class="o">.</span><span class="n">material_colors</span><span class="p">(</span><span class="n">material</span><span class="p">,</span> <span class="n">uv</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="c1"># [[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]]</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 4 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.texture">texture</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.material_colors">material_colors</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh">mesh</a> › <a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.with_material">with_material</a></span></p>
+    </details>
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Used by 3 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.material_colors">material_colors</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh">mesh</a> › <a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.with_material">with_material</a></span></p>
+    </details>
+
+
+
+
+
+
+
+
+
+
+<p><span class="doc-section-title">Methods:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="__post_init__ (ordito.texture.Material.__post_init__)" href="./#ordito.texture.Material.__post_init__">__post_init__</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Validate the image's rank, dtype and channels.</p>
+                </div>
+              </td>
+            </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="ordito.texture.Material.image" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">image</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">image</span><span class="p">:</span> <span class="n">Array3dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+          
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="ordito.texture.Material.base_color" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">base_color</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">base_color</span><span class="p">:</span> <span class="n">vec4</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span>
+    <span class="n">default_factory</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<span class="p">)</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+          
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="ordito.texture.Material.name" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">name</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'material'</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+          
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="ordito.texture.Material.__post_init__" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">__post_init__</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">__post_init__</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Validate the image's rank, dtype and channels.</p>
+
+          
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/texture.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">734</span>
+<span class="normal">735</span>
+<span class="normal">736</span>
+<span class="normal">737</span>
+<span class="normal">738</span>
+<span class="normal">739</span>
+<span class="normal">740</span>
+<span class="normal">741</span>
+<span class="normal">742</span>
+<span class="normal">743</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Validate the image's rank, dtype and channels."""</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">image</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="n">height</span><span class="p">,</span> <span class="n">width</span><span class="p">,</span> <span class="n">channels</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">extent</span><span class="p">)</span> <span class="k">for</span> <span class="n">extent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">image</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">channels</span> <span class="o">!=</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"a material image must have 4 (RGBA) channels, got </span><span class="si">{</span><span class="n">channels</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">height</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">width</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"a material image must have a texel, got shape </span><span class="si">{</span><span class="p">(</span><span class="n">height</span><span class="p">,</span><span class="w"> </span><span class="n">width</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
 
 
 <div class="doc doc-object doc-function">
@@ -6661,12 +7193,7 @@ pixel centre sits at <code>u = 7.5 / 8</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 43</span>
-<span class="normal"> 44</span>
-<span class="normal"> 45</span>
-<span class="normal"> 46</span>
-<span class="normal"> 47</span>
-<span class="normal"> 48</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 48</span>
 <span class="normal"> 49</span>
 <span class="normal"> 50</span>
 <span class="normal"> 51</span>
@@ -6750,7 +7277,12 @@ pixel centre sits at <code>u = 7.5 / 8</code>:</p>
 <span class="normal">129</span>
 <span class="normal">130</span>
 <span class="normal">131</span>
-<span class="normal">132</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
+<span class="normal">132</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">attribute</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span>
@@ -7060,12 +7592,7 @@ with the greater interpolated weight:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">135</span>
-<span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">140</span>
 <span class="normal">141</span>
 <span class="normal">142</span>
 <span class="normal">143</span>
@@ -7145,7 +7672,12 @@ with the greater interpolated weight:</p>
 <span class="normal">217</span>
 <span class="normal">218</span>
 <span class="normal">219</span>
-<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">attribute</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -7478,12 +8010,7 @@ right-hand columns lie past <code>u = 1</code>, where no face is.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">228</span>
 <span class="normal">229</span>
 <span class="normal">230</span>
 <span class="normal">231</span>
@@ -7609,7 +8136,12 @@ right-hand columns lie past <code>u = 1</code>, where no face is.</p>
 <span class="normal">351</span>
 <span class="normal">352</span>
 <span class="normal">353</span>
-<span class="normal">354</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_face_indices</span><span class="p">(</span>
+<span class="normal">354</span>
+<span class="normal">355</span>
+<span class="normal">356</span>
+<span class="normal">357</span>
+<span class="normal">358</span>
+<span class="normal">359</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_face_indices</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">origin</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">float</span><span class="p">],</span>
@@ -7937,9 +8469,9 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 5 places</summary>
+      <summary>Referenced by 6 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.texture">texture</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.rasterize_attribute">rasterize_attribute</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.remap_discrete_attribute_from_uv">remap_discrete_attribute_from_uv</a></span> · <span class="ordito-backlink"><a href="../proximity/#ordito.proximity">proximity</a> › <a href="../proximity/#ordito.proximity.containing_faces_2d">containing_faces_2d</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.texture">texture</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.material_colors">material_colors</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.rasterize_attribute">rasterize_attribute</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.remap_discrete_attribute_from_uv">remap_discrete_attribute_from_uv</a></span> · <span class="ordito-backlink"><a href="../proximity/#ordito.proximity">proximity</a> › <a href="../proximity/#ordito.proximity.containing_faces_2d">containing_faces_2d</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p3">Baking a field into a texture and reading it back</a></span></p>
     </details>
@@ -7947,12 +8479,7 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">480</span>
 <span class="normal">481</span>
 <span class="normal">482</span>
 <span class="normal">483</span>
@@ -8040,7 +8567,12 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 <span class="normal">565</span>
 <span class="normal">566</span>
 <span class="normal">567</span>
-<span class="normal">568</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8302,12 +8834,7 @@ are <code>-1</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">576</span>
 <span class="normal">577</span>
 <span class="normal">578</span>
 <span class="normal">579</span>
@@ -8375,7 +8902,12 @@ are <code>-1</code>.</p>
 <span class="normal">641</span>
 <span class="normal">642</span>
 <span class="normal">643</span>
-<span class="normal">644</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">class_image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array1dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8449,6 +8981,313 @@ are <code>-1</code>.</p>
     <span class="p">)</span>
     <span class="n">_raise_on_uv_flag</span><span class="p">(</span><span class="n">flag</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">out_labels</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.texture.material_colors" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">material_colors</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">material_colors</span><span class="p">(</span>
+    <span class="n">material</span><span class="p">:</span> <span class="n">Material</span><span class="p">,</span> <span class="n">uv</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec2</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return a material's RGBA colour at each UV.</p>
+<p>The image is sampled bilinearly at pixel centres (<code>col = u * W - 0.5</code>,
+<code>row = (1 - v) * H - 0.5</code>, the convention of
+<a class="autorefs autorefs-internal" title="remap_attribute_from_uv" href="./#ordito.texture.remap_attribute_from_uv"><code>remap_attribute_from_uv</code></a>) and tiles: a UV outside
+<code>[0, 1]</code> reads the texture repeated, as glTF's and OBJ's default sampler does. Each colour is
+the sample times the material's <code>base_color</code>; a material with no image gives
+<code>base_color</code> everywhere.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>material</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Material
+
+
+  
+      dataclass
+   (ordito.texture.Material)" href="./#ordito.texture.Material">Material</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Material to read.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>uv</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec2">vec2</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n,)</code> texture coordinates. An Inf or NaN UV gives a NaN colour.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec4">vec4</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n,)</code> RGBA colours.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>uv</code> and the material's image are not on one device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="Material
+
+
+  
+      dataclass
+  " href="./#ordito.texture.Material"><code>Material</code></a>
+<a class="autorefs autorefs-internal" title="to_color" href="../mesh/#ordito.mesh.Trimesh.to_color"><code>ordito.mesh.Trimesh.to_color</code></a>
+<a class="autorefs autorefs-internal" title="remap_attribute_from_uv" href="./#ordito.texture.remap_attribute_from_uv"><code>remap_attribute_from_uv</code></a>
+    The clamped, any-channel sampler of a baked texture.</p>
+</details>
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>trimesh's <code>TextureVisuals.to_color</code> reads the nearest pixel under <code>col = u * (W - 1)</code> and
+leaves the factor out when there is an image; the two agree wherever the texture is constant
+over a few texels around the UV.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A uniform material is its factor at every UV:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">material</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">texture</span><span class="o">.</span><span class="n">Material</span><span class="p">(</span><span class="n">base_color</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+<span class="n">uv</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">],</span> <span class="p">[</span><span class="mf">3.5</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">texture</span><span class="o">.</span><span class="n">material_colors</span><span class="p">(</span><span class="n">material</span><span class="p">,</span> <span class="n">uv</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="c1"># [[0.5, 0.25, 1.0, 1.0], [0.5, 0.25, 1.0, 1.0]]</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 4 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a></span> · <span class="ordito-backlink"><a href="./#ordito.texture">texture</a> › <a href="./#ordito.texture.Material">Material</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.to_color">to_color</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/texture.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">746</span>
+<span class="normal">747</span>
+<span class="normal">748</span>
+<span class="normal">749</span>
+<span class="normal">750</span>
+<span class="normal">751</span>
+<span class="normal">752</span>
+<span class="normal">753</span>
+<span class="normal">754</span>
+<span class="normal">755</span>
+<span class="normal">756</span>
+<span class="normal">757</span>
+<span class="normal">758</span>
+<span class="normal">759</span>
+<span class="normal">760</span>
+<span class="normal">761</span>
+<span class="normal">762</span>
+<span class="normal">763</span>
+<span class="normal">764</span>
+<span class="normal">765</span>
+<span class="normal">766</span>
+<span class="normal">767</span>
+<span class="normal">768</span>
+<span class="normal">769</span>
+<span class="normal">770</span>
+<span class="normal">771</span>
+<span class="normal">772</span>
+<span class="normal">773</span>
+<span class="normal">774</span>
+<span class="normal">775</span>
+<span class="normal">776</span>
+<span class="normal">777</span>
+<span class="normal">778</span>
+<span class="normal">779</span>
+<span class="normal">780</span>
+<span class="normal">781</span>
+<span class="normal">782</span>
+<span class="normal">783</span>
+<span class="normal">784</span>
+<span class="normal">785</span>
+<span class="normal">786</span>
+<span class="normal">787</span>
+<span class="normal">788</span>
+<span class="normal">789</span>
+<span class="normal">790</span>
+<span class="normal">791</span>
+<span class="normal">792</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span>
+<span class="normal">797</span>
+<span class="normal">798</span>
+<span class="normal">799</span>
+<span class="normal">800</span>
+<span class="normal">801</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">material_colors</span><span class="p">(</span><span class="n">material</span><span class="p">:</span> <span class="n">Material</span><span class="p">,</span> <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return a material's RGBA colour at each UV.</span>
+
+<span class="sd">    The image is sampled bilinearly at pixel centres (``col = u * W - 0.5``,</span>
+<span class="sd">    ``row = (1 - v) * H - 0.5``, the convention of</span>
+<span class="sd">    [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]) and tiles: a UV outside</span>
+<span class="sd">    ``[0, 1]`` reads the texture repeated, as glTF's and OBJ's default sampler does. Each colour is</span>
+<span class="sd">    the sample times the material's ``base_color``; a material with no image gives</span>
+<span class="sd">    ``base_color`` everywhere.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    material</span>
+<span class="sd">        Material to read.</span>
+<span class="sd">    uv</span>
+<span class="sd">        ``(n,)`` texture coordinates. An Inf or NaN UV gives a NaN colour.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    wp.array[wp.vec4]</span>
+<span class="sd">        ``(n,)`` RGBA colours.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``uv`` and the material's image are not on one device.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`Material`][ordito.texture.Material]</span>
+<span class="sd">    [`ordito.mesh.Trimesh.to_color`][]</span>
+<span class="sd">    [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]</span>
+<span class="sd">        The clamped, any-channel sampler of a baked texture.</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    trimesh's ``TextureVisuals.to_color`` reads the nearest pixel under ``col = u * (W - 1)`` and</span>
+<span class="sd">    leaves the factor out when there is an image; the two agree wherever the texture is constant</span>
+<span class="sd">    over a few texels around the UV.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A uniform material is its factor at every UV:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    material = od.texture.Material(base_color=wp.vec4(0.5, 0.25, 1.0, 1.0))</span>
+<span class="sd">    uv = wp.array([[0.1, 0.2], [3.5, -1.0]], dtype=wp.vec2)</span>
+<span class="sd">    print(od.texture.material_colors(material, uv).numpy().tolist())</span>
+<span class="sd">    # [[0.5, 0.25, 1.0, 1.0], [0.5, 0.25, 1.0, 1.0]]</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">material</span><span class="o">.</span><span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">uv</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">base_color</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">uv</span><span class="o">=</span><span class="n">uv</span><span class="p">,</span> <span class="n">image</span><span class="o">=</span><span class="n">material</span><span class="o">.</span><span class="n">image</span><span class="p">)</span>
+    <span class="n">out_colors</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">uv</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">uv</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_texture</span><span class="o">.</span><span class="n">material_colors</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">uv</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">image</span><span class="p">,</span> <span class="n">material</span><span class="o">.</span><span class="n">base_color</span><span class="p">,</span> <span class="n">out_colors</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">out_colors</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

@@ -5864,32 +5864,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.vertex_normals" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        vertex_normals
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#ordito.io.MeshData.uv" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         uv
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.corner_uv" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        corner_uv
       </span>
     </span>
   </a>
@@ -5908,10 +5886,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.face_normals" class="md-nav__link">
+  <a href="#ordito.io.MeshData.face_colors" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        face_normals
+        face_colors
       </span>
     </span>
   </a>
@@ -5920,6 +5898,28 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.io.load_trimesh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        load_trimesh
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.io.save_mesh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        save_mesh
+      </span>
+    </span>
+  </a>
   
 </li>
       
@@ -6354,32 +6354,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.vertex_normals" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        vertex_normals
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#ordito.io.MeshData.uv" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         uv
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.corner_uv" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        corner_uv
       </span>
     </span>
   </a>
@@ -6398,10 +6376,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ordito.io.MeshData.face_normals" class="md-nav__link">
+  <a href="#ordito.io.MeshData.face_colors" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        face_normals
+        face_colors
       </span>
     </span>
   </a>
@@ -6410,6 +6388,28 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.io.load_trimesh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        load_trimesh
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.io.save_mesh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        save_mesh
+      </span>
+    </span>
+  </a>
   
 </li>
       
@@ -6475,7 +6475,7 @@
 
     <div class="doc doc-contents first">
 
-        <p>Mesh file loading via the optional <code>meshio</code> dependency.</p>
+        <p>Mesh file reading and writing, with colours, UVs and textures, through <code>trimesh</code>.</p>
 
           
 
@@ -6498,7 +6498,7 @@
             <td><code><a class="autorefs autorefs-internal" title="MeshData (ordito.io.MeshData)" href="./#ordito.io.MeshData">MeshData</a></code></td>
             <td>
               <div class="doc-md-description">
-                <p>The attributes <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> read from a file, by name.</p>
+                <p>The arrays <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> read from a file, by name.</p>
               </div>
             </td>
           </tr>
@@ -6518,10 +6518,26 @@
       </thead>
       <tbody>
             <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="load_trimesh (ordito.io.load_trimesh)" href="./#ordito.io.load_trimesh">load_trimesh</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Load a mesh file into a <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a>, with its colours, UVs and texture.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="save_mesh (ordito.io.save_mesh)" href="./#ordito.io.save_mesh">save_mesh</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Write a <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a> to a file, with the visuals its format can hold.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
               <td><code><a class="autorefs autorefs-internal" title="load_mesh_data (ordito.io.load_mesh_data)" href="./#ordito.io.load_mesh_data">load_mesh_data</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Load every mesh attribute <code>meshio</code> can read from a file into Warp arrays.</p>
+                  <p>Load a mesh file's vertices, faces, colours and UVs into Warp arrays.</p>
                 </div>
               </td>
             </tr>
@@ -6574,7 +6590,7 @@
 
 
 
-        <p>The attributes <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> read from a file, by name.</p>
+        <p>The arrays <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> read from a file, by name.</p>
 <p>A plain <code>dict</code> at runtime. <code>vertices</code> is always present; every other key only when the
 file carries that attribute.</p>
 
@@ -6584,15 +6600,12 @@ file carries that attribute.</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">meshio</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
-<span class="n">points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">]])</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="o">*</span><span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">())</span>
 <span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
-    <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"triangle.ply"</span>
-    <span class="n">meshio</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">meshio</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="p">[(</span><span class="s2">"triangle"</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">]]))]))</span>
+    <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"box.ply"</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
     <span class="n">data</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>  <span class="c1"># ['faces', 'vertices']</span>
 </code></pre></div>
@@ -6674,29 +6687,6 @@ file carries that attribute.</p>
 
 
 
-<h3 id="ordito.io.MeshData.vertex_normals" class="doc doc-heading">
-            <span class="doc doc-object-name doc-attribute-name">vertex_normals</span>
-
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
-  </span>
-
-</h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">vertex_normals</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span>
-</code></pre></div>
-
-    <div class="doc doc-contents ">
-
-          
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
 <h3 id="ordito.io.MeshData.uv" class="doc doc-heading">
             <span class="doc doc-object-name doc-attribute-name">uv</span>
 
@@ -6720,29 +6710,6 @@ file carries that attribute.</p>
 
 
 
-<h3 id="ordito.io.MeshData.corner_uv" class="doc doc-heading">
-            <span class="doc doc-object-name doc-attribute-name">corner_uv</span>
-
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
-  </span>
-
-</h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">corner_uv</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec2</span><span class="p">]</span>
-</code></pre></div>
-
-    <div class="doc doc-contents ">
-
-          
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
 <h3 id="ordito.io.MeshData.colors" class="doc doc-heading">
             <span class="doc doc-object-name doc-attribute-name">colors</span>
 
@@ -6752,7 +6719,7 @@ file carries that attribute.</p>
   </span>
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">colors</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">array</span><span class="p">[</span><span class="n">vec4</span><span class="p">]</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">colors</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec4</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6766,8 +6733,8 @@ file carries that attribute.</p>
 
 
 
-<h3 id="ordito.io.MeshData.face_normals" class="doc doc-heading">
-            <span class="doc doc-object-name doc-attribute-name">face_normals</span>
+<h3 id="ordito.io.MeshData.face_colors" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">face_colors</span>
 
 
   <span class="doc doc-labels">
@@ -6775,7 +6742,7 @@ file carries that attribute.</p>
   </span>
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">face_normals</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">face_colors</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec4</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6800,22 +6767,19 @@ file carries that attribute.</p>
 <div class="doc doc-object doc-function">
 
 
-<h2 id="ordito.io.load_mesh_data" class="doc doc-heading">
-            <span class="doc doc-object-name doc-function-name">load_mesh_data</span>
+<h2 id="ordito.io.load_trimesh" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">load_trimesh</span>
 
 
 </h2>
-<div class="doc-signature highlight"><pre><span></span><code><span class="nf">load_mesh_data</span><span class="p">(</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">load_trimesh</span><span class="p">(</span>
     <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Load every mesh attribute <code>meshio</code> can read from a file into Warp arrays.</p>
-<p>Reads <code>path</code> once with <code>meshio</code> and returns a dictionary whose keys are present
-only when the corresponding data exists in the file. <code>vertices</code> is always present;
-everything else is optional.</p>
+        <p>Load a mesh file into a <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a>, with its colours, UVs and texture.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6838,8 +6802,9 @@ everything else is optional.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Path to a mesh file in any format supported by <code>meshio</code> (PLY, STL, OBJ, OFF,
-VTK, glTF, ...).</p>
+                <p>Path to a mesh file in any format <code>trimesh</code> reads (OBJ with its MTL and images, PLY,
+glTF / GLB, STL, OFF, ...; VTK, Gmsh and the other volume formats when <code>meshio</code> is
+installed too).</p>
               </div>
             </td>
             <td>
@@ -6855,7 +6820,7 @@ VTK, glTF, ...).</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Warp device for the returned arrays. Defaults to the current Warp device.</p>
+                <p>Warp device for the returned mesh. Defaults to the current Warp device.</p>
               </div>
             </td>
             <td>
@@ -6877,25 +6842,19 @@ VTK, glTF, ...).</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="MeshData (ordito.io.MeshData)" href="./#ordito.io.MeshData">MeshData</a></code>
+                  <code><a class="autorefs autorefs-internal" title="Trimesh (ordito.mesh.Trimesh)" href="../mesh/#ordito.mesh.Trimesh">Trimesh</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Mapping with these possible keys:</p>
-<ul>
-<li><code>vertices</code> : <code>wp.array[wp.vec3]</code> of <code>float32</code> vertex positions (always present).</li>
-<li><code>faces</code> : <code>(3 * n_faces,)</code> flat <code>wp.array[wp.int32]</code> (triangle cells only).</li>
-<li><code>vertex_normals</code> : <code>wp.array[wp.vec3]</code> from <code>nx, ny, nz</code> per-vertex data.</li>
-<li><code>uv</code> : <code>wp.array[wp.vec2]</code> from <code>u, v</code> (or <code>s, t</code> / <code>texture_u, texture_v</code>).</li>
-<li><code>corner_uv</code> : <code>(3 * n_faces,)</code> <code>wp.array[wp.vec2]</code>, one texcoord per face corner,
-  from an OBJ file's <code>vt</code> indices or a PLY file's <code>texcoord</code> face list -- the form of
-  a UV atlas, whose seams give one vertex several texcoords.
-  <a class="autorefs autorefs-internal" title="split_vertices_by_corner_values" href="../repair/#ordito.repair.split_vertices_by_corner_values"><code>split_vertices_by_corner_values</code></a>
-  turns it into per-vertex <code>uv</code>.</li>
-<li><code>colors</code> : <code>wp.array[wp.vec3]</code> or <code>wp.array[wp.vec4]</code> from <code>red, green, blue</code>
-  (and optional <code>alpha</code>); integer channels are normalized to <code>[0, 1]</code>.</li>
-<li><code>face_normals</code> : <code>wp.array[wp.vec3]</code> — only when the file stored per-face normals.</li>
-</ul>
+                <p>The file's triangles, polygons triangulated, with these visuals when the file has them:
+vertex colours or face colours as the <code>"color"</code> vertex or face attribute, texture
+coordinates as the <code>"uv"</code> vertex attribute, and the texture as its
+<a class="autorefs autorefs-internal" title="material
+
+
+  
+      property
+  " href="../mesh/#ordito.mesh.Trimesh.material"><code>material</code></a>. Colours are RGBA in <code>[0, 1]</code>.</p>
               </div>
             </td>
           </tr>
@@ -6914,12 +6873,31 @@ VTK, glTF, ...).</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ImportError">ImportError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>trimesh</code> is not installed.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with
-per-corner texcoords is malformed or names a vertex it does not define.</p>
+                <p>If a face references a vertex index the file's own vertex count does not cover.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#IndexError">IndexError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an OBJ file's face does: trimesh's OBJ reader refuses it first.</p>
               </div>
             </td>
           </tr>
@@ -6929,63 +6907,57 @@ per-corner texcoords is malformed or names a vertex it does not define.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="load_mesh" href="./#ordito.io.load_mesh"><code>load_mesh</code></a></p>
+  <p><a class="autorefs autorefs-internal" title="save_mesh" href="./#ordito.io.save_mesh"><code>save_mesh</code></a>
+    The inverse.
+<a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a>
+    The same arrays as a dictionary.
+<a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.html#trimesh.load"><code>trimesh.load</code></a></p>
 </details>
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Only triangle cells are consumed; non-triangle cell blocks are ignored. <code>meshio</code> reads
-attributes verbatim and never computes them, so <code>face_normals</code> appears only when the
-file itself contained per-face normals.</p>
-<p>An OBJ file is read here rather than by <code>meshio</code>, which refuses one whose <code>vt</code> count
-differs from its <code>v</code> count -- every UV-mapped OBJ with a seam. Its positions, triangles and
-<code>corner_uv</code> are returned; polygons with more than three corners are ignored as above. A PLY
-file whose faces carry a <code>texcoord</code> (or <code>texcoords</code>) list, which <code>meshio</code> cannot decode,
-is read here too, ASCII or binary, with every attribute above.</p>
+  <p>UVs are per vertex, as in trimesh: a file whose vertex takes several texcoords (a UV seam)
+reads as one vertex for each, so the vertices need not be numbered as in the file. A file with
+several materials, or several meshes, is joined into one mesh, its textures packed into one
+image. A material is read as its base colour: an MTL <code>map_Kd</code> image or <code>Kd</code> colour, or a
+glTF base colour texture and factor (the <code>Kd</code> beside a <code>map_Kd</code> is left out, as trimesh
+does when it reads colours off a texture). Normals in the file are not read: trimesh computes
+its own, and so does <a class="autorefs autorefs-internal" title="vertex_normals" href="../mesh/#ordito.mesh.Trimesh.vertex_normals"><code>vertex_normals</code></a>.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
-    <p>A box written to PLY with per-vertex normals reads back with them:</p>
+    <p>A coloured box saved and read back:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">meshio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span>
-    <span class="p">[(</span><span class="s2">"triangle"</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))],</span>
-    <span class="n">point_data</span><span class="o">=</span><span class="p">{</span><span class="s2">"nx"</span><span class="p">:</span> <span class="n">normals</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">],</span> <span class="s2">"ny"</span><span class="p">:</span> <span class="n">normals</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="s2">"nz"</span><span class="p">:</span> <span class="n">normals</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]},</span>
-<span class="p">)</span>
+<span class="n">red</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">8</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertex_attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">red</span><span class="p">})</span>
 <span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
     <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"box.ply"</span>
-    <span class="n">meshio</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">mesh</span><span class="p">)</span>
-    <span class="n">data</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>  <span class="c1"># ['faces', 'vertex_normals', 'vertices']</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">data</span><span class="p">[</span><span class="s2">"vertex_normals"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (36,) (8,)</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+    <span class="n">loaded</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_trimesh</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">loaded</span><span class="o">.</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">loaded</span><span class="o">.</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">loaded</span><span class="o">.</span><span class="n">vertex_colors</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="c1"># 8 12 [1.0, 0.0, 0.0, 1.0]</span>
 </code></pre></div>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 6 places</summary>
+      <summary>Referenced by 4 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.MeshData">MeshData</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.load_mesh">load_mesh</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.load_mesh_data">load_mesh_data</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.save_mesh">save_mesh</a></span></p>
         <p><span class="ordito-backlinks-section">Getting started</span>
 <span class="ordito-backlink"><a href="../../../getting-started/#getting-data-in-and-out">Getting data in and out</a></span></p>
-        <p><span class="ordito-backlinks-section">Migrating from another library</span>
-<span class="ordito-backlink"><a href="../../../migrating-from/trimesh/#migrating-from-trimesh">Migrating from trimesh</a> › <a href="../../../migrating-from/trimesh/#mesh-construction-and-io">Mesh construction and I/O</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 65</span>
-<span class="normal"> 66</span>
-<span class="normal"> 67</span>
-<span class="normal"> 68</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 68</span>
 <span class="normal"> 69</span>
 <span class="normal"> 70</span>
 <span class="normal"> 71</span>
@@ -7063,10 +7035,258 @@ is read here too, ASCII or binary, with every attribute above.</p>
 <span class="normal">143</span>
 <span class="normal">144</span>
 <span class="normal">145</span>
-<span class="normal">146</span>
-<span class="normal">147</span>
-<span class="normal">148</span>
-<span class="normal">149</span>
+<span class="normal">146</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_trimesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Load a mesh file into a [`Trimesh`][ordito.mesh.Trimesh], with its colours, UVs and texture.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    path</span>
+<span class="sd">        Path to a mesh file in any format ``trimesh`` reads (OBJ with its MTL and images, PLY,</span>
+<span class="sd">        glTF / GLB, STL, OFF, ...; VTK, Gmsh and the other volume formats when ``meshio`` is</span>
+<span class="sd">        installed too).</span>
+<span class="sd">    device</span>
+<span class="sd">        Warp device for the returned mesh. Defaults to the current Warp device.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Trimesh</span>
+<span class="sd">        The file's triangles, polygons triangulated, with these visuals when the file has them:</span>
+<span class="sd">        vertex colours or face colours as the ``"color"`` vertex or face attribute, texture</span>
+<span class="sd">        coordinates as the ``"uv"`` vertex attribute, and the texture as its</span>
+<span class="sd">        [`material`][ordito.mesh.Trimesh.material]. Colours are RGBA in ``[0, 1]``.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ImportError</span>
+<span class="sd">        If ``trimesh`` is not installed.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If a face references a vertex index the file's own vertex count does not cover.</span>
+<span class="sd">    IndexError</span>
+<span class="sd">        If an OBJ file's face does: trimesh's OBJ reader refuses it first.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`save_mesh`][ordito.io.save_mesh]</span>
+<span class="sd">        The inverse.</span>
+<span class="sd">    [`load_mesh_data`][ordito.io.load_mesh_data]</span>
+<span class="sd">        The same arrays as a dictionary.</span>
+<span class="sd">    [`trimesh.load`][]</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    UVs are per vertex, as in trimesh: a file whose vertex takes several texcoords (a UV seam)</span>
+<span class="sd">    reads as one vertex for each, so the vertices need not be numbered as in the file. A file with</span>
+<span class="sd">    several materials, or several meshes, is joined into one mesh, its textures packed into one</span>
+<span class="sd">    image. A material is read as its base colour: an MTL ``map_Kd`` image or ``Kd`` colour, or a</span>
+<span class="sd">    glTF base colour texture and factor (the ``Kd`` beside a ``map_Kd`` is left out, as trimesh</span>
+<span class="sd">    does when it reads colours off a texture). Normals in the file are not read: trimesh computes</span>
+<span class="sd">    its own, and so does [`vertex_normals`][ordito.mesh.Trimesh.vertex_normals].</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A coloured box saved and read back:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import pathlib</span>
+<span class="sd">    import tempfile</span>
+
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.creation.box()</span>
+<span class="sd">    red = wp.full(8, wp.vec4(1.0, 0.0, 0.0, 1.0), dtype=wp.vec4, device=vertices.device)</span>
+<span class="sd">    mesh = od.Trimesh(vertices, faces, vertex_attributes={"color": red})</span>
+<span class="sd">    with tempfile.TemporaryDirectory() as folder:</span>
+<span class="sd">        path = pathlib.Path(folder) / "box.ply"</span>
+<span class="sd">        od.io.save_mesh(mesh, path)</span>
+<span class="sd">        loaded = od.io.load_trimesh(path)</span>
+<span class="sd">    print(loaded.n_vertices, loaded.n_faces, loaded.vertex_colors.numpy()[0].tolist())</span>
+<span class="sd">    # 8 12 [1.0, 0.0, 0.0, 1.0]</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">read</span> <span class="o">=</span> <span class="n">_read</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">"load_trimesh"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">Trimesh</span><span class="p">(</span>
+        <span class="n">read</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span>
+        <span class="n">read</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span>
+        <span class="n">vertex_attributes</span><span class="o">=</span><span class="n">read</span><span class="o">.</span><span class="n">vertex_attributes</span><span class="p">,</span>
+        <span class="n">face_attributes</span><span class="o">=</span><span class="n">read</span><span class="o">.</span><span class="n">face_attributes</span><span class="p">,</span>
+        <span class="n">material</span><span class="o">=</span><span class="n">read</span><span class="o">.</span><span class="n">material</span><span class="p">,</span>
+    <span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.io.save_mesh" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">save_mesh</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write a <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a> to a file, with the visuals its format can hold.</p>
+<p>The format follows the suffix of <code>path</code>. Vertex colours, face colours, UVs and the material
+are written where the format holds them: OBJ writes UVs, vertex colours and the material
+(an MTL file and a PNG image beside it, named after <code>path</code> and the material); PLY writes
+UVs, vertex colours and face colours; glTF / GLB writes UVs, vertex colours and the material
+inside the file. A visual the format cannot hold is left out with a warning.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>mesh</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Trimesh (ordito.mesh.Trimesh)" href="../mesh/#ordito.mesh.Trimesh">Trimesh</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Mesh to write.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a> | <a class="autorefs autorefs-external" title="pathlib.Path" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path">Path</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Destination file. Its suffix picks the format: any format <code>trimesh</code> writes.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ImportError">ImportError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>trimesh</code> (or, to write an image, <code>Pillow</code>) is not installed.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Warns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#UserWarning">UserWarning</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When a visual of <code>mesh</code> is not written: one the format cannot hold, the colours of a
+mesh whose texture is written (a file holds one or the other), the face colours of a mesh
+whose vertex colours are written, or a material with no UVs to read it.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="load_trimesh" href="./#ordito.io.load_trimesh"><code>load_trimesh</code></a>
+    The inverse.
+<a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.html#trimesh.Trimesh.export"><code>trimesh.Trimesh.export</code></a></p>
+</details>
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>Colours are written as bytes, rounded from <code>[0, 1]</code>; OBJ drops their alpha. A material's
+image is written as 8-bit RGBA. OBJ stores the material's factor as <code>Kd</code>, which
+<a class="autorefs autorefs-internal" title="load_trimesh" href="./#ordito.io.load_trimesh"><code>load_trimesh</code></a> reads only when there is no image.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A textured square written to OBJ, its MTL and image beside it:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">center</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">texels</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">random</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">,</span>
+    <span class="n">faces</span><span class="p">,</span>
+    <span class="n">vertex_attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">"uv"</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="p">:</span><span class="mi">2</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)},</span>
+    <span class="n">material</span><span class="o">=</span><span class="n">od</span><span class="o">.</span><span class="n">texture</span><span class="o">.</span><span class="n">Material</span><span class="p">(</span><span class="n">image</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">texels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">name</span><span class="o">=</span><span class="s2">"skin"</span><span class="p">),</span>
+<span class="p">)</span>
+<span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"square.obj"</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">path</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()))</span>
+<span class="c1"># ['skin.png', 'square.mtl', 'square.obj']</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 3 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.load_trimesh">load_trimesh</a></span></p>
+        <p><span class="ordito-backlinks-section">Getting started</span>
+<span class="ordito-backlink"><a href="../../../getting-started/#getting-data-in-and-out">Getting data in and out</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/io.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">149</span>
 <span class="normal">150</span>
 <span class="normal">151</span>
 <span class="normal">152</span>
@@ -7083,19 +7303,415 @@ is read here too, ASCII or binary, with every attribute above.</p>
 <span class="normal">163</span>
 <span class="normal">164</span>
 <span class="normal">165</span>
-<span class="normal">166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
+<span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span>
+<span class="normal">175</span>
+<span class="normal">176</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span>
+<span class="normal">185</span>
+<span class="normal">186</span>
+<span class="normal">187</span>
+<span class="normal">188</span>
+<span class="normal">189</span>
+<span class="normal">190</span>
+<span class="normal">191</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span>
+<span class="normal">197</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Load every mesh attribute ``meshio`` can read from a file into Warp arrays.</span>
+<span class="sd">    Write a [`Trimesh`][ordito.mesh.Trimesh] to a file, with the visuals its format can hold.</span>
 
-<span class="sd">    Reads ``path`` once with ``meshio`` and returns a dictionary whose keys are present</span>
-<span class="sd">    only when the corresponding data exists in the file. ``vertices`` is always present;</span>
-<span class="sd">    everything else is optional.</span>
+<span class="sd">    The format follows the suffix of ``path``. Vertex colours, face colours, UVs and the material</span>
+<span class="sd">    are written where the format holds them: OBJ writes UVs, vertex colours and the material</span>
+<span class="sd">    (an MTL file and a PNG image beside it, named after ``path`` and the material); PLY writes</span>
+<span class="sd">    UVs, vertex colours and face colours; glTF / GLB writes UVs, vertex colours and the material</span>
+<span class="sd">    inside the file. A visual the format cannot hold is left out with a warning.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    mesh</span>
+<span class="sd">        Mesh to write.</span>
+<span class="sd">    path</span>
+<span class="sd">        Destination file. Its suffix picks the format: any format ``trimesh`` writes.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ImportError</span>
+<span class="sd">        If ``trimesh`` (or, to write an image, ``Pillow``) is not installed.</span>
+
+<span class="sd">    Warns</span>
+<span class="sd">    -----</span>
+<span class="sd">    UserWarning</span>
+<span class="sd">        When a visual of ``mesh`` is not written: one the format cannot hold, the colours of a</span>
+<span class="sd">        mesh whose texture is written (a file holds one or the other), the face colours of a mesh</span>
+<span class="sd">        whose vertex colours are written, or a material with no UVs to read it.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`load_trimesh`][ordito.io.load_trimesh]</span>
+<span class="sd">        The inverse.</span>
+<span class="sd">    [`trimesh.Trimesh.export`][]</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    Colours are written as bytes, rounded from ``[0, 1]``; OBJ drops their alpha. A material's</span>
+<span class="sd">    image is written as 8-bit RGBA. OBJ stores the material's factor as ``Kd``, which</span>
+<span class="sd">    [`load_trimesh`][ordito.io.load_trimesh] reads only when there is no image.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A textured square written to OBJ, its MTL and image beside it:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import pathlib</span>
+<span class="sd">    import tempfile</span>
+
+<span class="sd">    import numpy as np</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.creation.grid(count=(2, 2), center=False)</span>
+<span class="sd">    texels = np.random.default_rng(0).random((4, 4, 4), dtype=np.float32)</span>
+<span class="sd">    mesh = od.Trimesh(</span>
+<span class="sd">        vertices,</span>
+<span class="sd">        faces,</span>
+<span class="sd">        vertex_attributes={"uv": wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)},</span>
+<span class="sd">        material=od.texture.Material(image=wp.array(texels, dtype=wp.float32), name="skin"),</span>
+<span class="sd">    )</span>
+<span class="sd">    with tempfile.TemporaryDirectory() as folder:</span>
+<span class="sd">        od.io.save_mesh(mesh, pathlib.Path(folder) / "square.obj")</span>
+<span class="sd">        print(sorted(path.name for path in pathlib.Path(folder).iterdir()))</span>
+<span class="sd">    # ['skin.png', 'square.mtl', 'square.obj']</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">tm</span> <span class="o">=</span> <span class="n">_import_trimesh</span><span class="p">()</span>
+    <span class="n">path</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+    <span class="n">suffix</span> <span class="o">=</span> <span class="n">path</span><span class="o">.</span><span class="n">suffix</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="n">holds</span> <span class="o">=</span> <span class="n">_FORMAT_VISUALS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">suffix</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">())</span>
+    <span class="c1"># Readbacks: trimesh writes from host arrays, so the whole mesh comes back once.</span>
+    <span class="n">vertices_np</span> <span class="o">=</span> <span class="n">read_array</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">vertices</span><span class="p">)</span>
+    <span class="n">faces_np</span> <span class="o">=</span> <span class="n">read_array</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">faces</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
+    <span class="n">visual</span> <span class="o">=</span> <span class="n">_export_visual</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">holds</span><span class="p">,</span> <span class="n">suffix</span><span class="p">)</span>
+    <span class="n">mesh_tm</span> <span class="o">=</span> <span class="n">tm</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices_np</span><span class="p">,</span> <span class="n">faces_np</span><span class="p">,</span> <span class="n">visual</span><span class="o">=</span><span class="n">visual</span><span class="p">,</span> <span class="n">process</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"mtl_name"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">path</span><span class="o">.</span><span class="n">stem</span><span class="si">}</span><span class="s2">.mtl"</span><span class="p">}</span> <span class="k">if</span> <span class="n">suffix</span> <span class="o">==</span> <span class="s2">".obj"</span> <span class="k">else</span> <span class="p">{}</span>
+    <span class="n">mesh_tm</span><span class="o">.</span><span class="n">export</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="o">**</span><span class="n">options</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.io.load_mesh_data" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">load_mesh_data</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">load_mesh_data</span><span class="p">(</span>
+    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Load a mesh file's vertices, faces, colours and UVs into Warp arrays.</p>
+<p>Reads what <a class="autorefs autorefs-internal" title="load_trimesh" href="./#ordito.io.load_trimesh"><code>load_trimesh</code></a> reads, as a dictionary whose keys are
+present only when the file carries that attribute; <code>vertices</code> is always present.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a> | <a class="autorefs autorefs-external" title="pathlib.Path" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path">Path</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Path to a mesh file in any format <code>trimesh</code> reads.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>device</code>
+            </td>
+            <td>
+                  <code><span title="warp.DeviceLike">DeviceLike</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Warp device for the returned arrays. Defaults to the current Warp device.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="MeshData (ordito.io.MeshData)" href="./#ordito.io.MeshData">MeshData</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Mapping with these possible keys:</p>
+<ul>
+<li><code>vertices</code> : <code>(n_vertices,)</code> <code>wp.vec3</code> positions (always present).</li>
+<li><code>faces</code> : <code>(3 * n_faces,)</code> <code>wp.int32</code> triangle indices, polygons triangulated.</li>
+<li><code>uv</code> : <code>(n_vertices,)</code> <code>wp.vec2</code> texture coordinates, a vertex for each texcoord
+  of a seam.</li>
+<li><code>colors</code> : <code>(n_vertices,)</code> <code>wp.vec4</code> RGBA vertex colours in <code>[0, 1]</code>.</li>
+<li><code>face_colors</code> : <code>(n_faces,)</code> <code>wp.vec4</code> RGBA face colours in <code>[0, 1]</code>.</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ImportError">ImportError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>trimesh</code> is not installed.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a face references a vertex index the file's own vertex count does not cover.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#IndexError">IndexError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an OBJ file's face does: trimesh's OBJ reader refuses it first.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="load_trimesh" href="./#ordito.io.load_trimesh"><code>load_trimesh</code></a>
+<a class="autorefs autorefs-internal" title="load_mesh" href="./#ordito.io.load_mesh"><code>load_mesh</code></a></p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A box written with UVs reads back with them:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
+<span class="n">uv</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="p">:</span><span class="mi">2</span><span class="p">]</span> <span class="o">+</span> <span class="mf">0.5</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertex_attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">"uv"</span><span class="p">:</span> <span class="n">uv</span><span class="p">})</span>
+<span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
+    <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"box.ply"</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>  <span class="c1"># ['faces', 'uv', 'vertices']</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">data</span><span class="p">[</span><span class="s2">"uv"</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (36,) (8,)</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 6 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.MeshData">MeshData</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.load_mesh">load_mesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.io">io</a> › <a href="./#ordito.io.load_trimesh">load_trimesh</a></span></p>
+        <p><span class="ordito-backlinks-section">Migrating from another library</span>
+<span class="ordito-backlink"><a href="../../../migrating-from/trimesh/#migrating-from-trimesh">Migrating from trimesh</a> › <a href="../../../migrating-from/trimesh/#mesh-construction-and-io">Mesh construction and I/O</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/io.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span>
+<span class="normal">315</span>
+<span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span>
+<span class="normal">345</span>
+<span class="normal">346</span>
+<span class="normal">347</span>
+<span class="normal">348</span>
+<span class="normal">349</span>
+<span class="normal">350</span>
+<span class="normal">351</span>
+<span class="normal">352</span>
+<span class="normal">353</span>
+<span class="normal">354</span>
+<span class="normal">355</span>
+<span class="normal">356</span>
+<span class="normal">357</span>
+<span class="normal">358</span>
+<span class="normal">359</span>
+<span class="normal">360</span>
+<span class="normal">361</span>
+<span class="normal">362</span>
+<span class="normal">363</span>
+<span class="normal">364</span>
+<span class="normal">365</span>
+<span class="normal">366</span>
+<span class="normal">367</span>
+<span class="normal">368</span>
+<span class="normal">369</span>
+<span class="normal">370</span>
+<span class="normal">371</span>
+<span class="normal">372</span>
+<span class="normal">373</span>
+<span class="normal">374</span>
+<span class="normal">375</span>
+<span class="normal">376</span>
+<span class="normal">377</span>
+<span class="normal">378</span>
+<span class="normal">379</span>
+<span class="normal">380</span>
+<span class="normal">381</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Load a mesh file's vertices, faces, colours and UVs into Warp arrays.</span>
+
+<span class="sd">    Reads what [`load_trimesh`][ordito.io.load_trimesh] reads, as a dictionary whose keys are</span>
+<span class="sd">    present only when the file carries that attribute; ``vertices`` is always present.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    path</span>
-<span class="sd">        Path to a mesh file in any format supported by ``meshio`` (PLY, STL, OBJ, OFF,</span>
-<span class="sd">        VTK, glTF, ...).</span>
+<span class="sd">        Path to a mesh file in any format ``trimesh`` reads.</span>
 <span class="sd">    device</span>
 <span class="sd">        Warp device for the returned arrays. Defaults to the current Warp device.</span>
 
@@ -7104,87 +7720,61 @@ is read here too, ASCII or binary, with every attribute above.</p>
 <span class="sd">    MeshData</span>
 <span class="sd">        Mapping with these possible keys:</span>
 
-<span class="sd">        - ``vertices`` : ``wp.array[wp.vec3]`` of ``float32`` vertex positions (always present).</span>
-<span class="sd">        - ``faces`` : ``(3 * n_faces,)`` flat ``wp.array[wp.int32]`` (triangle cells only).</span>
-<span class="sd">        - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.</span>
-<span class="sd">        - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).</span>
-<span class="sd">        - ``corner_uv`` : ``(3 * n_faces,)`` ``wp.array[wp.vec2]``, one texcoord per face corner,</span>
-<span class="sd">          from an OBJ file's ``vt`` indices or a PLY file's ``texcoord`` face list -- the form of</span>
-<span class="sd">          a UV atlas, whose seams give one vertex several texcoords.</span>
-<span class="sd">          [`split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values]</span>
-<span class="sd">          turns it into per-vertex ``uv``.</span>
-<span class="sd">        - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``</span>
-<span class="sd">          (and optional ``alpha``); integer channels are normalized to ``[0, 1]``.</span>
-<span class="sd">        - ``face_normals`` : ``wp.array[wp.vec3]`` — only when the file stored per-face normals.</span>
+<span class="sd">        - ``vertices`` : ``(n_vertices,)`` ``wp.vec3`` positions (always present).</span>
+<span class="sd">        - ``faces`` : ``(3 * n_faces,)`` ``wp.int32`` triangle indices, polygons triangulated.</span>
+<span class="sd">        - ``uv`` : ``(n_vertices,)`` ``wp.vec2`` texture coordinates, a vertex for each texcoord</span>
+<span class="sd">          of a seam.</span>
+<span class="sd">        - ``colors`` : ``(n_vertices,)`` ``wp.vec4`` RGBA vertex colours in ``[0, 1]``.</span>
+<span class="sd">        - ``face_colors`` : ``(n_faces,)`` ``wp.vec4`` RGBA face colours in ``[0, 1]``.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    ImportError</span>
+<span class="sd">        If ``trimesh`` is not installed.</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If an OBJ file's face names a vertex or a texcoord it does not define, or a PLY file with</span>
-<span class="sd">        per-corner texcoords is malformed or names a vertex it does not define.</span>
+<span class="sd">        If a face references a vertex index the file's own vertex count does not cover.</span>
+<span class="sd">    IndexError</span>
+<span class="sd">        If an OBJ file's face does: trimesh's OBJ reader refuses it first.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
+<span class="sd">    [`load_trimesh`][ordito.io.load_trimesh]</span>
 <span class="sd">    [`load_mesh`][ordito.io.load_mesh]</span>
-
-<span class="sd">    Notes</span>
-<span class="sd">    -----</span>
-<span class="sd">    Only triangle cells are consumed; non-triangle cell blocks are ignored. ``meshio`` reads</span>
-<span class="sd">    attributes verbatim and never computes them, so ``face_normals`` appears only when the</span>
-<span class="sd">    file itself contained per-face normals.</span>
-
-<span class="sd">    An OBJ file is read here rather than by ``meshio``, which refuses one whose ``vt`` count</span>
-<span class="sd">    differs from its ``v`` count -- every UV-mapped OBJ with a seam. Its positions, triangles and</span>
-<span class="sd">    ``corner_uv`` are returned; polygons with more than three corners are ignored as above. A PLY</span>
-<span class="sd">    file whose faces carry a ``texcoord`` (or ``texcoords``) list, which ``meshio`` cannot decode,</span>
-<span class="sd">    is read here too, ASCII or binary, with every attribute above.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
-<span class="sd">    A box written to PLY with per-vertex normals reads back with them:</span>
+<span class="sd">    A box written with UVs reads back with them:</span>
 
 <span class="sd">    ```python</span>
 <span class="sd">    import pathlib</span>
 <span class="sd">    import tempfile</span>
 
-<span class="sd">    import meshio</span>
+<span class="sd">    import warp as wp</span>
 
 <span class="sd">    import ordito as od</span>
 
 <span class="sd">    vertices, faces = od.creation.box()</span>
-<span class="sd">    normals = od.normals.vertex_normals(vertices, faces).numpy()</span>
-<span class="sd">    mesh = meshio.Mesh(</span>
-<span class="sd">        vertices.numpy(),</span>
-<span class="sd">        [("triangle", faces.numpy().reshape(-1, 3))],</span>
-<span class="sd">        point_data={"nx": normals[:, 0], "ny": normals[:, 1], "nz": normals[:, 2]},</span>
-<span class="sd">    )</span>
+<span class="sd">    uv = wp.array(vertices.numpy()[:, :2] + 0.5, dtype=wp.vec2)</span>
+<span class="sd">    mesh = od.Trimesh(vertices, faces, vertex_attributes={"uv": uv})</span>
 <span class="sd">    with tempfile.TemporaryDirectory() as folder:</span>
 <span class="sd">        path = pathlib.Path(folder) / "box.ply"</span>
-<span class="sd">        meshio.write(path, mesh)</span>
+<span class="sd">        od.io.save_mesh(mesh, path)</span>
 <span class="sd">        data = od.io.load_mesh_data(path)</span>
-<span class="sd">    print(sorted(data))  # ['faces', 'vertex_normals', 'vertices']</span>
-<span class="sd">    print(data["faces"].shape, data["vertex_normals"].shape)  # (36,) (8,)</span>
+<span class="sd">    print(sorted(data))  # ['faces', 'uv', 'vertices']</span>
+<span class="sd">    print(data["faces"].shape, data["uv"].shape)  # (36,) (8,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="k">if</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">suffix</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s2">".obj"</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_load_obj_data</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">_is_ply_with_corner_texcoords</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
-        <span class="n">ply</span> <span class="o">=</span> <span class="n">_read_ply</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">),</span> <span class="s2">"load_mesh_data"</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">_mesh_data</span><span class="p">(</span>
-            <span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">point_data</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">corner_uv</span><span class="p">,</span> <span class="n">device</span>
-        <span class="p">)</span>
-    <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
-    <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_mesh_data</span><span class="p">(</span>
-        <span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span>
-        <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">),</span>
-        <span class="n">mesh</span><span class="o">.</span><span class="n">point_data</span><span class="p">,</span>
-        <span class="n">_face_normals_from_cell_data</span><span class="p">(</span><span class="n">mesh</span><span class="p">),</span>
-        <span class="kc">None</span><span class="p">,</span>
-        <span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="n">read</span> <span class="o">=</span> <span class="n">_read</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">"load_mesh_data"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">result</span><span class="p">:</span> <span class="n">MeshData</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"vertices"</span><span class="p">:</span> <span class="n">read</span><span class="o">.</span><span class="n">vertices</span><span class="p">}</span>
+    <span class="k">if</span> <span class="n">read</span><span class="o">.</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">result</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">]</span> <span class="o">=</span> <span class="n">read</span><span class="o">.</span><span class="n">faces</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">uv</span> <span class="o">:=</span> <span class="n">read</span><span class="o">.</span><span class="n">vertex_attributes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"uv"</span><span class="p">))</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">result</span><span class="p">[</span><span class="s2">"uv"</span><span class="p">]</span> <span class="o">=</span> <span class="n">uv</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">colors</span> <span class="o">:=</span> <span class="n">read</span><span class="o">.</span><span class="n">vertex_attributes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"color"</span><span class="p">))</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">result</span><span class="p">[</span><span class="s2">"colors"</span><span class="p">]</span> <span class="o">=</span> <span class="n">colors</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">face_colors</span> <span class="o">:=</span> <span class="n">read</span><span class="o">.</span><span class="n">face_attributes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"color"</span><span class="p">))</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">result</span><span class="p">[</span><span class="s2">"face_colors"</span><span class="p">]</span> <span class="o">=</span> <span class="n">face_colors</span>
+    <span class="k">return</span> <span class="n">result</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7207,7 +7797,7 @@ is read here too, ASCII or binary, with every attribute above.</p>
     <div class="doc doc-contents ">
 
         <p>Load a triangle mesh file into a <code>warp.Mesh</code>.</p>
-<p>Reads only the vertices and triangle faces (the subset
+<p>Reads only the vertices and triangles (the subset
 <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> returns) and wraps them in a <code>warp.Mesh</code> that
 owns its buffers.</p>
 
@@ -7232,7 +7822,7 @@ owns its buffers.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Path to a mesh file in any format supported by <code>meshio</code>.</p>
+                <p>Path to a mesh file in any format <code>trimesh</code> reads.</p>
               </div>
             </td>
             <td>
@@ -7293,13 +7883,33 @@ owns its buffers.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ImportError">ImportError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>trimesh</code> is not installed.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the file contains no triangle faces (e.g. a point cloud or a triangle-strip
-PLY that <code>meshio</code> cannot decode), if a face references a vertex index the file's own
-vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.</p>
+                <p>If the file contains no triangle faces (a point cloud, say) or a face references a vertex
+index the file's own vertex count does not cover.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#IndexError">IndexError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an OBJ file's face references a vertex it does not define: trimesh's OBJ reader refuses
+it first.</p>
               </div>
             </td>
           </tr>
@@ -7317,15 +7927,12 @@ vertex count does not cover, or if a PLY file with per-corner texcoords is malfo
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">meshio</span>
-
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
-<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
-<span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="p">[(</span><span class="s2">"triangle"</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))])</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="o">*</span><span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>
 <span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">folder</span><span class="p">:</span>
     <span class="n">path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">folder</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"sphere.obj"</span>
-    <span class="n">meshio</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">mesh</span><span class="p">)</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">save_mesh</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
     <span class="n">loaded</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">io</span><span class="o">.</span><span class="n">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">loaded</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">loaded</span><span class="o">.</span><span class="n">indices</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (42,) (240,)</span>
 </code></pre></div>
@@ -7342,101 +7949,76 @@ vertex count does not cover, or if a PLY file with per-corner texcoords is malfo
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
-<span class="normal">601</span>
-<span class="normal">602</span>
-<span class="normal">603</span>
-<span class="normal">604</span>
-<span class="normal">605</span>
-<span class="normal">606</span>
-<span class="normal">607</span>
-<span class="normal">608</span>
-<span class="normal">609</span>
-<span class="normal">610</span>
-<span class="normal">611</span>
-<span class="normal">612</span>
-<span class="normal">613</span>
-<span class="normal">614</span>
-<span class="normal">615</span>
-<span class="normal">616</span>
-<span class="normal">617</span>
-<span class="normal">618</span>
-<span class="normal">619</span>
-<span class="normal">620</span>
-<span class="normal">621</span>
-<span class="normal">622</span>
-<span class="normal">623</span>
-<span class="normal">624</span>
-<span class="normal">625</span>
-<span class="normal">626</span>
-<span class="normal">627</span>
-<span class="normal">628</span>
-<span class="normal">629</span>
-<span class="normal">630</span>
-<span class="normal">631</span>
-<span class="normal">632</span>
-<span class="normal">633</span>
-<span class="normal">634</span>
-<span class="normal">635</span>
-<span class="normal">636</span>
-<span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
-<span class="normal">643</span>
-<span class="normal">644</span>
-<span class="normal">645</span>
-<span class="normal">646</span>
-<span class="normal">647</span>
-<span class="normal">648</span>
-<span class="normal">649</span>
-<span class="normal">650</span>
-<span class="normal">651</span>
-<span class="normal">652</span>
-<span class="normal">653</span>
-<span class="normal">654</span>
-<span class="normal">655</span>
-<span class="normal">656</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span>
+<span class="normal">399</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load a triangle mesh file into a ``warp.Mesh``.</span>
 
-<span class="sd">    Reads only the vertices and triangle faces (the subset</span>
+<span class="sd">    Reads only the vertices and triangles (the subset</span>
 <span class="sd">    [`load_mesh_data`][ordito.io.load_mesh_data] returns) and wraps them in a ``warp.Mesh`` that</span>
 <span class="sd">    owns its buffers.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    path</span>
-<span class="sd">        Path to a mesh file in any format supported by ``meshio``.</span>
+<span class="sd">        Path to a mesh file in any format ``trimesh`` reads.</span>
 <span class="sd">    device</span>
 <span class="sd">        Warp device for the returned mesh. Defaults to the current Warp device.</span>
 
@@ -7447,10 +8029,14 @@ vertex count does not cover, or if a PLY file with per-corner texcoords is malfo
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    ImportError</span>
+<span class="sd">        If ``trimesh`` is not installed.</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If the file contains no triangle faces (e.g. a point cloud or a triangle-strip</span>
-<span class="sd">        PLY that ``meshio`` cannot decode), if a face references a vertex index the file's own</span>
-<span class="sd">        vertex count does not cover, or if a PLY file with per-corner texcoords is malformed.</span>
+<span class="sd">        If the file contains no triangle faces (a point cloud, say) or a face references a vertex</span>
+<span class="sd">        index the file's own vertex count does not cover.</span>
+<span class="sd">    IndexError</span>
+<span class="sd">        If an OBJ file's face references a vertex it does not define: trimesh's OBJ reader refuses</span>
+<span class="sd">        it first.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7464,51 +8050,22 @@ vertex count does not cover, or if a PLY file with per-corner texcoords is malfo
 <span class="sd">    import pathlib</span>
 <span class="sd">    import tempfile</span>
 
-<span class="sd">    import meshio</span>
-
 <span class="sd">    import ordito as od</span>
 
-<span class="sd">    vertices, faces = od.creation.icosphere(subdivisions=1)</span>
-<span class="sd">    mesh = meshio.Mesh(vertices.numpy(), [("triangle", faces.numpy().reshape(-1, 3))])</span>
+<span class="sd">    mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))</span>
 <span class="sd">    with tempfile.TemporaryDirectory() as folder:</span>
 <span class="sd">        path = pathlib.Path(folder) / "sphere.obj"</span>
-<span class="sd">        meshio.write(path, mesh)</span>
+<span class="sd">        od.io.save_mesh(mesh, path)</span>
 <span class="sd">        loaded = od.io.load_mesh(path)</span>
 <span class="sd">    print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="k">if</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">suffix</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s2">".obj"</span><span class="p">:</span>
-        <span class="n">points</span><span class="p">,</span> <span class="n">faces_np</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_read_obj</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">faces_np</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Mesh file </span><span class="si">{</span><span class="n">path</span><span class="si">!r}</span><span class="s2"> has no triangle faces; cannot build a wp.Mesh."</span><span class="p">)</span>
-        <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces_np</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">points</span><span class="p">),</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span>
-            <span class="n">points</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-            <span class="n">indices</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-        <span class="p">)</span>
-    <span class="k">if</span> <span class="n">_is_ply_with_corner_texcoords</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
-        <span class="n">ply</span> <span class="o">=</span> <span class="n">_read_ply</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-        <span class="n">points_np</span><span class="p">,</span> <span class="n">faces_np</span> <span class="o">=</span> <span class="n">ply</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">ply</span><span class="o">.</span><span class="n">faces</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
-        <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
-        <span class="n">points_np</span><span class="p">,</span> <span class="n">faces_np</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">faces_np</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">faces_np</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Mesh file </span><span class="si">{</span><span class="n">path</span><span class="si">!r}</span><span class="s2"> has no triangle faces; cannot build a wp.Mesh."</span><span class="p">)</span>
-    <span class="c1"># A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer</span>
-    <span class="c1"># doesn't cover; this is the trust boundary where that first enters ordito. The check reads</span>
-    <span class="c1"># the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or</span>
-    <span class="c1"># above ``2**31`` into range.</span>
-    <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces_np</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">points_np</span><span class="p">),</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
-    <span class="n">vertices_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">points_np</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-    <span class="p">)</span>
-    <span class="n">faces_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
-        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-    <span class="p">)</span>
-    <span class="c1"># Both buffers were allocated on the lines above and nothing else holds them, so the mesh</span>
-    <span class="c1"># can own them directly.</span>
-    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices_wp</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces_wp</span><span class="p">)</span>
+    <span class="n">read</span> <span class="o">=</span> <span class="n">_read</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">"load_mesh"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">read</span><span class="o">.</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Mesh file </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="si">!r}</span><span class="s2"> has no triangle faces; cannot build a wp.Mesh."</span><span class="p">)</span>
+    <span class="c1"># Both buffers were allocated by the read and nothing else holds them, so the mesh can own</span>
+    <span class="c1"># them directly.</span>
+    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">read</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">read</span><span class="o">.</span><span class="n">faces</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7675,64 +8232,64 @@ allocated Warp arrays (no aliasing with <code>vertices</code> / <code>faces</cod
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">659</span>
-<span class="normal">660</span>
-<span class="normal">661</span>
-<span class="normal">662</span>
-<span class="normal">663</span>
-<span class="normal">664</span>
-<span class="normal">665</span>
-<span class="normal">666</span>
-<span class="normal">667</span>
-<span class="normal">668</span>
-<span class="normal">669</span>
-<span class="normal">670</span>
-<span class="normal">671</span>
-<span class="normal">672</span>
-<span class="normal">673</span>
-<span class="normal">674</span>
-<span class="normal">675</span>
-<span class="normal">676</span>
-<span class="normal">677</span>
-<span class="normal">678</span>
-<span class="normal">679</span>
-<span class="normal">680</span>
-<span class="normal">681</span>
-<span class="normal">682</span>
-<span class="normal">683</span>
-<span class="normal">684</span>
-<span class="normal">685</span>
-<span class="normal">686</span>
-<span class="normal">687</span>
-<span class="normal">688</span>
-<span class="normal">689</span>
-<span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
-<span class="normal">703</span>
-<span class="normal">704</span>
-<span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
-<span class="normal">709</span>
-<span class="normal">710</span>
-<span class="normal">711</span>
-<span class="normal">712</span>
-<span class="normal">713</span>
-<span class="normal">714</span>
-<span class="normal">715</span>
-<span class="normal">716</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span>
+<span class="normal">610</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>

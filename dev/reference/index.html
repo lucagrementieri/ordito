@@ -6549,8 +6549,12 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="revolve" href="../api/ordito/creation/#ordito.creation.revolve"><code>revolve</code></a>, <a class="autorefs autorefs-internal" title="extrude_polygon" href="../api/ordito/creation/#ordito.creation.extrude_polygon"><code>extrude_polygon</code></a>, <a class="autorefs autorefs-internal" title="sweep_polygon" href="../api/ordito/creation/#ordito.creation.sweep_polygon"><code>sweep_polygon</code></a></td>
 </tr>
 <tr>
-<td>load a mesh file (OBJ, PLY, STL, ...)</td>
-<td><a class="autorefs autorefs-internal" title="load_mesh_data" href="../api/ordito/io/#ordito.io.load_mesh_data"><code>io.load_mesh_data</code></a>, <a class="autorefs autorefs-internal" title="load_mesh" href="../api/ordito/io/#ordito.io.load_mesh"><code>io.load_mesh</code></a> (needs <code>ordito[io]</code>)</td>
+<td>load a mesh file (OBJ, PLY, glTF, STL, ...) with its colours, UVs and texture</td>
+<td><a class="autorefs autorefs-internal" title="load_trimesh" href="../api/ordito/io/#ordito.io.load_trimesh"><code>io.load_trimesh</code></a>, <a class="autorefs autorefs-internal" title="load_mesh_data" href="../api/ordito/io/#ordito.io.load_mesh_data"><code>io.load_mesh_data</code></a>, <a class="autorefs autorefs-internal" title="load_mesh" href="../api/ordito/io/#ordito.io.load_mesh"><code>io.load_mesh</code></a> (needs <code>ordito[io]</code>)</td>
+</tr>
+<tr>
+<td>write a mesh file with its colours, UVs and texture</td>
+<td><a class="autorefs autorefs-internal" title="save_mesh" href="../api/ordito/io/#ordito.io.save_mesh"><code>io.save_mesh</code></a> (needs <code>ordito[io]</code>)</td>
 </tr>
 <tr>
 <td>work with an object that caches derived quantities</td>
@@ -6863,6 +6867,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td>bake or sample textures</td>
 <td><a class="autorefs autorefs-internal" title="ordito.texture" href="../api/ordito/texture/#ordito.texture"><code>texture</code></a></td>
+</tr>
+<tr>
+<td>colour a mesh from its texture</td>
+<td><a class="autorefs autorefs-internal" title="to_color" href="../api/ordito/mesh/#ordito.mesh.Trimesh.to_color"><code>Trimesh.to_color</code></a>, <a class="autorefs autorefs-internal" title="material_colors" href="../api/ordito/texture/#ordito.texture.material_colors"><code>texture.material_colors</code></a></td>
 </tr>
 <tr>
 <td>which face covers each pixel of a UV window (visibility buffer)</td>
@@ -7189,11 +7197,11 @@ print is checked, so the output shown is the output you will get.</p>
 <tbody>
 <tr>
 <td><a href="../api/ordito/texture/">texture</a></td>
-<td>Bake per-vertex attributes into UV-space textures and sample them back.</td>
+<td>Bake per-vertex attributes into UV-space textures and sample them back; materials.</td>
 </tr>
 <tr>
 <td><a href="../api/ordito/io/">io</a></td>
-<td>Mesh file loading through the optional <code>meshio</code> dependency.</td>
+<td>Mesh file reading and writing, with colours, UVs and textures, through the optional <code>trimesh</code> dependency.</td>
 </tr>
 </tbody>
 </table>
